@@ -3,9 +3,8 @@ import pandas as pd
 import json
 from streamlit.components.v1 import html
 
-# --- [新ジョッキー事典・大幅拡充マスターデータ（50名超）] ---
+# --- [新ジョッキー事典・大幅拡充マスターデータ] ---
 JOCKEY_MASTER = {
-    # 栗東（関西）所属・主要
     "C.ルメール": {"base": 1.30, "factors": {"芝": 0.05, "ダート": -0.05, "差し": 0.05, "内枠": -0.05, "外枠": 0.05, "長距離": 0.05, "東京": 0.15, "芝2400以上": 0.15, "重賞8枠": 0.15, "中山": -0.15}, "note": "東京・長距離・重賞8枠◎"},
     "川田将雅": {"base": 1.30, "factors": {"芝1枠": 0.15, "小回り2000": 0.15, "交流重賞": 0.15, "長距離": -0.05}, "note": "芝1枠・小回り・交流重賞◎"},
     "坂井瑠星": {"base": 1.25, "factors": {"先行": -0.05, "内枠": 0.05, "外枠": -0.05, "ダート重賞": 0.15, "欧州血統": 0.15}, "note": "逃げ先行・ダート重賞◎"},
@@ -24,16 +23,10 @@ JOCKEY_MASTER = {
     "北村友一": {"base": 1.10, "factors": {"芝8枠": 0.15, "中長距離戦": 0.15}, "note": "外枠からの差し・中長距離○"},
     "横山典弘": {"base": 1.15, "factors": {"芝内枠": 0.15, "継続騎乗": 0.15, "馬ファースト": 0.15}, "note": "ポツン注意も内枠・継続◎"},
     "和田竜二": {"base": 1.05, "factors": {"タフな泥臭い展開": 0.15, "ズブい馬": 0.15}, "note": "追えるベテラン。タフな消耗戦◎"},
-    "古川吉洋": {"base": 1.00, "factors": {"先行": 0.05, "穴馬": 0.10}, "note": "ベテランの巧みなペースメイク"},
-    "小沢大仁": {"base": 1.05, "factors": {"ダート": 0.05, "ローカル": 0.05}, "note": "若手の実力派、ローカルで狙い目"},
-    "角田大河": {"base": 1.00, "factors": {"減量": 0.05}, "note": "積極的な逃げ・先行に魅力"},
-    "今村聖奈": {"base": 1.00, "factors": {"芝の軽量馬": 0.10}, "note": "軽い斤量活かした前残り注意"},
     "永島まなみ": {"base": 1.05, "factors": {"ダート逃げ": 0.15, "ローカル先行": 0.10}, "note": "ダートの逃げ・先行は超強力"},
     "田口貫太": {"base": 1.05, "factors": {"ダートの人気馬": 0.15, "重賞": 0.15, "芝1枠": 0.15}, "note": "乗れてる若手。ダート人気馬◎"},
-    "吉村誠之助": {"base": 1.10, "factors": {"イン突き": 0.15, "大型馬": 0.15}, "note": "期待のルーキー。イン差し○"},
-    "高杉吏麒": {"base": 1.10, "factors": {"スタート": 0.15, "ダート内枠": 0.15}, "note": "スタート巧者。ダート内枠○"},
 
-    # 美浦（関東）所属・主要
+    # 美浦（関東）所属
     "戸崎圭太": {"base": 1.20, "factors": {"前走ルメール": 0.15, "ダート外枠": 0.15, "東京1600": 0.15, "重賞": 0.15}, "note": "東京マイル・前走ルメール◎"},
     "横山武史": {"base": 1.20, "factors": {"中山重賞": 0.15, "持久力戦": 0.15, "マイネル": 0.15}, "note": "中山重賞・先行持久力戦◎"},
     "菅原明良": {"base": 1.10, "factors": {"注目馬": 0.15, "中長距離戦": 0.05}, "note": "G1初制覇でノる大器。穴も明ける"},
@@ -42,16 +35,10 @@ JOCKEY_MASTER = {
     "田辺裕信": {"base": 1.10, "factors": {"開催後半芝": 0.15, "長距離戦": 0.15}, "note": "人気薄の大胆な逃げ・ポツン差し注意"},
     "横山和生": {"base": 1.15, "factors": {"ダート重賞": 0.15, "長距離戦": 0.05}, "note": "タイトルホルダー等の長距離・ダート重賞○"},
     "津村明秀": {"base": 1.05, "factors": {"直線競馬": 0.15, "小回り": 0.05}, "note": "新潟直線◎。重賞でも一撃あり"},
-    "三浦皇成": {"base": 1.05, "factors": {"1番人気": 0.15, "下級条件": 0.15, "重賞": -0.15}, "note": "平場の1番人気は堅実。重賞は割引"},
+    "三浦皇成": {"base": 1.05, "factors": {"1番人気": 0.15, "下級条件": 0.15, "重賞": -0.15}, "note": "平場の1番人気は堅実. 重賞は割引"},
     "大野拓哉": {"base": 1.05, "factors": {"ダートの外枠": 0.15, "差し＆追い込み": 0.15}, "note": "ダート外枠の追い込み穴馬で激走"},
     "石川裕紀人": {"base": 1.10, "factors": {"芝1枠": 0.15, "積極策": 0.15}, "note": "大舞台での思い切った先行策魅力"},
-    "菱田裕二": {"base": 1.05, "factors": {"テーオー": 0.15, "中長距離": 0.15}, "note": "テーオーの馬・中長距離○"},
     "北村宏司": {"base": 1.05, "factors": {"東京芝": 0.10, "イン立ち回り": 0.10}, "note": "ベテランの安定感。イン立ち回り○"},
-    "丸山元気": {"base": 1.00, "factors": {"穴馬": 0.10}, "note": "時折見せる鋭い差し込みに警戒"},
-    "内田博幸": {"base": 1.05, "factors": {"タフな馬場": 0.10, "逃げ先行": 0.05}, "note": "剛腕健在。ダートや荒れ馬場○"},
-    "柴田善臣": {"base": 1.00, "factors": {"ベテランの味": 0.10}, "note": "最年長大ベテラン。無理のない誘導"},
-    "木幡巧也": {"base": 1.00, "factors": {"ダート先行": 0.05}, "note": "ダートでの積極策に定評"},
-    "石橋脩": {"base": 1.05, "factors": {"堀厩舎": 0.10, "先行": 0.05}, "note": "堀厩舎の人気薄などで不気味さあり"},
 
     # 外国人・地方・その他
     "J.モレイラ": {"base": 1.35, "factors": {"中長距離": 0.15, "ダート外枠": 0.15}, "note": "マジックマン。乗れば確勝級"},
@@ -60,7 +47,6 @@ JOCKEY_MASTER = {
     "短期免許外国人": {"base": 1.20, "factors": {"重賞": 0.10}, "note": "有力馬配置が多く一律高評価"},
     "地方所属騎手": {"base": 1.05, "factors": {"ダート": 0.10}, "note": "交流重賞やダート戦での地方リーディング級"},
     
-    # 手入力・データなし用
     "その他（自由手入力）": {"base": 1.00, "factors": {}, "note": "リスト外の騎手です。右の入力欄に名前を記入してください。"}
 }
 
@@ -76,9 +62,8 @@ COURSE_MASTER = {
 }
 
 st.set_page_config(page_title="競馬予想・ジョッキー＆コース事典完全版", layout="wide")
-st.title("🏇 競馬予想・ジョッキー＆コース事典 【完全騎手網羅＋幅広プルダウン版】")
+st.title("🏇 競馬予想・ジョッキー＆コース事典 【バグ修正完了版】")
 
-# --- 💾 データ読み込みロジック ---
 if "loaded_data" not in st.session_state:
     st.session_state["loaded_data"] = None
 
@@ -104,7 +89,7 @@ if sel_course != "(未選択)":
 st.divider()
 
 # --- 📋 出馬表入力エリア ---
-st.write("### 📝 出馬表データ入力（18頭フル対応）")
+st.write("### 📝 出馬表データ入力（18頭フル対応・複数特記セレクト機能付き）")
 
 save_cols = st.columns([2, 2, 8])
 with save_cols[0]:
@@ -114,10 +99,9 @@ with save_cols[1]:
 
 calculated_results = []
 
-# 🔎 プルダウンの文字が切れないよう、カラム幅の比率を調整（横幅を広く確保）
-c_widths = [0.8, 1.8, 0.8, 0.8, 1.2, 1.8, 2.5, 1.8, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.0]
+c_widths = [0.6, 1.4, 0.6, 0.6, 0.9, 1.4, 1.8, 1.2, 0.9, 0.9, 0.9, 0.9, 1.1, 1.1, 1.1, 1.1, 0.9]
 cols = st.columns(c_widths)
-headers = ["馬番", "馬名", "人気", "指数", "前5走3F", "父馬", "騎手（選択）", "手入力(その他時)", "①馬場", "②脚質", "③枠順", "④距離", "⑤プラス", "⑥マイナス", "スコア"]
+headers = ["馬番", "馬名", "人気", "指数", "前3F", "父馬", "騎手選択", "手入力用", "馬場", "脚質", "枠順", "距離", "⑤プラス①", "⑤プラス②", "⑥マイナス①", "⑥マイナス②", "スコア"]
 for col, h in zip(cols, headers):
     col.write(f"**{h}**")
 
@@ -135,19 +119,17 @@ for i in range(1, 19):
     l3f = c[4].number_input(f"l3f_{i}", value=float(s_row.get("l3f", 35.0)), step=0.1, label_visibility="collapsed")
     sire = c[5].text_input(f"sire_{i}", value=s_row.get("sire", ""), label_visibility="collapsed", placeholder="父馬")
     
-    # 騎手名簿のソート
     jock_list = [k for k in JOCKEY_MASTER.keys() if k != "その他（自由手入力）"]
     jock_list = sorted(jock_list) + ["その他（自由手入力）"]
     s_jock = s_row.get("jock", "その他（自由手入力）" if s_row.get("custom_jock") else "(未選択)")
     j_idx = (["(未選択)"] + jock_list).index(s_jock) if s_jock in (["(未選択)"] + jock_list) else 0
     jock = c[6].selectbox(f"jock_{i}", ["(未選択)"] + jock_list, index=j_idx, label_visibility="collapsed")
     
-    # ✍️ 「その他」を選んだ場合の自由手入力欄
     custom_jock = ""
     if jock == "その他（自由手入力）":
-        custom_jock = c[7].text_input(f"custom_jock_{i}", value=s_row.get("custom_jock", ""), label_visibility="collapsed", placeholder="騎手名を入力")
+        custom_jock = c[7].text_input(f"custom_jock_{i}", value=s_row.get("custom_jock", ""), label_visibility="collapsed", placeholder="騎手名")
     else:
-        c[7].write("---") # 通常時はスキップ
+        c[7].write("---")
         
     t_opts = ["選択なし", "芝", "ダート"]
     t_def = t_opts.index(s_row.get("sel_track")) if s_row.get("sel_track") in t_opts else (t_opts.index(auto_track) if auto_track in t_opts else 0)
@@ -177,70 +159,69 @@ for i in range(1, 19):
                 if v > 0: plus_opts.append(k)
                 elif v < 0: minus_opts.append(k)
                 
-    p_def = plus_opts.index(s_row.get("sel_plus")) if s_row.get("sel_plus") in plus_opts else 0
-    sel_plus = c[12].selectbox(f"p5_{i}", plus_opts, index=p_def, label_visibility="collapsed")
+    sel_plus1 = c[12].selectbox(f"p5_1_{i}", plus_opts, index=plus_opts.index(s_row.get("sel_plus1")) if s_row.get("sel_plus1") in plus_opts else 0, label_visibility="collapsed")
+    sel_plus2 = c[13].selectbox(f"p5_2_{i}", plus_opts, index=plus_opts.index(s_row.get("sel_plus2")) if s_row.get("sel_plus2") in plus_opts else 0, label_visibility="collapsed")
     
-    m_def = minus_opts.index(s_row.get("sel_minus")) if s_row.get("sel_minus") in minus_opts else 0
-    sel_minus = c[13].selectbox(f"p6_{i}", minus_opts, index=m_def, label_visibility="collapsed")
+    sel_minus1 = c[14].selectbox(f"p6_1_{i}", minus_opts, index=minus_opts.index(s_row.get("sel_minus1")) if s_row.get("sel_minus1") in minus_opts else 0, label_visibility="collapsed")
+    sel_minus2 = c[15].selectbox(f"p6_2_{i}", minus_opts, index=minus_opts.index(s_row.get("sel_minus2")) if s_row.get("sel_minus2") in minus_opts else 0, label_visibility="collapsed")
     
     current_inputs["rows"][str(i)] = {
         "num": num, "name": name, "pop": pop, "idx": idx, "l3f": l3f, "sire": sire, "jock": jock, "custom_jock": custom_jock,
-        "sel_track": sel_track, "sel_style": sel_style, "sel_frame": sel_frame,
-        "sel_dist": sel_dist, "sel_plus": sel_plus, "sel_minus": sel_minus
+        "sel_track": sel_track, "sel_style": sel_style, "sel_frame": sel_frame, "sel_dist": sel_dist,
+        "sel_plus1": sel_plus1, "sel_plus2": sel_plus2, "sel_minus1": sel_minus1, "sel_minus2": sel_minus2
     }
     
-    # --- スコア計算ロジック ---
+    # --- 🧮 スコア計算 ---
     score = 0.0
+    note_text = "" # 🛠️ 事前初期化でエラーを防止
+    
     if jock != "(未選択)":
         j_data = JOCKEY_MASTER.get(jock, JOCKEY_MASTER["その他（自由手入力）"])
         modifier = j_data["base"]
         factors = j_data["factors"]
+        note_text = j_data.get("note", "")
         
-        for cond in set([sel_track, sel_style, sel_frame, sel_dist, sel_plus, sel_minus]):
+        chosen_conditions = set([sel_track, sel_style, sel_frame, sel_dist, sel_plus1, sel_plus2, sel_minus1, sel_minus2])
+        for cond in chosen_conditions:
             if cond in factors:
                 val = factors[cond]
                 if val < 0 and l3f <= 33.9: val = 0.0
                 modifier += val
                 
-        # 2024-2026G1バイアスロジック
         if sel_course in ["東京芝2000m", "東京芝2400m", "中山芝2500m"]:
             if sel_frame == "内枠": modifier += 0.10
             elif sel_frame == "外枠" and l3f > 33.9: modifier -= 0.05
         
-        # 血統加点
         if sire != "" and any(target in sire for target in good_blood_list):
             modifier += 0.10
             
-        # 先行コンボ
         if (sel_style in ["逃げ", "先行"]) and (l3f <= 34.5):
             modifier += 0.15
             
         score = (idx * modifier) - (pop * 0.7)
         
-    c[14].write(f"**{score:.2f}**")
+    c[16].write(f"**{score:.2f}**")
     
     display_jock = custom_jock if jock == "その他（自由手入力）" else (jock if jock != "(未選択)" else "")
     calculated_results.append({
-        "馬番": num, "馬名": name, "スコア": score, "父馬": sire, "騎手": display_jock, "戦略メモ": j_data.get("note", "")
+        "馬番": num, "馬name": name, "スコア": score, "父馬": sire, "騎手": display_jock, "戦略メモ": note_text
     })
 
-# --- 保存処理等 ---
+# --- ストレージ管理 ---
 if save_clicked:
     json_str = json.dumps(current_inputs, ensure_ascii=False)
-    js_save = f"<script>localStorage.setItem('keiba_app_data', `{json_str}`); alert('📥 保存しました！');</script>"
-    html(js_save, height=0)
+    html(f"<script>localStorage.setItem('keiba_app_data', `{json_str}`); alert('📥 データを一時保存しました！');</script>", height=0)
 
 if load_clicked:
-    js_load = "<script>var data = localStorage.getItem('keiba_app_data'); if (data) { const url = new URL(window.parent.location.href); url.searchParams.set('loaded_json', data); window.parent.location.href = url.toString(); } else { alert('⚠️ データがありません'); }</script>"
-    html(js_load, height=0)
+    html("<script>var data = localStorage.getItem('keiba_app_data'); if (data) { const url = new URL(window.parent.location.href); url.searchParams.set('loaded_json', data); window.parent.location.href = url.toString(); } else { alert('⚠️ データが見つかりません'); }</script>", height=0)
 
 # --- ランキング生成 ---
 st.divider()
 if st.button("🏆 最終予想ランキングを生成", type="primary", use_container_width=True):
     res_df = pd.DataFrame(calculated_results)
-    res_df = res_df[res_df["馬名"] != ""].sort_values(by="スコア", ascending=False)
+    res_df = res_df[res_df["馬name"] != ""].sort_values(by="スコア", ascending=False)
     
     if not res_df.empty:
         st.balloons()
-        st.header(f"🎯 本命推奨馬: {res_df.iloc[0]['馬名']} ({res_df.iloc[0]['騎手']})")
-        st.dataframe(res_df[["馬番", "馬名", "父馬", "スコア", "騎手", "戦略メモ"]], use_container_width=True, hide_index=True)
+        st.header(f"🎯 本命推奨馬: {res_df.iloc[0]['馬name']} ({res_df.iloc[0]['騎手']})")
+        st.dataframe(res_df[["馬番", "馬name", "父馬", "スコア", "騎手", "戦略メモ"]], use_container_width=True, hide_index=True)
