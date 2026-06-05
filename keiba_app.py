@@ -49,17 +49,17 @@ JOCKEY_MASTER = {
 # --- [コース事典・マスタデータ] ---
 COURSE_MASTER = {
     "東京芝1600m": {"note": "2月内枠、2月以外外枠。同距離＆距離短縮馬、重賞は差し・追い込み有利。ロードカナロア/エピファネイア/モーリス/ドゥラメンテ/イスラボニータ産駒○", "track": "芝", "dist": "中距離", "good_lineage": ["ロードカナロア", "エピファネイア", "モーリス", "ドゥラメンテ", "イスラボニータ", "ディープ", "ワールドプレミア"]},
-    "東京芝2000m": {"note": "1枠有利。前走同距離＆距離短縮が好走。エピファネイア/モーリス牡馬/キズナ/キタサンブラック/ロードカナロア牡馬○", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "モーリス", "キズナ", "キタサンブラック", "ロードカナロア"]},
-    "東京芝2400m": {"note": "オークス・ダービー等のG1舞台。差し・追い込みだけでなく前走速い脚を使った先行も健闘。キタサンブラック/ドゥラメンテ/ハービンジャー/ルーラーシップ/ディープインパクト系・スタミナ型○", "track": "芝", "dist": "長距離", "good_lineage": ["キタサンブラック", "ドゥラメンテ", "ハービンジャー", "ルーラーシップ", "ディープ", "ワールドプレミア"]},
-    "東京ダート1600m": {"note": "外枠有利。前走同距離＆距離短縮馬。ヘニーヒューズ/ドレフォン（逃げ先行）/ロードカナロア/ドゥラメンテ牡馬○。内枠○、距離短縮、1・2枠、馬体重480kg以上○", "track": "ダート", "dist": "中距離", "good_lineage": ["ヘニーヒューズ", "ドレフォン", "ロードカナロア", "ドゥラメンテ"]},
-    "中山芝2000m": {"note": "皐月賞はマイル〜1800m重賞実績馬○。荒れ馬場は外差し○。エピファネイア牡馬/ハービンジャー/モーリス/キタサンブラック/ドゥラメンテ産駒○", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "ハービンジャー", "モーリス", "キタサンブラック", "ドゥラメンテ"]},
-    "中山芝2500m": {"note": "高速馬場の有馬記念は東京中距離G1実績馬○。高速馬場は内枠、荒れ馬場は外枠有利。エピファネイア/キズナ/ドゥラメンテ/ゴールドシップ/ジャスタウェイ産駒○", "track": "芝", "dist": "長距離", "good_lineage": ["エピファネイア", "キズナ", "ドゥラメンテ", "ゴールドシップ", "ジャスタウェイ", "ディープ", "ワールドプレミア"]},
+    "東京芝2000m": {"note": "【2024-2026G1傾向: 1桁馬番(①〜⑧)が超強力】1枠有利。前走同距離＆距離短縮が好走。エピファネイア/モーリス/キズナ/キタサンブラック○", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "モーリス", "キズナ", "キタサンブラック", "ロードカナロア"]},
+    "東京芝2400m": {"note": "【2024-2026G1傾向: ダービー・JCともに内〜中枠の立ち回り重視】差し・追い込みだけでなく前走速い脚を使った先行も健闘。キタサンブラック/ドゥラメンテ/ハービンジャー○", "track": "芝", "dist": "長距離", "good_lineage": ["キタサンブラック", "ドゥラメンテ", "ハービンジャー", "ルーラーシップ", "ディープ", "ワールドプレミア"]},
+    "東京ダート1600m": {"note": "外枠有利。前走同距離＆距離短縮馬。ヘニーヒューズ/ドレフォン（逃げ先行）/ロードカナロア/ドゥラメンテ○。馬体重480kg以上○", "track": "ダート", "dist": "中距離", "good_lineage": ["ヘニーヒューズ", "ドレフォン", "ロードカナロア", "ドゥラメンテ"]},
+    "中山芝2000m": {"note": "皐月賞はマイル〜1800m重賞実績馬○。荒れ馬場は外差し○。エピファネイア/ハービンジャー/モーリス/キタサンブラック○", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "ハービンジャー", "モーリス", "キタサンブラック", "ドゥラメンテ"]},
+    "中山芝2500m": {"note": "【2024-2026G1傾向: 有馬記念は1桁馬番の勝率突出】高速馬場は内枠、荒れ馬場は外枠有利。エピファネイア/キズナ/ドゥラメンテ/ゴールドシップ○", "track": "芝", "dist": "長距離", "good_lineage": ["エピファネイア", "キズナ", "ドゥラメンテ", "ゴールドシップ", "ジャスタウェイ", "ディープ", "ワールドプレミア"]},
     "阪神芝1600m": {"note": "内枠有利. 高速馬場は外差し、同距離＆距離短縮馬○。ロードカナロア/エピファネイア/キズナ産駒○", "track": "芝", "dist": "中距離", "good_lineage": ["ロードカナロア", "エピファネイア", "キズナ"]},
-    "阪神芝2000m": {"note": "外枠の先行馬有利。大阪杯は内差し。ドゥラメンテ牡馬/ルーラーシップ/キズナ産駒○", "track": "芝", "dist": "中距離", "good_lineage": ["ドゥラメンテ", "ルーラーシップ", "キズナ"]}
+    "阪神芝2000m": {"note": "外枠の先行馬有利。大阪杯は内差し。ドゥラメンテ/ルーラーシップ/キズナ産駒○", "track": "芝", "dist": "中距離", "good_lineage": ["ドゥラメンテ", "ルーラーシップ", "キズナ"]}
 }
 
 st.set_page_config(page_title="競馬予想・ジョッキー＆コース事典完全版", layout="wide")
-st.title("🏇 競馬予想・ジョッキー＆コース事典 【前5走最速3F版】")
+st.title("🏇 競馬予想・ジョッキー＆コース事典 【G1データバイアス統合版】")
 
 # --- 💾 ブラウザ一時保存用の仕組み ---
 if "storage_trigger" not in st.session_state:
@@ -92,7 +92,6 @@ st.divider()
 st.write("### 📝 出馬表データ入力（18頭フル対応）")
 st.caption(f"現在の自動判定条件 ➔ 馬場: **{auto_track}** | 距離: **{auto_dist}**")
 
-# 保存・読込ボタンの配置
 save_cols = st.columns([2, 2, 8])
 with save_cols[0]:
     save_clicked = st.button("📥 入力内容をスマホに一時保存", use_container_width=True)
@@ -108,19 +107,16 @@ for col, h in zip(cols, headers):
 
 current_inputs = {"course": sel_course, "rows": {}}
 
-# 18頭分の入力欄生成
 for i in range(1, 19):
     c = st.columns(c_widths)
     s_row = st.session_state["loaded_data"].get("rows", {}).get(str(i), {}) if st.session_state["loaded_data"] else {}
     
-    num = c[0].text_input(f"num_{i}", value=s_row.get("num", str(i)), label_visibility="collapsed")
+    num_val = s_row.get("num", str(i))
+    num = c[0].text_input(f"num_{i}", value=num_val, label_visibility="collapsed")
     name = c[1].text_input(f"name_{i}", value=s_row.get("name", ""), label_visibility="collapsed", placeholder="馬名")
     pop = c[2].number_input(f"pop_{i}", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), label_visibility="collapsed")
     idx = c[3].number_input(f"idx_{i}", value=float(s_row.get("idx", 0.0)), step=0.1, label_visibility="collapsed")
-    
-    # 【変更箇所】「前走3F」から「前5走最速3F」に入力名と言語変更
     l3f = c[4].number_input(f"l3f_{i}", value=float(s_row.get("l3f", 35.0)), step=0.1, label_visibility="collapsed")
-    
     sire = c[5].text_input(f"sire_{i}", value=s_row.get("sire", ""), label_visibility="collapsed", placeholder="父馬の名前")
     
     raw_jock_list = [k for k in JOCKEY_MASTER.keys() if k != "その他（データなし）"]
@@ -138,7 +134,20 @@ for i in range(1, 19):
     sel_style = c[8].selectbox(f"p2_{i}", sty_opts, index=sty_def, label_visibility="collapsed")
     
     f_opts = ["選択なし", "内枠", "外枠"]
-    f_def = f_opts.index(s_row.get("sel_frame")) if s_row.get("sel_frame") in f_opts else 0
+    
+    # 【G1データ連動】馬番から自動的に枠順の初期選択をアシスト
+    try:
+        int_num = int(num)
+        if int_num <= 8:
+            f_def_idx = 1 # 内枠
+        elif int_num >= 13:
+            f_def_idx = 2 # 外枠
+        else:
+            f_def_idx = 0
+    except:
+        f_def_idx = 0
+        
+    f_def = f_opts.index(s_row.get("sel_frame")) if s_row.get("sel_frame") in f_opts else f_def_idx
     sel_frame = c[9].selectbox(f"p3_{i}", f_opts, index=f_def, label_visibility="collapsed")
     
     d_opts = ["選択なし", "短距離", "中距離", "長距離"]
@@ -175,7 +184,6 @@ for i in range(1, 19):
         for cond in set([sel_track, sel_style, sel_frame, sel_dist, sel_plus, sel_minus]):
             if cond in factors:
                 val = factors[cond]
-                # 【判定変更】前5走に33秒台のキレ味を持つ馬、または川田騎手のG1長距離マイナス免除
                 if val < 0:
                     if l3f <= 33.9:
                         val = 0.0
@@ -183,7 +191,17 @@ for i in range(1, 19):
                         val = 0.0
                 modifier += val
                 
-        # 入力された父馬の名前から部分一致で自動加点
+        # 【🆕 2024-2026G1結果に基づく馬番・枠順バイアスロジック】
+        # ダービー以降の主要G1舞台（秋天・JC・有馬のコース）における補正
+        if sel_course in ["東京芝2000m", "東京芝2400m", "中山芝2500m"]:
+            if sel_frame == "内枠":
+                modifier += 0.10  # 1桁馬番＆内立ち回りの圧倒的バイアスを加点
+            elif sel_frame == "外枠":
+                # キレ味が抜群（33.9秒以下）の馬でなければ、外枠ロス分のペナルティ
+                if l3f > 33.9:
+                    modifier -= 0.05
+        
+        # 血統自動加点
         if sire != "":
             is_good_blood = False
             for target in good_blood_list:
@@ -193,7 +211,7 @@ for i in range(1, 19):
             if is_good_blood:
                 modifier += 0.10
             
-        # 【判定変更】過去5走で最速3Fが34.5s以下を出せる優秀な持続力があり、今回逃げ・先行する馬への加点
+        # 優秀持続力×先行馬コンボ
         if (sel_style in ["逃げ", "先行"]) and (l3f <= 34.5):
             modifier += 0.15
         else:
