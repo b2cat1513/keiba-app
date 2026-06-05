@@ -3,67 +3,82 @@ import pandas as pd
 import json
 from streamlit.components.v1 import html
 
-# --- [新ジョッキー事典・完全数値化マスターデータ] ---
+# --- [新ジョッキー事典・大幅拡充マスターデータ（50名超）] ---
 JOCKEY_MASTER = {
-    "C.ルメール": {"base": 1.30, "factors": {"芝": 0.05, "ダート": -0.05, "差し": 0.05, "内枠": -0.05, "外枠": 0.05, "短距離": -0.05, "長距離": 0.05, "東京": 0.15, "芝2400以上": 0.15, "重賞8枠": 0.15, "中山": -0.15, "芝道悪": -0.15}, "note": "芝2400以上・東京・重賞8枠◎。中山・芝道悪×"},
-    "川田将雅": {"base": 1.30, "factors": {"芝": -0.05, "先行": -0.05, "長距離": -0.05, "芝1枠": 0.15, "小回り2000": 0.15, "交流重賞": 0.15}, "note": "芝1枠・小回り2000・交流重賞◎。長距離はG1なら割引なし"},
-    "戸崎圭太": {"base": 1.20, "factors": {"内枠": -0.05, "短距離": -0.05, "馬群": -0.15, "前走ルメール": 0.15, "ダート外枠": 0.15, "東京1600": 0.15, "中山1600": 0.15, "東京2500": 0.15, "重賞": 0.15}, "note": "前走ルメール・マイル〜2500重賞◎。馬群×注意"},
-    "坂井瑠星": {"base": 1.25, "factors": {"先行": -0.05, "内枠": 0.05, "外枠": -0.05, "ダート重賞": 0.15, "欧州血統": 0.15, "前走古川奈": 0.05}, "note": "ダート重賞・欧州血統◎。内枠○、外枠・先行は少し割引"},
-    "横山武史": {"base": 1.20, "factors": {"先行": -0.05, "内枠": 0.05, "外枠": -0.05, "長距離": -0.05, "中山重賞": 0.15, "持久力戦": 0.15, "マイネル": 0.15, "ウイン": 0.15}, "note": "中山重賞・マイネル系◎。内枠○"},
-    "松山弘平": {"base": 1.15, "factors": {"先行": -0.05, "差し": -0.05, "短距離": -0.05, "ダート": 0.15, "新馬戦": 0.15, "前哨戦": 0.15, "マイル重賞": 0.05, "堀厩舎": 0.15, "長距離": 0.05}, "note": "ダート・新馬・堀厩舎◎。大舞台の中長距離も安定傾向"},
-    "武豊": {"base": 1.20, "factors": {"芝": 0.05, "ダート": -0.05, "先行": 0.05, "差し": 0.05, "内枠": -0.05, "外枠": -0.05, "短距離": -0.05, "継続騎乗": 0.15, "人気薄": 0.15, "逃げ": 0.05, "追い込み": 0.05, "距離延長": 0.15, "ダート上級": 0.05}, "note": "継続・人気薄・距離延長◎。極端な脚質○"},
-    "岩田望来": {"base": 1.10, "factors": {"芝": -0.05, "ダート": -0.05, "短距離": -0.05, "長距離": -0.05, "マイル以下の差し": 0.15, "乗り替わり": 0.15, "父から乗り替わり": 0.15}, "note": "乗り替わり・マイル以下の差し◎"},
-    "西村淳也": {"base": 1.10, "factors": {"芝": 0.05, "ダート": -0.05, "先行": -0.05, "差し": 0.05, "内枠": -0.05, "長距離": -0.05, "京都芝": 0.15, "ロードカナロア産駒": 0.15, "スタートセンス": 0.05}, "note": "京都芝・カナロア産駒◎。差し○"},
-    "団野大成": {"base": 1.10, "factors": {"先行": -0.05, "差し": -0.05, "短距離重賞": 0.15, "人気薄乗替": 0.15, "芝の荒れ馬場": 0.15}, "note": "短距離重賞・荒れ馬場・人気薄乗り替わり◎"},
-    "菅原明良": {"base": 1.10, "factors": {"芝": 0.05, "ダート": 0.05, "先行": 0.05, "差し": -0.05, "長距離": -0.05, "中長距離戦": 0.05, "継続騎乗": 0.05, "注目馬": 0.15}, "note": "注目馬◎。芝ダ先行○"},
-    "鮫島克駿": {"base": 1.05, "factors": {"芝": -0.05, "先行": 0.05, "差し": 0.05, "内枠": -0.05, "イン突き": 0.15, "中長距離": 0.15, "ダート外枠": 0.15, "リズム重視": 0.15}, "note": "イン突き・中長距離・ダート外枠◎"},
-    "斉藤新": {"base": 1.05, "factors": {"芝": 0.05, "短距離": -0.05, "長距離": -0.05, "外枠": 0.15, "逃げ": 0.15, "芝特別戦": 0.15}, "note": "外枠・逃げ・特別戦◎"},
-    "佐々木大輔": {"base": 1.10, "factors": {"芝": 0.05, "先行": 0.05, "長距離": -0.05, "芝内枠": 0.15, "馬場読み": 0.15, "立ち回り": 0.15, "外枠": -0.15}, "note": "芝内枠・立ち回り◎。外枠×"},
-    "吉村誠之助": {"base": 1.10, "factors": {"芝": -0.05, "先行": -0.05, "差し": 0.05, "イン突き": 0.15, "大型馬": 0.15, "上級条件": 0.15, "ダート": -0.15}, "note": "イン差し・大型馬・上級条件◎。ダート×"},
-    "高杉吏麒": {"base": 1.10, "factors": {"芝": 0.05, "先行": 0.05, "長距離": -0.05, "自在性": 0.15, "スタート": 0.15, "ダート内枠": 0.15, "芝中距離以上": 0.15, "外枠": -0.15}, "note": "スタート・ダート内枠・中距離以上◎。外枠×"},
-    "田口貫太": {"base": 1.05, "factors": {"芝": -0.05, "先行": 0.05, "先行型": 0.05, "ダートの人気馬": 0.15, "重賞": 0.15, "芝1枠": 0.15, "ダートの差し": -0.15}, "note": "ダート人気・重賞・芝1枠◎。ダート差し×"},
-    "菊沢一樹": {"base": 1.05, "factors": {"芝": -0.05, "先行": 0.05, "内枠": -0.05, "外枠": 0.05, "短距離": -0.05, "頭脳派": 0.15, "差し": 0.15, "直線競馬": 0.15, "特別戦": 0.15}, "note": "頭脳派差し・直線競馬・特別戦◎"},
-    "荻野極": {"base": 1.05, "factors": {"芝": -0.05, "ダート": -0.05, "短距離": -0.05, "芝内枠": 0.15, "大型馬": 0.15, "ノースヒルズ": 0.15, "鹿戸厩舎": 0.15, "先行": -0.15}, "note": "内枠大型・ノースヒルズ◎。先行×"},
-    "横山典弘": {"base": 1.15, "factors": {"芝": 0.05, "ダート": -0.05, "先行": 0.05, "外枠": -0.05, "短距離": -0.05, "重賞": 0.15, "芝内枠": 0.15, "継続騎乗": 0.15, "馬ファースト": 0.15}, "note": "重賞・内枠・継続◎。馬ファースト"},
-    "岩田康誠": {"base": 1.15, "factors": {"芝": -0.05, "内枠": -0.05, "外枠": -0.05, "短距離": -0.05, "重賞": 0.15, "継続騎乗": 0.15, "イン突き": 0.15, "自在系": 0.15, "芝1枠": -0.05}, "note": "重賞・継続・イン突き◎"},
-    "北村友一": {"base": 1.10, "factors": {"芝": -0.05, "ダート": -0.05, "先行": 0.05, "内枠": 0.05, "短距離": -0.05, "長距離": 0.05, "人薄": 0.05, "芝8枠": 0.15, "差し馬": 0.15, "中長距離戦": 0.15}, "note": "芝8枠・差し・中長距離◎"},
-    "田辺裕信": {"base": 1.10, "factors": {"芝": 0.05, "ダート": -0.05, "先行": 0.05, "差し": -0.05, "長距離": 0.05, "乗替": 0.05, "開催後半芝": 0.15, "超リズム重視": 0.15, "長距離戦": 0.15, "短距離重賞": -0.05}, "note": "開催後半芝・長距離戦◎"},
-    "横山和生": {"base": 1.15, "factors": {"芝": -0.05, "ダート": -0.05, "先行": -0.05, "外枠": -0.05, "乗替": 0.05, "ダート重賞": 0.15, "小回り": 0.05, "長距離戦": 0.05}, "note": "ダート重賞◎。小回り・長距離○"},
-    "J.モレイラ": {"base": 1.35, "factors": {"芝": -0.05, "ダート": 0.05, "先行": 0.05, "差し": 0.05, "長距離": 0.05, "乗替": 0.05, "注目": 0.05, "中長距離": 0.15, "ダート外枠": 0.15}, "note": "中長距離・ダート外枠◎"},
-    "D.レーン": {"base": 1.30, "factors": {"芝": 0.05, "ダート": -0.05, "内枠": -0.05, "外枠": -0.05, "乗替": 0.05, "重賞": 0.15, "芝中長距離": 0.15, "新馬戦": 0.05, "欧州血統": 0.05}, "note": "重賞・芝中長距離◎"},
-    "R.キング": {"base": 1.25, "factors": {"芝": -0.05, "外枠": 0.05, "乗替": 0.05, "注目": 0.05, "スタート": 0.15, "妙味": 0.15, "特別戦": 0.15}, "note": "スタート・妙味・特別戦◎"},
-    "丹内祐次": {"base": 1.10, "factors": {"芝": -0.05, "ダート": -0.05, "先行": 0.05, "短距離": -0.05, "ローカル芝": 0.15, "馬場読み": 0.15, "固め打ち": 0.15, "頭脳派": 0.15}, "note": "ローカル芝・馬場読み・頭脳派◎"},
-    "浜中俊": {"base": 1.05, "factors": {"芝": -0.05, "ダート": -0.05, "先行": -0.05, "差し": -0.05, "芝短~中距離": 0.15, "1番人気": 0.15}, "note": "芝短〜中距離・1番人気◎"},
-    "藤岡佑介": {"base": 1.10, "factors": {"芝": -0.05, "ダート": -0.05, "先行": -0.05, "短距離": -0.05, "長距離": -0.05, "人薄": 0.05, "自在性": 0.15, "妙味": 0.15, "重賞の人気馬": -0.15, "勝負強さ": -0.05}, "note": "自在性・妙味◎。重賞人気馬×"},
-    "津村明秀": {"base": 1.05, "factors": {"芝": -0.05, "先行": -0.05, "短距離": -0.05, "長距離": -0.05, "直線競馬": 0.15, "小回り": 0.05, "差し馬マクリ": 0.05, "伸びしろ": -0.05}, "note": "直線競馬◎。小回り・マクリ○"},
-    "三浦皇成": {"base": 1.05, "factors": {"芝": -0.05, "先行": -0.05, "内枠": -0.05, "外枠": -0.05, "1番人気": 0.15, "下級条件": 0.15, "重賞": -0.15}, "note": "下級条件・1番人気◎。重賞×"},
-    "大野拓哉": {"base": 1.05, "factors": {"芝": -0.05, "先行": 0.05, "外枠": 0.05, "短距離": -0.05, "長距離": -0.05, "人薄": 0.05, "ダートの外枠": 0.15, "差し＆追い込み": 0.15, "人気馬": -0.15}, "note": "ダート外枠・差し追込◎。人気馬×"},
-    "石川裕紀人": {"base": 1.10, "factors": {"芝": -0.05, "ダート": -0.05, "先行": 0.05, "短距離": -0.05, "芝1枠": 0.15, "小回り": 0.15, "積極策": 0.15, "マイネル": 0.15}, "note": "芝1枠・小回り・積極策◎"},
-    "菱田裕二": {"base": 1.05, "factors": {"芝": -0.05, "ダート": -0.05, "先行": -0.05, "差し": -0.05, "テーオー": 0.15, "中長距離": 0.15}, "note": "テーオー・中長距離◎"},
-    "池添謙一": {"base": 1.15, "factors": {"芝": 0.05, "ダート": -0.05, "長距離": -0.05, "大舞台＆重賞": 0.15, "差し＆追い込み": 0.15, "下級条件": -0.05}, "note": "大舞台重賞・差し追込◎"},
-    "幸英明": {"base": 1.05, "factors": {"芝": -0.05, "先行": -0.05, "ダート": 0.15, "牡馬のタフ条件": 0.15, "数打ちゃ当たる": 0.05}, "note": "ダート・牡馬タフ条件◎"},
-    "M.デムーロ": {"base": 1.15, "factors": {"芝": -0.05, "ダート": -0.05, "先行": -0.05, "長距離": -0.05, "大舞台＆重賞": 0.15, "マクリ追い込み": 0.15, "外枠": 0.05}, "note": "大舞台重賞・マクリ追込◎"},
-    "その他（データなし）": {"base": 1.00, "factors": {}, "note": "特記データのない騎手です。一律基準値1.00で計算します。"}
+    # 栗東（関西）所属・主要
+    "C.ルメール": {"base": 1.30, "factors": {"芝": 0.05, "ダート": -0.05, "差し": 0.05, "内枠": -0.05, "外枠": 0.05, "長距離": 0.05, "東京": 0.15, "芝2400以上": 0.15, "重賞8枠": 0.15, "中山": -0.15}, "note": "東京・長距離・重賞8枠◎"},
+    "川田将雅": {"base": 1.30, "factors": {"芝1枠": 0.15, "小回り2000": 0.15, "交流重賞": 0.15, "長距離": -0.05}, "note": "芝1枠・小回り・交流重賞◎"},
+    "坂井瑠星": {"base": 1.25, "factors": {"先行": -0.05, "内枠": 0.05, "外枠": -0.05, "ダート重賞": 0.15, "欧州血統": 0.15}, "note": "逃げ先行・ダート重賞◎"},
+    "武豊": {"base": 1.20, "factors": {"芝": 0.05, "継続騎乗": 0.15, "人気薄": 0.15, "距離延長": 0.15}, "note": "継続騎乗・大舞台での一発◎"},
+    "松山弘平": {"base": 1.15, "factors": {"ダート": 0.15, "新馬戦": 0.15, "前哨戦": 0.15, "堀厩舎": 0.15}, "note": "ダート・新馬戦・堀厩舎◎"},
+    "岩田望来": {"base": 1.10, "factors": {"マイル以下の差し": 0.15, "乗り替わり": 0.15}, "note": "乗り替わり・マイル以下の差し○"},
+    "西村淳也": {"base": 1.10, "factors": {"京都芝": 0.15, "ロードカナロア産駒": 0.15}, "note": "京都芝・カナロア産駒◎"},
+    "団野大成": {"base": 1.10, "factors": {"短距離重賞": 0.15, "荒れ馬場": 0.15}, "note": "短距離重賞・荒れた芝◎"},
+    "鮫島克駿": {"base": 1.05, "factors": {"イン突き": 0.15, "中長距離": 0.15, "ダート外枠": 0.15}, "note": "好位イン突き・中長距離◎"},
+    "藤岡佑介": {"base": 1.10, "factors": {"自在性": 0.15, "妙味": 0.15, "重賞の人気馬": -0.15}, "note": "展開読み◎。重賞人気馬は割引"},
+    "幸英明": {"base": 1.05, "factors": {"ダート": 0.15, "牡馬のタフ条件": 0.15}, "note": "タフなダート戦・牡馬◎"},
+    "池添謙一": {"base": 1.15, "factors": {"大舞台＆重賞": 0.15, "差し＆追い込み": 0.15}, "note": "G1・重賞での勝負強さ◎"},
+    "岩田康誠": {"base": 1.15, "factors": {"重賞": 0.15, "イン突き": 0.15}, "note": "内枠からのイン突き強襲◎"},
+    "M.デムーロ": {"base": 1.15, "factors": {"大舞台＆重賞": 0.15, "マクリ追い込み": 0.15}, "note": "出遅れケア必要も大舞台マクリ◎"},
+    "浜中俊": {"base": 1.05, "factors": {"芝短~中距離": 0.15, "1番人気": 0.15}, "note": "芝の短〜中距離・人気馬○"},
+    "北村友一": {"base": 1.10, "factors": {"芝8枠": 0.15, "中長距離戦": 0.15}, "note": "外枠からの差し・中長距離○"},
+    "横山典弘": {"base": 1.15, "factors": {"芝内枠": 0.15, "継続騎乗": 0.15, "馬ファースト": 0.15}, "note": "ポツン注意も内枠・継続◎"},
+    "和田竜二": {"base": 1.05, "factors": {"タフな泥臭い展開": 0.15, "ズブい馬": 0.15}, "note": "追えるベテラン。タフな消耗戦◎"},
+    "古川吉洋": {"base": 1.00, "factors": {"先行": 0.05, "穴馬": 0.10}, "note": "ベテランの巧みなペースメイク"},
+    "小沢大仁": {"base": 1.05, "factors": {"ダート": 0.05, "ローカル": 0.05}, "note": "若手の実力派、ローカルで狙い目"},
+    "角田大河": {"base": 1.00, "factors": {"減量": 0.05}, "note": "積極的な逃げ・先行に魅力"},
+    "今村聖奈": {"base": 1.00, "factors": {"芝の軽量馬": 0.10}, "note": "軽い斤量活かした前残り注意"},
+    "永島まなみ": {"base": 1.05, "factors": {"ダート逃げ": 0.15, "ローカル先行": 0.10}, "note": "ダートの逃げ・先行は超強力"},
+    "田口貫太": {"base": 1.05, "factors": {"ダートの人気馬": 0.15, "重賞": 0.15, "芝1枠": 0.15}, "note": "乗れてる若手。ダート人気馬◎"},
+    "吉村誠之助": {"base": 1.10, "factors": {"イン突き": 0.15, "大型馬": 0.15}, "note": "期待のルーキー。イン差し○"},
+    "高杉吏麒": {"base": 1.10, "factors": {"スタート": 0.15, "ダート内枠": 0.15}, "note": "スタート巧者。ダート内枠○"},
+
+    # 美浦（関東）所属・主要
+    "戸崎圭太": {"base": 1.20, "factors": {"前走ルメール": 0.15, "ダート外枠": 0.15, "東京1600": 0.15, "重賞": 0.15}, "note": "東京マイル・前走ルメール◎"},
+    "横山武史": {"base": 1.20, "factors": {"中山重賞": 0.15, "持久力戦": 0.15, "マイネル": 0.15}, "note": "中山重賞・先行持久力戦◎"},
+    "菅原明良": {"base": 1.10, "factors": {"注目馬": 0.15, "中長距離戦": 0.05}, "note": "G1初制覇でノる大器。穴も明ける"},
+    "佐々木大輔": {"base": 1.10, "factors": {"芝内枠": 0.15, "馬場読み": 0.15}, "note": "若手屈指の立ち回り。内枠◎"},
+    "丹内祐次": {"base": 1.10, "factors": {"ローカル芝": 0.15, "馬場読み": 0.15}, "note": "ローカル（函館・小倉等）の鬼"},
+    "田辺裕信": {"base": 1.10, "factors": {"開催後半芝": 0.15, "長距離戦": 0.15}, "note": "人気薄の大胆な逃げ・ポツン差し注意"},
+    "横山和生": {"base": 1.15, "factors": {"ダート重賞": 0.15, "長距離戦": 0.05}, "note": "タイトルホルダー等の長距離・ダート重賞○"},
+    "津村明秀": {"base": 1.05, "factors": {"直線競馬": 0.15, "小回り": 0.05}, "note": "新潟直線◎。重賞でも一撃あり"},
+    "三浦皇成": {"base": 1.05, "factors": {"1番人気": 0.15, "下級条件": 0.15, "重賞": -0.15}, "note": "平場の1番人気は堅実。重賞は割引"},
+    "大野拓哉": {"base": 1.05, "factors": {"ダートの外枠": 0.15, "差し＆追い込み": 0.15}, "note": "ダート外枠の追い込み穴馬で激走"},
+    "石川裕紀人": {"base": 1.10, "factors": {"芝1枠": 0.15, "積極策": 0.15}, "note": "大舞台での思い切った先行策魅力"},
+    "菱田裕二": {"base": 1.05, "factors": {"テーオー": 0.15, "中長距離": 0.15}, "note": "テーオーの馬・中長距離○"},
+    "北村宏司": {"base": 1.05, "factors": {"東京芝": 0.10, "イン立ち回り": 0.10}, "note": "ベテランの安定感。イン立ち回り○"},
+    "丸山元気": {"base": 1.00, "factors": {"穴馬": 0.10}, "note": "時折見せる鋭い差し込みに警戒"},
+    "内田博幸": {"base": 1.05, "factors": {"タフな馬場": 0.10, "逃げ先行": 0.05}, "note": "剛腕健在。ダートや荒れ馬場○"},
+    "柴田善臣": {"base": 1.00, "factors": {"ベテランの味": 0.10}, "note": "最年長大ベテラン。無理のない誘導"},
+    "木幡巧也": {"base": 1.00, "factors": {"ダート先行": 0.05}, "note": "ダートでの積極策に定評"},
+    "石橋脩": {"base": 1.05, "factors": {"堀厩舎": 0.10, "先行": 0.05}, "note": "堀厩舎の人気薄などで不気味さあり"},
+
+    # 外国人・地方・その他
+    "J.モレイラ": {"base": 1.35, "factors": {"中長距離": 0.15, "ダート外枠": 0.15}, "note": "マジックマン。乗れば確勝級"},
+    "D.レーン": {"base": 1.30, "factors": {"重賞": 0.15, "芝中長距離": 0.15}, "note": "追って伸びる。日本の馬場への適性抜群"},
+    "R.キング": {"base": 1.25, "factors": {"スタート": 0.15, "特別戦": 0.15}, "note": "抜群のスタートセンスと好位キープ"},
+    "短期免許外国人": {"base": 1.20, "factors": {"重賞": 0.10}, "note": "有力馬配置が多く一律高評価"},
+    "地方所属騎手": {"base": 1.05, "factors": {"ダート": 0.10}, "note": "交流重賞やダート戦での地方リーディング級"},
+    
+    # 手入力・データなし用
+    "その他（自由手入力）": {"base": 1.00, "factors": {}, "note": "リスト外の騎手です。右の入力欄に名前を記入してください。"}
 }
 
-# --- [コース事典・マスタデータ] ---
 COURSE_MASTER = {
-    "東京芝1600m": {"note": "2月内枠、2月以外外枠。同距離＆距離短縮馬、重賞は差し・追い込み有利。ロードカナロア/エピファネイア/モーリス/ドゥラメンテ/イスラボニータ産駒○", "track": "芝", "dist": "中距離", "good_lineage": ["ロードカナロア", "エピファネイア", "モーリス", "ドゥラメンテ", "イスラボニータ", "ディープ", "ワールドプレミア"]},
-    "東京芝2000m": {"note": "【2024-2026G1傾向: 1桁馬番(①〜⑧)が超強力】1枠有利。前走同距離＆距離短縮が好走。エピファネイア/モーリス/キズナ/キタサンブラック○", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "モーリス", "キズナ", "キタサンブラック", "ロードカナロア"]},
-    "東京芝2400m": {"note": "【2024-2026G1傾向: ダービー・JCともに内〜中枠の立ち回り重視】差し・追い込みだけでなく前走速い脚を使った先行も健闘。キタサンブラック/ドゥラメンテ/ハービンジャー○", "track": "芝", "dist": "長距離", "good_lineage": ["キタサンブラック", "ドゥラメンテ", "ハービンジャー", "ルーラーシップ", "ディープ", "ワールドプレミア"]},
-    "東京ダート1600m": {"note": "外枠有利。前走同距離＆距離短縮馬。ヘニーヒューズ/ドレフォン（逃げ先行）/ロードカナロア/ドゥラメンテ○。馬体重480kg以上○", "track": "ダート", "dist": "中距離", "good_lineage": ["ヘニーヒューズ", "ドレフォン", "ロードカナロア", "ドゥラメンテ"]},
-    "中山芝2000m": {"note": "皐月賞はマイル〜1800m重賞実績馬○。荒れ馬場は外差し○。エピファネイア/ハービンジャー/モーリス/キタサンブラック○", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "ハービンジャー", "モーリス", "キタサンブラック", "ドゥラメンテ"]},
-    "中山芝2500m": {"note": "【2024-2026G1傾向: 有馬記念は1桁馬番の勝率突出】高速馬場は内枠、荒れ馬場は外枠有利。エピファネイア/キズナ/ドゥラメンテ/ゴールドシップ○", "track": "芝", "dist": "長距離", "good_lineage": ["エピファネイア", "キズナ", "ドゥラメンテ", "ゴールドシップ", "ジャスタウェイ", "ディープ", "ワールドプレミア"]},
-    "阪神芝1600m": {"note": "内枠有利. 高速馬場は外差し、同距離＆距離短縮馬○。ロードカナロア/エピファネイア/キズナ産駒○", "track": "芝", "dist": "中距離", "good_lineage": ["ロードカナロア", "エピファネイア", "キズナ"]},
-    "阪神芝2000m": {"note": "外枠の先行馬有利。大阪杯は内差し。ドゥラメンテ/ルーラーシップ/キズナ産駒○", "track": "芝", "dist": "中距離", "good_lineage": ["ドゥラメンテ", "ルーラーシップ", "キズナ"]}
+    "東京芝1600m": {"note": "重賞は差し・追い込み有利。ロードカナロア/エピファネイア/モーリス産駒○", "track": "芝", "dist": "中距離", "good_lineage": ["ロードカナロア", "エピファネイア", "モーリス"]},
+    "東京芝2000m": {"note": "【2024-2026G1傾向: 1桁馬番(①〜⑧)が超強力】1枠有利。前走同距離＆距離短縮が好走。", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "モーリス", "キズナ", "キタサンブラック"]},
+    "東京芝2400m": {"note": "【2024-2026G1傾向: 内〜中枠の立ち回り重視】前走速い脚を使った先行・差しが健闘。", "track": "芝", "dist": "長距離", "good_lineage": ["キタサンブラック", "ドゥラメンテ", "ハービンジャー"]},
+    "東京ダート1600m": {"note": "外枠有利。ヘニーヒューズ/ドレフォン○。馬体重480kg以上○", "track": "ダート", "dist": "中距離", "good_lineage": ["ヘニーヒューズ", "ドレフォン", "ロードカナロア"]},
+    "中山芝2000m": {"note": "荒れ馬場は外差し○。エピファネイア/ハービンジャー/モーリス○", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "ハービンジャー", "モーリス"]},
+    "中山芝2500m": {"note": "【2024-2026G1傾向: 有馬記念は1桁馬番の勝率突出】高速馬場は内枠、荒れ馬場は外枠有利。", "track": "芝", "dist": "長距離", "good_lineage": ["エピファネイア", "キズナ", "ドゥラメンテ", "ゴールドシップ"]},
+    "阪神芝1600m": {"note": "内枠有利。高速馬場は外差し、ロードカナロア/エピファネイア産駒○", "track": "芝", "dist": "中距離", "good_lineage": ["ロードカナロア", "エピファネイア", "キズナ"]},
+    "阪神芝2000m": {"note": "外枠の先行馬有利。大阪杯は内差し。ドゥラメンテ/ルーラーシップ○", "track": "芝", "dist": "中距離", "good_lineage": ["ドゥラメンテ", "ルーラーシップ", "キズナ"]}
 }
 
 st.set_page_config(page_title="競馬予想・ジョッキー＆コース事典完全版", layout="wide")
-st.title("🏇 競馬予想・ジョッキー＆コース事典 【G1データバイアス統合版】")
+st.title("🏇 競馬予想・ジョッキー＆コース事典 【完全騎手網羅＋幅広プルダウン版】")
 
-# --- 💾 ブラウザ一時保存用の仕組み ---
-if "storage_trigger" not in st.session_state:
-    st.session_state["storage_trigger"] = ""
+# --- 💾 データ読み込みロジック ---
 if "loaded_data" not in st.session_state:
     st.session_state["loaded_data"] = None
 
@@ -90,7 +105,6 @@ st.divider()
 
 # --- 📋 出馬表入力エリア ---
 st.write("### 📝 出馬表データ入力（18頭フル対応）")
-st.caption(f"現在の自動判定条件 ➔ 馬場: **{auto_track}** | 距離: **{auto_dist}**")
 
 save_cols = st.columns([2, 2, 8])
 with save_cols[0]:
@@ -99,9 +113,11 @@ with save_cols[1]:
     load_clicked = st.button("📤 保存したデータを読み込む", use_container_width=True, type="secondary")
 
 calculated_results = []
-c_widths = [1, 2.5, 1, 1, 1.2, 2.3, 3.5, 1, 1, 1, 1, 1, 1, 1]
+
+# 🔎 プルダウンの文字が切れないよう、カラム幅の比率を調整（横幅を広く確保）
+c_widths = [0.8, 1.8, 0.8, 0.8, 1.2, 1.8, 2.5, 1.8, 1.2, 1.2, 1.2, 1.2, 1.2, 1.2, 1.0]
 cols = st.columns(c_widths)
-headers = ["馬番", "馬名", "人気", "指数", "前5走最速3F", "父馬(血統)", "騎手選択", "①馬場", "②想定脚質", "③枠順", "④距離", "⑤他プラス", "⑥他マイナス", "スコア"]
+headers = ["馬番", "馬名", "人気", "指数", "前5走3F", "父馬", "騎手（選択）", "手入力(その他時)", "①馬場", "②脚質", "③枠順", "④距離", "⑤プラス", "⑥マイナス", "スコア"]
 for col, h in zip(cols, headers):
     col.write(f"**{h}**")
 
@@ -117,42 +133,42 @@ for i in range(1, 19):
     pop = c[2].number_input(f"pop_{i}", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), label_visibility="collapsed")
     idx = c[3].number_input(f"idx_{i}", value=float(s_row.get("idx", 0.0)), step=0.1, label_visibility="collapsed")
     l3f = c[4].number_input(f"l3f_{i}", value=float(s_row.get("l3f", 35.0)), step=0.1, label_visibility="collapsed")
-    sire = c[5].text_input(f"sire_{i}", value=s_row.get("sire", ""), label_visibility="collapsed", placeholder="父馬の名前")
+    sire = c[5].text_input(f"sire_{i}", value=s_row.get("sire", ""), label_visibility="collapsed", placeholder="父馬")
     
-    raw_jock_list = [k for k in JOCKEY_MASTER.keys() if k != "その他（データなし）"]
-    jock_list = sorted(raw_jock_list) + ["その他（データなし）"]
-    s_jock = s_row.get("jock", "(未選択)")
+    # 騎手名簿のソート
+    jock_list = [k for k in JOCKEY_MASTER.keys() if k != "その他（自由手入力）"]
+    jock_list = sorted(jock_list) + ["その他（自由手入力）"]
+    s_jock = s_row.get("jock", "その他（自由手入力）" if s_row.get("custom_jock") else "(未選択)")
     j_idx = (["(未選択)"] + jock_list).index(s_jock) if s_jock in (["(未選択)"] + jock_list) else 0
     jock = c[6].selectbox(f"jock_{i}", ["(未選択)"] + jock_list, index=j_idx, label_visibility="collapsed")
     
+    # ✍️ 「その他」を選んだ場合の自由手入力欄
+    custom_jock = ""
+    if jock == "その他（自由手入力）":
+        custom_jock = c[7].text_input(f"custom_jock_{i}", value=s_row.get("custom_jock", ""), label_visibility="collapsed", placeholder="騎手名を入力")
+    else:
+        c[7].write("---") # 通常時はスキップ
+        
     t_opts = ["選択なし", "芝", "ダート"]
     t_def = t_opts.index(s_row.get("sel_track")) if s_row.get("sel_track") in t_opts else (t_opts.index(auto_track) if auto_track in t_opts else 0)
-    sel_track = c[7].selectbox(f"p1_{i}", t_opts, index=t_def, label_visibility="collapsed")
+    sel_track = c[8].selectbox(f"p1_{i}", t_opts, index=t_def, label_visibility="collapsed")
     
     sty_opts = ["選択なし", "逃げ", "先行", "差し", "追い込み"]
     sty_def = sty_opts.index(s_row.get("sel_style")) if s_row.get("sel_style") in sty_opts else 0
-    sel_style = c[8].selectbox(f"p2_{i}", sty_opts, index=sty_def, label_visibility="collapsed")
+    sel_style = c[9].selectbox(f"p2_{i}", sty_opts, index=sty_def, label_visibility="collapsed")
     
     f_opts = ["選択なし", "内枠", "外枠"]
-    
-    # 【G1データ連動】馬番から自動的に枠順の初期選択をアシスト
     try:
         int_num = int(num)
-        if int_num <= 8:
-            f_def_idx = 1 # 内枠
-        elif int_num >= 13:
-            f_def_idx = 2 # 外枠
-        else:
-            f_def_idx = 0
+        f_def_idx = 1 if int_num <= 8 else (2 if int_num >= 13 else 0)
     except:
         f_def_idx = 0
-        
     f_def = f_opts.index(s_row.get("sel_frame")) if s_row.get("sel_frame") in f_opts else f_def_idx
-    sel_frame = c[9].selectbox(f"p3_{i}", f_opts, index=f_def, label_visibility="collapsed")
+    sel_frame = c[10].selectbox(f"p3_{i}", f_opts, index=f_def, label_visibility="collapsed")
     
     d_opts = ["選択なし", "短距離", "中距離", "長距離"]
     d_def = d_opts.index(s_row.get("sel_dist")) if s_row.get("sel_dist") in d_opts else (d_opts.index(auto_dist) if auto_dist in d_opts else 0)
-    sel_dist = c[10].selectbox(f"p4_{i}", d_opts, index=d_def, label_visibility="collapsed")
+    sel_dist = c[11].selectbox(f"p4_{i}", d_opts, index=d_def, label_visibility="collapsed")
     
     plus_opts, minus_opts = ["選択なし"], ["選択なし"]
     if jock in JOCKEY_MASTER:
@@ -162,103 +178,69 @@ for i in range(1, 19):
                 elif v < 0: minus_opts.append(k)
                 
     p_def = plus_opts.index(s_row.get("sel_plus")) if s_row.get("sel_plus") in plus_opts else 0
-    sel_plus = c[11].selectbox(f"p5_{i}", plus_opts, index=p_def, label_visibility="collapsed")
+    sel_plus = c[12].selectbox(f"p5_{i}", plus_opts, index=p_def, label_visibility="collapsed")
     
     m_def = minus_opts.index(s_row.get("sel_minus")) if s_row.get("sel_minus") in minus_opts else 0
-    sel_minus = c[12].selectbox(f"p6_{i}", minus_opts, index=m_def, label_visibility="collapsed")
+    sel_minus = c[13].selectbox(f"p6_{i}", minus_opts, index=m_def, label_visibility="collapsed")
     
     current_inputs["rows"][str(i)] = {
-        "num": num, "name": name, "pop": pop, "idx": idx, "l3f": l3f, "sire": sire, "jock": jock,
+        "num": num, "name": name, "pop": pop, "idx": idx, "l3f": l3f, "sire": sire, "jock": jock, "custom_jock": custom_jock,
         "sel_track": sel_track, "sel_style": sel_style, "sel_frame": sel_frame,
         "sel_dist": sel_dist, "sel_plus": sel_plus, "sel_minus": sel_minus
     }
     
-    # スコア計算
+    # --- スコア計算ロジック ---
     score = 0.0
-    if jock in JOCKEY_MASTER:
-        j_data = JOCKEY_MASTER[jock]
+    if jock != "(未選択)":
+        j_data = JOCKEY_MASTER.get(jock, JOCKEY_MASTER["その他（自由手入力）"])
         modifier = j_data["base"]
         factors = j_data["factors"]
         
-        # 基本因子の計算
         for cond in set([sel_track, sel_style, sel_frame, sel_dist, sel_plus, sel_minus]):
             if cond in factors:
                 val = factors[cond]
-                if val < 0:
-                    if l3f <= 33.9:
-                        val = 0.0
-                    elif jock == "川田将雅" and sel_dist == "長距離" and sel_course in ["東京芝2400m", "中山芝2500m"]:
-                        val = 0.0
+                if val < 0 and l3f <= 33.9: val = 0.0
                 modifier += val
                 
-        # 【🆕 2024-2026G1結果に基づく馬番・枠順バイアスロジック】
-        # ダービー以降の主要G1舞台（秋天・JC・有馬のコース）における補正
+        # 2024-2026G1バイアスロジック
         if sel_course in ["東京芝2000m", "東京芝2400m", "中山芝2500m"]:
-            if sel_frame == "内枠":
-                modifier += 0.10  # 1桁馬番＆内立ち回りの圧倒的バイアスを加点
-            elif sel_frame == "外枠":
-                # キレ味が抜群（33.9秒以下）の馬でなければ、外枠ロス分のペナルティ
-                if l3f > 33.9:
-                    modifier -= 0.05
+            if sel_frame == "内枠": modifier += 0.10
+            elif sel_frame == "外枠" and l3f > 33.9: modifier -= 0.05
         
-        # 血統自動加点
-        if sire != "":
-            is_good_blood = False
-            for target in good_blood_list:
-                if target in sire:
-                    is_good_blood = True
-                    break
-            if is_good_blood:
-                modifier += 0.10
+        # 血統加点
+        if sire != "" and any(target in sire for target in good_blood_list):
+            modifier += 0.10
             
-        # 優秀持続力×先行馬コンボ
+        # 先行コンボ
         if (sel_style in ["逃げ", "先行"]) and (l3f <= 34.5):
             modifier += 0.15
-        else:
-            if l3f <= 34.5 and "差し" in factors: modifier += 0.05
-            if l3f >= 36.5 and "先行" in factors: modifier += 0.05
-        
+            
         score = (idx * modifier) - (pop * 0.7)
         
-    c[13].write(f"**{score:.2f}**")
-    calculated_results.append({"馬番": num, "馬名": name, "スコア": score, "父馬": sire, "騎手": jock if jock != "(未選択)" else "", "戦略メモ": JOCKEY_MASTER.get(jock, {}).get("note", "")})
+    c[14].write(f"**{score:.2f}**")
+    
+    display_jock = custom_jock if jock == "その他（自由手入力）" else (jock if jock != "(未選択)" else "")
+    calculated_results.append({
+        "馬番": num, "馬名": name, "スコア": score, "父馬": sire, "騎手": display_jock, "戦略メモ": j_data.get("note", "")
+    })
 
-# --- JavaScriptによるローカルストレージ処理 ---
+# --- 保存処理等 ---
 if save_clicked:
     json_str = json.dumps(current_inputs, ensure_ascii=False)
-    js_save = f"""
-    <script>
-        localStorage.setItem('keiba_app_data', `{json_str}`);
-        alert('📥 スマホ（ブラウザ）へ一時保存しました！');
-    </script>
-    """
+    js_save = f"<script>localStorage.setItem('keiba_app_data', `{json_str}`); alert('📥 保存しました！');</script>"
     html(js_save, height=0)
 
 if load_clicked:
-    js_load = """
-    <script>
-        var data = localStorage.getItem('keiba_app_data');
-        if (data) {
-            const url = new URL(window.parent.location.href);
-            url.searchParams.set('loaded_json', data);
-            window.parent.location.href = url.toString();
-        } else {
-            alert('⚠️ 保存されたデータが見つかりませんでした。');
-        }
-    </script>
-    """
+    js_load = "<script>var data = localStorage.getItem('keiba_app_data'); if (data) { const url = new URL(window.parent.location.href); url.searchParams.set('loaded_json', data); window.parent.location.href = url.toString(); } else { alert('⚠️ データがありません'); }</script>"
     html(js_load, height=0)
 
 # --- ランキング生成 ---
 st.divider()
-if st.button("🏆 全事典ロジックに基づき、最終予想ランキングを生成", type="primary", use_container_width=True):
+if st.button("🏆 最終予想ランキングを生成", type="primary", use_container_width=True):
     res_df = pd.DataFrame(calculated_results)
     res_df = res_df[res_df["馬名"] != ""].sort_values(by="スコア", ascending=False)
     
     if not res_df.empty:
         st.balloons()
         st.header(f"🎯 本命推奨馬: {res_df.iloc[0]['馬名']} ({res_df.iloc[0]['騎手']})")
-        st.write("### 📊 最終予想スコアボード")
         st.dataframe(res_df[["馬番", "馬名", "父馬", "スコア", "騎手", "戦略メモ"]], use_container_width=True, hide_index=True)
-    else:
-        st.warning("出馬表に馬名が入力されていません。値を入力してからボタンを押してください。")
