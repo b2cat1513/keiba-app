@@ -224,11 +224,35 @@ for i in range(1, 19):
 
 # --- ストレージ管理 ---
 if save_clicked:
+    import urllib.parse
+    # 現在の入力をJSON文字列にしてURLエンコード
     json_str = json.dumps(current_inputs, ensure_ascii=False)
-    html(f"<script>localStorage.setItem('keiba_app_data', `{json_str}`); alert('📥 データを一時保存しました！');</script>", height=0)
+    encoded_json = urllib.parse.quote(json_str)
+    
+    # データを埋め込んだ共有用URLを生成
+    share_url = f"https://keiba-app001.streamlit.app/?loaded_json={encoded_json}"
+    
+    # スマホのクリップボードに強制コピーするJavaScript
+    st.components.v1.html(f"""
+        <script>
+        const url = "{share_url}";
+        navigator.clipboard.writeText(url).then(function() {{
+            alert('📥 スマホ対応URLをコピーしました！\\nメールやメモ帳に貼り付けて保存してください。');
+        }}).catch(function(err) {{
+            // 万が一ブロックされた場合のフォールバック
+            prompt('URLを長押ししてコピーしてください：', url);
+        }});
+        </script>
+    """, height=0)
 
 if load_clicked:
-    html("<script>var data = localStorage.getItem('keiba_app_data'); if (data) { const url = new URL(window.parent.location.href); url.searchParams.set('loaded_json', data); window.parent.location.href = url.toString(); } else { alert('⚠️ データが見つかりません'); }</script>", height=0)
+    # 読み込みボタンが押されたら、自動的にページをリロードしてURLのデータを反映させる
+    st.components.v1.html("""
+        <script>
+        window.parent.location.reload();
+        </script>
+    """, height=0)
+    
 
 # --- ランキング生成 ---
 st.divider()
