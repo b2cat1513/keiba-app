@@ -187,40 +187,43 @@ for i in range(1, 19):
     }
     
     # --- 🧮 スコア計算 ---
-    score = 0.0
-    note_text = "" # 🛠️ 事前初期化でエラーを防止
+    def calculate_final_score(horse_base_score, jockey_name, conditions):
+    """
+    馬の基本スコアにジョッキーの補正を加味して最終スコアを計算する関数。
+    特定のジョッキーによる異常なスコアの跳ね上がり（インフレ）を抑制する仕様。
+    """
+    # 1. ジョッキーマスターからデータの取得（未登録ならその他）
+    jockey_info = JOCKEY_MASTER.get(jockey_name, JOCKEY_MASTER["その他（自由手入力）"])
     
-    if jock != "(未選択)":
-        j_data = JOCKEY_MASTER.get(jock, JOCKEY_MASTER["その他（自由手入力）"])
-        modifier = j_data["base"]
-        factors = j_data["factors"]
-        note_text = j_data.get("note", "")
-        
-        chosen_conditions = set([sel_track, sel_style, sel_frame, sel_dist, sel_plus1, sel_plus2, sel_minus1, sel_minus2])
-        for cond in chosen_conditions:
-            if cond in factors:
-                val = factors[cond]
-                if val < 0 and l3f <= 33.9: val = 0.0
-                modifier += val
+    jockey_base = jockey_info["base"]
+    factors = jockey_info["factors"]
+    
+    # 2. ジョッキー補正値の計算
+    # 補正が累積して跳ね上がりすぎるのを防ぐため、加算上限（キャップ）を設定
+    jockey_modifier = 0.0
+    for condition in conditions:
+        if condition in factors:
+            jockey_modifier += factors[condition]
+            
+    # 例: 加算補正は最大でも +0.20 までに制限する（インフレ防止）
+    jockey_modifier = min(jockey_modifier, 0.20)
+    jockey_modifier = max(jockey_modifier, -0.20) # 減点側も同様
+    
+    # 最終的なジョッキー倍率（例: 1.25 + 0.15 = 1.40）
+    final_jockey_rate = jockey_base + jockey_modifier
+    
+    # 🌟【ここが重要】ジョッキー倍率の影響度を少しマイルドにする（圧縮変換）
+    # 1.35 などの高い倍率をそのまま掛け算すると馬の実力差が吹き飛ぶため、
+    # 影響度をマイルドにする補正（例: 1 + (倍率 - 1) * 0.7）をかけます。
+    mitigated_jockey_rate = 1.0 + (final_jockey_rate - 1.0) * 0.70
+    
+    # 3. 最終スコアの算出
+    # 馬自体の実績や適性のスコア（horse_base_score）のウエイトを高める
+    final_score = horse_base_score * mitigated_jockey_rate
+    
+    return round(final_score, 3)
                 
-        if sel_course in ["東京芝2000m", "東京芝2400m", "中山芝2500m"]:
-            if sel_frame == "内枠": modifier += 0.10
-            elif sel_frame == "外枠" and l3f > 33.9: modifier -= 0.05
         
-        if sire != "" and any(target in sire for target in good_blood_list):
-            modifier += 0.10
-            
-        if (sel_style in ["逃げ", "先行"]) and (l3f <= 34.5):
-            modifier += 0.15
-            
-        score = (idx * modifier) - (pop * 0.7)
-        
-    c[16].write(f"**{score:.2f}**")
-    
-    display_jock = custom_jock if jock == "その他（自由手入力）" else (jock if jock != "(未選択)" else "")
-    calculated_results.append({
-        "馬番": num, "馬name": name, "スコア": score, "父馬": sire, "騎手": display_jock, "戦略メモ": note_text
-    })
 
 # --- ストレージ管理 ---
 if save_clicked:
