@@ -187,7 +187,7 @@ for i in range(1, 19):
     }
     
     # --- 🧮 スコア計算 ---
-    def calculate_final_score(horse_base_score, jockey_name, conditions):
+def calculate_final_score(horse_base_score, jockey_name, conditions):
     """
     馬の基本スコアにジョッキーの補正を加味して最終スコアを計算する関数。
     特定のジョッキーによる異常なスコアの跳ね上がり（インフレ）を抑制する仕様。
@@ -209,16 +209,13 @@ for i in range(1, 19):
     jockey_modifier = min(jockey_modifier, 0.20)
     jockey_modifier = max(jockey_modifier, -0.20) # 減点側も同様
     
-    # 最終的なジョッキー倍率（例: 1.25 + 0.15 = 1.40）
+    # 最終的なジョッキー倍率
     final_jockey_rate = jockey_base + jockey_modifier
     
-    # 🌟【ここが重要】ジョッキー倍率の影響度を少しマイルドにする（圧縮変換）
-    # 1.35 などの高い倍率をそのまま掛け算すると馬の実力差が吹き飛ぶため、
-    # 影響度をマイルドにする補正（例: 1 + (倍率 - 1) * 0.7）をかけます。
+    # 🌟 ジョッキー倍率の影響度を少しマイルドにする（圧縮変換）
     mitigated_jockey_rate = 1.0 + (final_jockey_rate - 1.0) * 0.70
     
     # 3. 最終スコアの算出
-    # 馬自体の実績や適性のスコア（horse_base_score）のウエイトを高める
     final_score = horse_base_score * mitigated_jockey_rate
     
     return round(final_score, 3)
