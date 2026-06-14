@@ -1,5 +1,8 @@
-import tkinter as tk
-from tkinter import ttk, messagebox
+import streamlit as st
+import pandas as pd
+
+# ページ全体の基本設定（ブラウザのタブに表示されるタイトルなど）
+st.set_page_config(page_title="JRA全コース対応 AI予想システム ver1.02", layout="wide")
 
 # ==========================================
 # 🗺️ COURSE_MASTER データ (10競馬場完全収録)
@@ -32,7 +35,7 @@ COURSE_MASTER = {
 
     # 京都競馬場
     "京都芝1200": {"note": "内回り。3コーナーの坂を上って下るため、下り坂を利用した高速スピードの持続力必要。基本は内枠の先行馬有利。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ビッグアーサー", "ダイワメジャー"]},
-    "京都芝1400": {"note": "重賞は外回り。直線が平坦なため、鋭い瞬発力を持つキレ味血統が有利。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ディープインパクト系", "ダイワメジャー"]},
+    "京都芝1400": {"note": "重賞は外回り. 直線が平坦なため、鋭い瞬発力を持つキレ味血統が有利。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ディープインパクト系", "ダイワメジャー"]},
     "京都芝1600": {"note": "マイルCS等。外回り。3コーナーの坂の下りから一気にペースが上がる。平坦な直線での高速キレ味勝負になりやすく、ディープ系やエピファネイア産駒○。", "track": "芝", "dist": "中距離", "good_lineage": ["ディープインパクト系", "エピファネイア", "キズナ", "モーリス"]},
     "京都芝1800": {"note": "外回り。スピードとキレ味の要求値が非常に高い。直線の瞬発力勝負になりやすいため、上がりの速いディープ系やハーツクライ系が中心。", "track": "芝", "dist": "中距離", "good_lineage": ["ディープインパクト系", "ハーツクライ", "キングカメハメハ"]},
     "京都芝2000": {"note": "秋華賞等。内回り。スタート直後に1コーナーがあり内枠有利。先行・好位差しがベスト。", "track": "芝", "dist": "中距離", "good_lineage": ["キズナ", "エピファネイア", "ドゥラメンテ"]},
@@ -73,7 +76,6 @@ COURSE_MASTER = {
 # 🏇 JOCKEY_MASTER 精鋭ジョッキーデータ（36名）
 # ==========================================
 JOCKEY_MASTER = {
-    # 超Sランク・トップランカー
     "ルメール": {"base_bonus": 10, "good_venues": ["東京", "中山", "京都", "阪神"], "bad_track_bonus": 2, "note": "JRA最強。大舞台の信頼度は異次元。"},
     "川田": {"base_bonus": 9, "good_venues": ["阪神", "京都", "中京", "小倉"], "bad_track_bonus": 3, "note": "抜群の勝率と先行意識。好位抜け出しの鬼。"},
     "モレイラ": {"base_bonus": 10, "good_venues": ["東京", "阪神", "京都", "中山"], "bad_track_bonus": 3, "note": "「マジックマン」。短期免許時は文句なしの最優先。"},
@@ -83,8 +85,6 @@ JOCKEY_MASTER = {
     "坂井": {"base_bonus": 7, "good_venues": ["中京", "阪神", "新潟", "東京"], "bad_track_bonus": 3, "note": "積極果敢な逃げ・先行で高い勝率を誇る。"},
     "横山武": {"base_bonus": 7, "good_venues": ["中山", "東京", "函館", "札幌"], "bad_track_bonus": 4, "note": "中山巧者。洋芝やタフ馬場でもガシガシ追える。"},
     "戸崎": {"base_bonus": 6, "good_venues": ["東京", "中山", "新潟"], "bad_track_bonus": 2, "note": "関東の安定勢力。直線での粘り込みが得意。"},
-    
-    # 主要実力派・ベテラン
     "岩田康": {"base_bonus": 5, "good_venues": ["阪神", "京都", "中山"], "bad_track_bonus": 6, "note": "イン突きの極意。荒れ馬場・道悪のイン差し警戒。"},
     "松山": {"base_bonus": 6, "good_venues": ["京都", "阪神", "中京", "小倉"], "bad_track_bonus": 4, "note": "タフな消耗戦が得意。1日通して非常に安定。"},
     "岩田望": {"base_bonus": 6, "good_venues": ["中京", "阪神", "小倉", "新潟"], "bad_track_bonus": 3, "note": "若手トップクラス。ダートの複勝率が極めて高い。"},
@@ -104,8 +104,6 @@ JOCKEY_MASTER = {
     "田辺": {"base_bonus": 4, "good_venues": ["東京", "中山"], "bad_track_bonus": 4, "note": "ノーマークの逃げ・先行での大穴演出が代名詞。"},
     "吉田隼": {"base_bonus": 4, "good_venues": ["中山", "函館", "札幌"], "bad_track_bonus": 3, "note": "ローカル・洋芝での安定感が高く、インを突く。"},
     "丹内": {"base_bonus": 4, "good_venues": ["函館", "札幌", "福島"], "bad_track_bonus": 5, "note": "北海道・ローカルの帝王。洋芝滞在競馬は鉄板。"},
-    
-    # 若手・期待株＆穴の職人
     "田口": {"base_bonus": 5, "good_venues": ["中京", "京都", "阪神", "小倉"], "bad_track_bonus": 4, "note": "若手の星。抜群の追込力と積極性。"},
     "西塚": {"base_bonus": 4, "good_venues": ["東京", "中山", "新潟"], "bad_track_bonus": 3, "note": "確かな騎乗技術で頭角を現す関東期待の若手。"},
     "今村": {"base_bonus": 3, "good_venues": ["小倉", "新潟", "中京"], "bad_track_bonus": 3, "note": "ローカル短距離・ダート戦でのハナ切りで真価。"},
@@ -121,254 +119,161 @@ BAD_TRACK_SIRES = {
     "ダート": ["シニスターミニスター", "ホッコータルマエ", "ヘニーヒューズ", "パイロ", "マジェスティックウォリアー", "ドレフォン"]
 }
 
-class HorseEncoderApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("JRA全コース対応 AI予想システム ver1.01")
-        self.root.geometry("1150x850")
-        
-        style = ttk.Style()
-        style.theme_use("clam")
-        
-        self.num_horses = tk.IntVar(value=8)
-        self.horse_inputs = []
-        
-        self.create_menu_and_header()
-        self.create_main_layout()
-        
-        self.update_course_options()
-        self.change_horse_count()
+# ==========================================
+# 💻 Streamlit UI 構築画面
+# ==========================================
+st.title("👑 JRA全コース対応 AI予想システム ver1.02 👑")
+st.caption("Webブラウザ完全対応版。データ入力後、即座にAIが自動シミュレーションを行います。")
 
-    def create_menu_and_header(self):
-        header_frame = ttk.LabelFrame(self.root, text=" レース基本設定 ", padding=10)
-        header_frame.pack(fill="x", padx=10, pady=5)
-        
-        ttk.Label(header_frame, text="競馬場:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
-        self.venue_combo = ttk.Combobox(header_frame, values=["東京", "中山", "京都", "阪神", "中京", "新潟", "福島", "小倉", "函館", "札幌"], width=10, state="readonly")
-        self.venue_combo.grid(row=0, column=1, padx=5, pady=5)
-        self.venue_combo.set("東京")
-        self.venue_combo.bind("<<ComboboxSelected>>", lambda e: self.update_course_options())
-        
-        ttk.Label(header_frame, text="コース:").grid(row=0, column=2, padx=5, pady=5, sticky="w")
-        self.course_combo = ttk.Combobox(header_frame, width=15, state="readonly")
-        self.course_combo.grid(row=0, column=3, padx=5, pady=5)
-        self.course_combo.bind("<<ComboboxSelected>>", lambda e: self.show_course_note())
-        
-        ttk.Label(header_frame, text="馬場状態:").grid(row=0, column=4, padx=5, pady=5, sticky="w")
-        self.track_condition_combo = ttk.Combobox(header_frame, values=["良", "稍重", "重", "不良"], width=8, state="readonly")
-        self.track_condition_combo.grid(row=0, column=5, padx=5, pady=5)
-        self.track_condition_combo.set("良")
-        
-        ttk.Label(header_frame, text="出頭数:").grid(row=0, column=6, padx=5, pady=5, sticky="w")
-        self.spin_horses = tk.Spinbox(header_frame, from_=2, to=18, textvariable=self.num_horses, command=self.change_horse_count, width=5)
-        self.spin_horses.grid(row=0, column=7, padx=5, pady=5)
-        
-        self.calc_btn = ttk.Button(header_frame, text="📊 総合AIスコアを計算", command=self.calculate_scores)
-        self.calc_btn.grid(row=0, column=8, padx=20, pady=5)
-        
-        self.note_label = ttk.Label(header_frame, text="※コースを選択してください", foreground="gray", font=("MS Gothic", 9, "italic"), wraplength=1000)
-        self.note_label.grid(row=1, column=0, columnspan=9, padx=5, pady=5, sticky="w")
+# レース基本設定を上部に横並びで配置
+st.header("📍 レース基本設定")
+col_cfg1, col_cfg2, col_cfg3, col_cfg4 = st.columns(4)
 
-    def create_main_layout(self):
-        main_paned = ttk.PanedWindow(self.root, orient="horizontal")
-        main_paned.pack(fill="both", expand=True, padx=10, pady=5)
-        
-        left_frame = ttk.LabelFrame(main_paned, text=" 📝 出走馬＆ジョッキーデータ入力 (騎手欄は直接入力も可能) ", padding=5)
-        self.canvas = tk.Canvas(left_frame, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(left_frame, orient="vertical", command=self.canvas.yview)
-        self.scroll_input_frame = ttk.Frame(self.canvas)
-        
-        self.scroll_input_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        self.canvas.create_window((0, 0), window=self.scroll_input_frame, anchor="nw")
-        self.canvas.configure(yscrollcommand=scrollbar.set)
-        
-        self.canvas.bind_all("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
-        
-        self.canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        main_paned.add(left_frame, weight=6)
-        
-        right_frame = ttk.LabelFrame(main_paned, text=" 🏆 最終解析・評価結果一覧 ", padding=5)
-        self.result_text = tk.Text(right_frame, font=("Courier", 10), wrap="none")
-        r_scroll_y = ttk.Scrollbar(right_frame, orient="vertical", command=self.result_text.yview)
-        r_scroll_x = ttk.Scrollbar(right_frame, orient="horizontal", command=self.result_text.xview)
-        self.result_text.configure(yscrollcommand=r_scroll_y.set, xscrollcommand=r_scroll_x.set)
-        
-        self.result_text.pack(side="top", fill="both", expand=True)
-        r_scroll_y.pack(side="right", fill="y")
-        r_scroll_x.pack(side="bottom", fill="x")
-        main_paned.add(right_frame, weight=5)
+with col_cfg1:
+    venue = st.selectbox("競馬場", ["東京", "中山", "京都", "阪神", "中京", "新潟", "福島", "小倉", "函館", "札幌"], index=0)
 
-    def update_course_options(self):
-        v = self.venue_combo.get()
-        valid_courses = [k for k in COURSE_MASTER.keys() if k.startswith(v)]
-        self.course_combo.config(values=valid_courses)
-        if valid_courses:
-            self.course_combo.set(valid_courses[0])
-        else:
-            self.course_combo.set("")
-        self.show_course_note()
+with col_cfg2:
+    valid_courses = [k for k in COURSE_MASTER.keys() if k.startswith(venue)]
+    course_key = st.selectbox("コース選択", valid_courses if valid_courses else ["該当なし"])
 
-    def show_course_note(self):
-        c_key = self.course_combo.get()
-        if c_key in COURSE_MASTER:
-            self.note_label.config(text=f"【コース特徴】 {COURSE_MASTER[c_key]['note']}", foreground="black")
-        else:
-            self.note_label.config(text="※該当するコースデータがありません", foreground="red")
+with col_cfg3:
+    condition = st.selectbox("馬場状態", ["良", "稍重", "重", "不良"], index=0)
+    is_bad_track = condition in ["重", "不良"]
 
-    def change_horse_count(self):
-        for widgets in self.scroll_input_frame.winfo_children():
-            widgets.destroy()
-            
-        self.horse_inputs = []
-        
-        headers = ["馬番", "馬名", "前走着順", "前走人気", "前走上り", "父(種牡馬)", "想定騎手"]
-        widths = [4, 12, 6, 6, 8, 12, 12]
-        for col_idx, (text, w) in enumerate(zip(headers, widths)):
-            lbl = ttk.Label(self.scroll_input_frame, text=text, font=("MS Gothic", 9, "bold"), anchor="center")
-            lbl.grid(row=0, column=col_idx, padx=3, pady=5, sticky="ew")
-            
-        all_jockeys = list(JOCKEY_MASTER.keys())
-        default_sires = ["キズナ", "ロードカナロア", "エピファネイア", "ハーツクライ", "シニスターミニスター", "ドゥラメンテ", "モーリス", "ゴールドシップ", "ハービンジャー", "ルーラーシップ"]
-        
-        for i in range(self.num_horses.get()):
-            row = i + 1
-            
-            num_lbl = ttk.Label(self.scroll_input_frame, text=f" {row} ", anchor="center")
-            num_lbl.grid(row=row, column=0, padx=3, pady=2)
-            
-            ent_name = ttk.Entry(self.scroll_input_frame, width=12)
-            ent_name.insert(0, f"ウマ{row}")
-            ent_name.grid(row=row, column=1, padx=3, pady=2)
-            
-            ent_rank = ttk.Entry(self.scroll_input_frame, width=6)
-            ent_rank.insert(0, str((i % 4) + i // 4 + 1))
-            ent_rank.grid(row=row, column=2, padx=3, pady=2)
-            
-            ent_pop = ttk.Entry(self.scroll_input_frame, width=6)
-            ent_pop.insert(0, str((i % 5) + 1))
-            ent_pop.grid(row=row, column=3, padx=3, pady=2)
-            
-            ent_f3f = ttk.Entry(self.scroll_input_frame, width=8)
-            ent_f3f.insert(0, str(34.0 + (i * 0.2)))
-            ent_f3f.grid(row=row, column=4, padx=3, pady=2)
-            
-            ent_sire = ttk.Entry(self.scroll_input_frame, width=12)
-            ent_sire.insert(0, default_sires[i % len(default_sires)])
-            ent_sire.grid(row=row, column=5, padx=3, pady=2)
-            
-            # 【★改良ポイント】EntryからComboboxに変更 (自由入力も許可する仕様)
-            combo_jock = ttk.Combobox(self.scroll_input_frame, values=all_jockeys, width=10)
-            combo_jock.insert(0, all_jockeys[i % len(all_jockeys)]) 
-            combo_jock.grid(row=row, column=6, padx=3, pady=2)
-            
-            self.horse_inputs.append({
-                "gate": row, "name": ent_name, "rank": ent_rank, 
-                "pop": ent_pop, "f3f": ent_f3f, "sire": ent_sire, "jockey": combo_jock
-            })
-            
-        self.canvas.update_idletasks()
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+with col_cfg4:
+    num_horses = st.number_input("出頭数", min_value=2, max_value=18, value=8, step=1)
 
-    def calculate_scores(self):
-        c_key = self.course_combo.get()
-        if not c_key or c_key not in COURSE_MASTER:
-            messagebox.showerror("エラー", "有効なコースを選択してください。")
-            return
-            
-        current_venue = self.venue_combo.get()
-        course_data = COURSE_MASTER[c_key]
-        condition = self.track_condition_combo.get()
-        is_bad_track = condition in ["重", "不良"]
+# コースの解説テキストをきれいにカード表示
+if course_key in COURSE_MASTER:
+    course_data = COURSE_MASTER[course_key]
+    st.info(f"💡 **【{course_key} コース特徴】** \n{course_data['note']}")
+else:
+    st.error("⚠️ 選択したコースの情報が見つかりません。")
+    st.stop()
+
+st.write("---")
+
+# メインレイアウト：左側にデータ入力、右側に予想結果
+col_left, col_right = st.columns([6, 5])
+
+with col_left:
+    st.header("📝 出走馬＆ジョッキーデータ入力")
+    st.caption("※騎手名はリストから選択、または直接手動入力が可能です。")
+    
+    # 馬ごとの入力情報を保持するリスト
+    horse_data_list = []
+    all_jockeys = sorted(list(JOCKEY_MASTER.keys()))
+    default_sires = ["キズナ", "ロードカナロア", "エピファネイア", "ハーツクライ", "シニスターミニスター", "ドゥラメンテ", "モーリス", "ゴールドシップ", "ハービンジャー", "ルーラーシップ"]
+    
+    # 1頭ずつアコーディオンやフォームではなく、見やすい横並びの入力行をループ生成
+    for i in range(int(num_horses)):
+        gate = i + 1
+        st.markdown(f"**🐴 馬番 {gate:02d}**")
         
-        scored_horses = []
+        c1, c2, c3, c4, c5, c6 = st.columns([1.5, 1.2, 1.2, 1.3, 2, 2.2])
+        with c1:
+            h_name = st.text_input(f"馬名", value=f"ウマ{gate}", key=f"name_{gate}")
+        with c2:
+            h_rank = st.number_input(f"前走着", min_value=1, max_value=18, value=((i % 4) + i // 4 + 1), key=f"rank_{gate}")
+        with c3:
+            h_pop = st.number_input(f"前走人気", min_value=1, max_value=18, value=((i % 5) + 1), key=f"pop_{gate}")
+        with c4:
+            h_f3f = st.number_input(f"前走上り", min_value=30.0, max_value=45.0, value=(34.0 + (i * 0.2)), step=0.1, format="%.1f", key=f"f3f_{gate}")
+        with c5:
+            h_sire = st.text_input(f"父(種牡馬)", value=default_sires[i % len(default_sires)], key=f"sire_{gate}")
+        with c6:
+            # セレクトボックスとテキスト入力を組み合わせるため、Streamlitのselectboxにカスタム入力を受け入れる仕様（または通常のテキストボックス）
+            # ここではタイポ防止＆直接入力対応のため、手動入力用テキストボックス＋候補ヒント機能として設計
+            h_jockey = st.selectbox(f"想定騎手", ["(手入力する)"] + all_jockeys, index=(i % len(all_jockeys)) + 1, key=f"jock_sel_{gate}")
+            if h_jockey == "(手入力する)":
+                h_jockey = st.text_input(f"✍️ 騎手名を入力", value="新人騎手", key=f"jock_txt_{gate}")
+                
+        horse_data_list.append({
+            "gate": gate, "name": h_name, "rank": h_rank, "pop": h_pop, "f3f": h_f3f, "sire": h_sire, "jockey": h_jockey
+        })
+
+# 計算処理
+scored_horses = []
+for h in horse_data_list:
+    score = 100.0
+    
+    # 1. 前走成績補正
+    if h["rank"] == 1: score += 5
+    elif h["rank"] == 2: score += 2
+    elif h["rank"] > 5: score -= (h["rank"] - 5) * 3
+    if h["pop"] > 5: score -= (h["pop"] - 5) * 2
+    
+    # 2. 上り3F能力評価
+    if course_data["track"] == "芝" and course_data["dist"] in ["中距離", "長距離"]:
+        if h["f3f"] <= 34.0: score += 10
+        elif h["f3f"] <= 35.0: score += 5
+        elif h["f3f"] >= 36.5: score -= 8
+    else:
+        if h["f3f"] <= 35.0: score += 6
+        elif h["f3f"] >= 37.5: score -= 6
         
-        for idx, inp in enumerate(self.horse_inputs):
-            try:
-                name = inp["name"].get().strip()
-                rank = int(inp["rank"].get())
-                pop = int(inp["pop"].get())
-                f3f = float(inp["f3f"].get())
-                sire = inp["sire"].get().strip()
-                jockey = inp["jockey"].get().strip()
-            except ValueError:
-                messagebox.showerror("入力エラー", f"馬番 {idx+1} の数値データが不正です。")
-                return
-                
-            score = 100
-            
-            # 1. 前走成績補正
-            if rank == 1: score += 5
-            elif rank == 2: score += 2
-            elif rank > 5: score -= (rank - 5) * 3
-            if pop > 5: score -= (pop - 5) * 2
-            
-            # 2. 上り3F能力評価
-            if course_data["track"] == "芝" and course_data["dist"] in ["中距離", "長距離"]:
-                if f3f <= 34.0: score += 10
-                elif f3f <= 35.0: score += 5
-                elif f3f >= 36.5: score -= 8
-            else:
-                if f3f <= 35.0: score += 6
-                elif f3f >= 37.5: score -= 6
-                
-            # 3. コース適合血統ボーナス
-            if sire in course_data["good_lineage"]:
-                score += 6
-                
-            # 4. 道悪血統特効補正
-            if is_bad_track and sire in BAD_TRACK_SIRES.get(course_data["track"], []):
-                score += 8
-                
-            # 5. ジョッキー能力＆舞台適合補正
-            j_advice = "データなし"
-            if jockey in JOCKEY_MASTER:
-                j_data = JOCKEY_MASTER[jockey]
-                j_advice = j_data["note"]
-                score += j_data["base_bonus"]
-                
-                if current_venue in j_data["good_venues"]:
-                    score += 4
-                    
-                if is_bad_track:
-                    score += j_data["bad_track_bonus"]
-            else:
-                # リストにないジョッキーが手入力された場合の処理
-                score += 2
-                j_advice = "リスト外の騎手（標準補正適用）。展開次第。"
-                
-            scored_horses.append({
-                "gate": inp["gate"], "name": name, "sire": sire, "jockey": jockey, "score": score, "j_note": j_advice
-            })
-            
-        # スコアの高い順にソート
-        scored_horses.sort(key=lambda x: x["score"], reverse=True)
+    # 3. コース適合血統ボーナス
+    if h["sire"] in course_data["good_lineage"]:
+        score += 6
         
-        # 結果画面の描画
-        self.result_text.delete("1.0", tk.END)
-        self.result_text.insert(tk.END, f"👑 JRA全コース対応 AI予想システム ver1.01 👑\n")
-        self.result_text.insert(tk.END, f"◆ 開催舞台: {c_key} ({course_data['track']}/{course_data['dist']})\n")
-        self.result_text.insert(tk.END, f"◆ 馬場状態: 【 {condition} 】\n")
+    # 4. 道悪血統特効補正
+    if is_bad_track and h["sire"] in BAD_TRACK_SIRES.get(course_data["track"], []):
+        score += 8
+        
+    # 5. ジョッキー能力＆舞台適合補正
+    j_advice = "データなし"
+    jockey_name = h["jockey"].strip()
+    if jockey_name in JOCKEY_MASTER:
+        j_data = JOCKEY_MASTER[jockey_name]
+        j_advice = j_data["note"]
+        score += j_data["base_bonus"]
+        
+        if venue in j_data["good_venues"]:
+            score += 4
+            
         if is_bad_track:
-            self.result_text.insert(tk.END, f"⚠️ 道悪警報：各騎手・血統固有の重馬場特効数値を算入済み。\n")
-        self.result_text.insert(tk.END, f"-"*72 + "\n")
-        self.result_text.insert(tk.END, f" 印 |馬番| 馬名          | 騎手     | 血統(父)     | 総合スコア \n")
-        self.result_text.insert(tk.END, f"-"*72 + "\n")
+            score += j_data["bad_track_bonus"]
+    else:
+        score += 2
+        j_advice = "リスト外の騎手（標準補正適用）。展開次第。"
         
-        marks = ["◎", "○", "▲", "△", "☆"]
-        for rank_idx, h in enumerate(scored_horses):
-            mark = marks[rank_idx] if rank_idx < len(marks) else "  "
-            self.result_text.insert(tk.END, f" {mark} | {h['gate']:02d} | {h['name']:<13s} | {h['jockey']:<8s} | {h['sire']:<12s} | {h['score']:5.1f} pt\n")
-            
-        self.result_text.insert(tk.END, f"-"*72 + "\n\n💡 コース攻略・戦術総評:\n")
-        self.result_text.insert(tk.END, f" {course_data['note']}\n\n")
-        
-        self.result_text.insert(tk.END, "🏆 上位推奨馬のジョッキー補正根拠:\n")
-        for i in range(min(3, len(scored_horses))):
-            h = scored_horses[i]
-            self.result_text.insert(tk.END, f" ・{h['name']} ({h['jockey']}): {h['j_note']}\n")
+    scored_horses.append({
+        "gate": h["gate"], "name": h["name"], "sire": h["sire"], "jockey": jockey_name, "score": score, "j_note": j_advice
+    })
 
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = HorseEncoderApp(root)
-    root.mainloop()
+# スコア順にソート
+scored_horses.sort(key=lambda x: x["score"], reverse=True)
+
+with col_right:
+    st.header("🏆 最終解析・評価結果一覧")
+    
+    if is_bad_track:
+        st.warning("⚠️ **道悪警報**：各騎手・血統固有の重馬場特効数値を算入しました。")
+        
+    # 表形式のデータ作成
+    marks = ["◎", "○", "▲", "△", "☆"]
+    table_rows = []
+    
+    for idx, h in enumerate(scored_horses):
+        mark = marks[idx] if idx < len(marks) else "  "
+        table_rows.append({
+            "印": mark,
+            "馬番": f"{h['gate']:02d}",
+            "馬名": h["name"],
+            "騎手": h["jockey"],
+            "血統(父)": h["sire"],
+            "総合スコア": f"{h['score']:.1f} pt"
+        })
+        
+    df_result = pd.DataFrame(table_rows)
+    # Streamlit特有の綺麗で見やすいデータフレーム表示
+    st.dataframe(df_result, use_container_width=True, hide_index=True)
+    
+    st.subheader("💡 注目推奨馬のジョッキー補正根拠")
+    for i in range(min(3, len(scored_horses))):
+        h = scored_horses[i]
+        st.markdown(f"**【{marks[i]}】 {h['name']} ({h['jockey']})**")
+        st.write(f"└ 騎手分析: {h['j_note']}")
+
+
+
