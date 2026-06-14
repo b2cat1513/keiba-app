@@ -1,314 +1,374 @@
-import streamlit as st
-import pandas as pd
-import json
-import urllib.parse
-from streamlit.components.v1 import html
+import tkinter as tk
+from tkinter import ttk, messagebox
 
 # ==========================================
-# 🏇 1. ジョッキー事典マスターデータ
-# ==========================================
-JOCKEY_MASTER = {
-    "C.ルメール": {"base": 1.30, "factors": {"芝": 0.05, "ダート": -0.05, "差し": 0.05, "内枠": -0.05, "外枠": 0.05, "長距離": 0.05, "東京芝1600": 0.15, "東京芝2000": 0.15, "東京芝2400": 0.15, "京都芝1600": 0.15, "京都芝2400": 0.15, "中山芝2500": -0.10}, "note": "東京・京都外回り・長距離◎。中山のトリッキーなコースは僅かに割引"},
-    "川田将雅": {"base": 1.30, "factors": {"芝1枠": 0.15, "小回り": 0.15, "交流重賞": 0.15, "長距離": -0.05, "阪神芝2000": 0.15, "中京ダ1800": 0.15, "中山芝2000": 0.15, "ローカル芝": -0.05}, "note": "阪神・中京・中山の内回り小回り◎。確勝級の馬での信頼度抜群"},
-    "坂井瑠星": {"base": 1.25, "factors": {"先行": 0.10, "内枠": 0.05, "外枠": -0.05, "ダート重賞": 0.15, "東京ダ1600": 0.15, "中京ダ1800": 0.15}, "note": "逃げ先行・ダート重賞◎。海外や大舞台での積極策が光る"},
-    "武豊": {"base": 1.20, "factors": {"芝": 0.05, "継続騎乗": 0.15, "人気薄": 0.15, "距離延長": 0.15, "京都芝2000": 0.15, "京都芝2200": 0.15, "東京芝2400": 0.15}, "note": "継続騎乗・大舞台での一発◎。京都コースを最も熟知するレジェンド"},
-    "松山弘平": {"base": 1.15, "factors": {"ダート": 0.15, "新馬戦": 0.15, "前哨戦": 0.15, "中山ダ1800": 0.15, "京都ダ1800": 0.15}, "note": "ダート・新馬戦◎。非常に堅実で、乗り替わりも苦にしない"},
-    "岩田望来": {"base": 1.10, "factors": {"マイル以下の差し": 0.15, "乗り替わり": 0.15, "中京芝1600": 0.10, "阪神芝1600": 0.10}, "note": "乗り替わり・マイル以下の差し○。平場・特別戦での安定感が高い"},
-    "西村淳也": {"base": 1.10, "factors": {"京都芝": 0.15, "先行": 0.05, "京都芝1600": 0.15, "阪神芝1400": 0.15}, "note": "京都芝・先行策◎。G1でも穴を明ける度胸と勝負強さあり"},
-    "団野大成": {"base": 1.10, "factors": {"短距離重賞": 0.15, "荒れ馬場": 0.15, "京都芝1200": 0.15, "阪神芝1600": 0.10}, "note": "短距離重賞・荒れた芝◎。勝負どころでの思い切りの良さが魅力"},
-    "鮫島克駿": {"base": 1.10, "factors": {"イン突き": 0.15, "中長距離": 0.15, "ダート外枠": 0.15, "中京芝2000": 0.10}, "note": "好位イン突き・中長距離◎。ロスを抑える立ち回りが得意"},
-    "高杉吏麒": {"base": 1.05, "factors": {"減量活かした先行": 0.15, "ローカル芝": 0.10, "ローカルダート": 0.10, "短距離": 0.05}, "note": "急成長中の若手。減量を活かした積極策やローカルでの穴に要注意"},
-    "藤岡佑介": {"base": 1.10, "factors": {"自在性": 0.15, "重賞の人気馬": -0.15}, "note": "展開読み◎。重賞の人気馬はやや割引"},
-    "幸英明": {"base": 1.05, "factors": {"ダート": 0.15, "牡馬のタフ条件": 0.15, "阪神ダ1800": 0.10}, "note": "タフなダート戦・牡馬◎。非常にタフで騎乗数も非常に多い"},
-    "池添謙一": {"base": 1.15, "factors": {"大舞台＆重賞": 0.15, "差し＆追い込み": 0.15, "中山芝2500": 0.15}, "note": "G1・重賞での勝負強さ抜群。人気薄のグランプリで激走"},
-    "岩田康誠": {"base": 1.15, "factors": {"重賞": 0.15, "内枠": 0.15, "阪神芝2000": 0.15}, "note": "内枠からのイン突き強襲◎。ベテランのイン攻め注意"},
-    "M.デムーロ": {"base": 1.15, "factors": {"大舞台＆重賞": 0.15, "追い込み": 0.15, "東京芝2000": 0.10}, "note": "出遅れ注意も、大舞台でのマクリ・追い込みは破壊力あり"},
-    "浜中俊": {"base": 1.05, "factors": {"芝": 0.05, "1番人気": 0.15, "中京芝1200": 0.10}, "note": "芝の短〜中距離・人気馬○。乗れている時の爆発力あり"},
-    "北村友一": {"base": 1.10, "factors": {"芝8枠": 0.15, "中長距離戦": 0.15, "京都芝2200": 0.10}, "note": "外枠からの差し・中長距離○。復活後の大舞台でも健湯"},
-    "横山典弘": {"base": 1.15, "factors": {"芝内枠": 0.15, "継続騎乗": 0.15, "東京芝2400": 0.10}, "note": "ポツン注意も内枠・継続◎。馬の気分に合わせた一発あり"},
-    "和田竜二": {"base": 1.05, "factors": {"荒れ馬場": 0.15, "先行": 0.05, "京都ダ1800": 0.10}, "note": "追えるベテラン。タフな消耗戦やズブい馬で真価発揮"},
-    "永島まなみ": {"base": 1.05, "factors": {"ローカルダート": 0.15, "先行": 0.10}, "note": "ローカルやダートの逃げ・先行は無類の強さ"},
-    "田口貫太": {"base": 1.05, "factors": {"ローカルダート": 0.15, "芝1枠": 0.15, "中京芝1200": 0.10}, "note": "減量ブレイクから定着した若手。ダート人気馬・イン戦◎"},
-    "松若風馬": {"base": 1.05, "factors": {"逃げ": 0.15, "ダート": 0.05}, "note": "積極的な逃げ・先行策が持ち味。ダート○"},
-    "吉村誠之助": {"base": 1.00, "factors": {"ローカルダート": 0.10}, "note": "期待の若手。ダート戦や減量を活かした競馬で台頭"},
-
-    "戸崎圭太": {"base": 1.25, "factors": {"前走ルメール": 0.10, "東京芝1600": 0.15, "東京ダ1600": 0.15, "中山ダ1800": 0.10, "重賞": 0.10}, "note": "東京マイル・ダート外枠・前走ルメールからの乗り替わり◎"},
-    "横山武史": {"base": 1.25, "factors": {"中山芝2000": 0.15, "中山芝2500": 0.15, "先行": 0.10, "持久力戦": 0.15, "東京芝2400": 0.10}, "note": "中山重賞・先行持久力戦◎。関東のエース格"},
-    "菅原明良": {"base": 1.15, "factors": {"長距離": 0.10, "差し": 0.05, "東京芝1600": 0.10, "新潟直線1000": 0.15}, "note": "G1制覇を経て大舞台の信頼度UP。穴を明ける長距離差し"},
-    "佐々木大輔": {"base": 1.15, "factors": {"芝内枠": 0.15, "ローカル芝": 0.15, "中山芝1200": 0.10}, "note": "若手屈指の立ち回り。内枠＆北海道・ローカル開催の鬼"},
-    "丹内祐次": {"base": 1.10, "factors": {"ローカル芝": 0.15, "ローカルダート": 0.15}, "note": "ローカルの帝王。人気薄激走多数"},
-    "田辺裕信": {"base": 1.10, "factors": {"長距離戦": 0.15, "逃げ": 0.10, "東京ダ1400": 0.10}, "note": "人気薄の大胆な逃げや、ポツン差しなどノリに勝る奇策注意"},
-    "横山和生": {"base": 1.15, "factors": {"東京芝2400": 0.10, "中山芝2500": 0.10, "ダート重賞": 0.15}, "note": "長距離の逃げ・先行や、ダート重賞での信頼度高"},
-    "津村明秀": {"base": 1.10, "factors": {"新潟直線1000": 0.15, "東京芝1600": 0.10, "京都芝1600": 0.10}, "note": "新潟直線◎。マイルG1での立ち回り・勝負強さも完全に本格化"},
-    "三浦皇成": {"base": 1.05, "factors": {"1番人気": 0.15, "重賞": -0.15, "東京ダ1600": 0.10}, "note": "平場・条件戦の1番人気は堅実。重賞ではやや割引"},
-    "大野拓哉": {"base": 1.05, "factors": {"東京ダ1600": 0.15, "追い込み": 0.15, "中山芝1200": 0.10}, "note": "東京ダートや外枠の追い込み穴馬で強烈な差しを見せる"},
-    "石川裕紀人": {"base": 1.10, "factors": {"芝1枠": 0.15, "積極策": 0.10, "東京芝2000": 0.10}, "note": "大舞台での思い切った先行策・イン突きの魅力あり"},
-    "北村宏司": {"base": 1.05, "factors": {"東京芝1600": 0.10, "内枠": 0.10, "東京芝2400": 0.10}, "note": "ベテランの安定感。東京の芝コースや内枠での立ち回り○"},
-    "石橋脩": {"base": 1.05, "factors": {"先行": 0.10, "中山芝1600": 0.10}, "note": "ベテランの先行押し切り。中山などタフなコースで注意"},
-    "柴田善臣": {"base": 1.00, "factors": {"人気薄": 0.10}, "note": "現役最年長レジェンド。時折見せる絶妙な差し込み注意"},
-
-    "J.モレイラ": {"base": 1.30, "factors": {"中長距離": 0.15, "ダート": 0.10, "東京芝2400": 0.15, "阪神芝1600": 0.10}, "note": "マジックマン。短期免許で来日時は勝率・連対率が異次元"},
-    "D.レーン": {"base": 1.30, "factors": {"重賞": 0.15, "芝": 0.10, "東京芝2400": 0.10, "東京芝1600": 0.15}, "note": "日本の馬場適性が非常に高く、G1大舞台での信頼度絶大"},
-    "R.キング": {"base": 1.25, "factors": {"先行": 0.15, "内枠": 0.10, "東京芝1600": 0.10}, "note": "抜群のスタートセンスと好位キープ力で前残り連発"},
-    "T.マーカンド": {"base": 1.20, "factors": {"ダート": 0.15, "荒れ馬場": 0.10, "中山ダ1800": 0.15}, "note": "剛腕。タフな馬場やダート戦での追い比べは無類の強さ"},
-    "H.ドイル": {"base": 1.15, "factors": {"先行": 0.10, "芝": 0.05}, "note": "好位からの手堅い立ち回りが光る英国の新星"},
-    "短期免許外国人": {"base": 1.20, "factors": {"重賞": 0.10}, "note": "その他短期免許の外国人騎手。有力馬配置が多く高評価"},
-    "地方所属騎手": {"base": 1.05, "factors": {"ダート": 0.15, "東京ダ1600": 0.10}, "note": "地方リーディング級。ダート戦で警戒"},
-    "その他（自由手入力）": {"base": 1.00, "factors": {}, "note": "リスト外の騎手。右の入力欄に名前を記入してください。"}
-}
-
-# ==========================================
-# 🗺️ 2. コース事典マスターデータ
+# 🗺️ COURSE_MASTER データ (10競馬場完全収録)
 # ==========================================
 COURSE_MASTER = {
-    "東京芝1600": {"note": "重賞は差し・追い込み有利。ロードカナロア/エピファネイア産駒○", "track": "芝", "dist": "中距離", "good_lineage": ["ロードカナロア", "エピファネイア", "モーリス"]},
-    "東京芝2000": {"note": "天皇賞秋等。1桁馬番(①〜⑧)が超強力。1枠有利。", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "モーリス", "キズナ", "キタサンブラック"]},
-    "東京芝2400": {"note": "日本ダービー等。内〜中枠の立ち回り重視。前走速い脚を使った馬が有利。", "track": "芝", "dist": "長距離", "good_lineage": ["キタサンブラック", "ドゥラメンテ", "ハーツクライ"]},
-    "東京ダ1400": {"note": "スタートが芝。外枠の先行馬が有利。", "track": "ダート", "dist": "短距離", "good_lineage": ["ヘニーヒューズ", "サウスヴィグラス"]},
-    "東京ダ1600": {"note": "フェブラリーS等。スタートが芝で外枠有利。大型馬有利。", "track": "ダート", "dist": "中距離", "good_lineage": ["ヘニーヒューズ", "ドレフォン", "ロードカナロア"]},
-    "東京ダ2100": {"note": "スタミナ必須。リピーターが走りやすい。ダートの長距離適性が最重要。", "track": "ダート", "dist": "長距離", "good_lineage": ["キングカメハメハ", "ハーツクライ"]},
-    "中山芝1200": {"note": "スプリンターズS等。スタートから下り坂。内枠の先行・イン差し○。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ダイワメジャー"]},
-    "中山芝1600": {"note": "外枠は絶望的に不利。内枠の先行馬が絶対有利。", "track": "芝", "dist": "中距離", "good_lineage": ["ダイワメジャー", "スクリーンヒーロー"]},
-    "中山芝2000": {"note": "皐月賞等。荒れ馬場は外差し○。エピファネイア/ハービンジャー○。", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "ハービンジャー", "モーリス"]},
-    "中山芝2500": {"note": "有馬記念等。内枠（1桁馬番）の勝率が突出。高速馬場は内枠有利。", "track": "芝", "dist": "長距離", "good_lineage": ["エピファネイア", "キズナ", "ドゥラメンテ", "ゴールドシップ"]},
-    "中山ダ1200": {"note": "スタートが芝。外枠の快速馬が圧倒的に有利。", "track": "ダート", "dist": "短距離", "good_lineage": ["サウスヴィグラス", "ヘニーヒューズ"]},
-    "中山ダ1800": {"note": "非常にタフでスタミナが必要。先行馬が圧倒的に有利。", "track": "ダート", "dist": "中距離", "good_lineage": ["ホッコータルマエ", "シニスターミニスター"]},
-    "京都芝1200": {"note": "内回り。直線平坦のため前残りに注意。開幕週は内枠絶対。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ビッグアーサー"]},
-    "京都芝1600": {"note": "マイルCS等。外回り。坂の登り下りがあり、ディープ系や差し馬台頭。", "track": "芝", "dist": "中距離", "good_lineage": ["ディープインパクト系", "エピファネイア", "キズナ"]},
-    "京都芝2000": {"note": "秋華賞等。内回り。直線が短いため、一瞬の加速力を持つ先行馬○。", "track": "芝", "dist": "中距離", "good_lineage": ["キズナ", "キングカメハメハ系"]},
-    "京都芝2200": {"note": "エリザベス女王杯、宝塚記念(代替)等。外回り。スタミナ要求値が高くリピーター注意。", "track": "芝", "dist": "中距離", "good_lineage": ["ハーツクライ", "ハービンジャー", "オルフェーヴル"]},
-    "京都芝2400": {"note": "外回り。長距離適性と、坂を下りながら加速できる器用さが必要。", "track": "芝", "dist": "長距離", "good_lineage": ["ディープインパクト系", "ルーラーシップ"]},
-    "京都ダ1200": {"note": "直線平坦でスピード重視。逃げ・先行馬が圧倒的に有利なハイスピード馬場。", "track": "ダート", "dist": "短距離", "good_lineage": ["ヘニーヒューズ", "サウスヴィグラス"]},
-    "京都ダ1800": {"note": "スピード巡航能力が問われる。主流のダート血統が走りやすい。", "track": "ダート", "dist": "中距離", "good_lineage": ["シニスターミニスター", "キングカメハメハ"]},
-    "阪神芝1400": {"note": "内回り。タフなコースで短距離ながらスタミナ要求値が高い。", "track": "芝", "dist": "短距離", "good_lineage": ["ダイワメジャー", "ロードカナロア"]},
-    "阪神芝1600": {"note": "桜花賞等。外回り。高速馬場は外差し、ロードカナロア/エピファネイア○。", "track": "芝", "dist": "中距離", "good_lineage": ["ロードカナロア", "エピファネイア", "キズナ"]},
-    "阪神芝2000": {"note": "大阪杯等。内回り。急坂を2回超える。外枠の先行馬有利。", "track": "芝", "dist": "中距離", "good_lineage": ["ドゥラメンテ", "ルーラーシップ", "キズナ"]},
-    "阪神芝2200": {"note": "宝塚記念等。内回りコース。非常にタフなスタミナ消耗戦になりやすい。", "track": "芝", "dist": "中距離", "good_lineage": ["ステイゴールド系", "ハーツクライ", "キズナ"]},
-    "阪神ダ1400": {"note": "スタートが芝。芝スタートをこなせる快速馬、外枠が有利。", "track": "ダート", "dist": "短距離", "good_lineage": ["ヘニーヒューズ", "ロードカナロア"]},
-    "阪神ダ1800": {"note": "基本的には先行有利。急坂があるためパワー型が信頼できる。", "track": "ダート", "dist": "中距離", "good_lineage": ["シニスターミニスター", "ホッコータルマエ"]},
-    "中京芝1200": {"note": "高松宮記念等。直線が長く急坂もある。中京リピーターに注意。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ミッキーアイル"]},
-    "中京芝1600": {"note": "差しが届きやすいマイルコース。タフな血統やマイル実績馬○。", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "ハービンジャー"]},
-    "中京芝2000": {"note": "急坂スタートでタフ。内枠の立ち回りとスタミナ重視。", "track": "芝", "dist": "中距離", "good_lineage": ["キズナ", "ハーツクライ"]},
-    "中京ダ1200": {"note": "直線が長く坂もあるため、ダートとしては差しが決まりやすい部類。", "track": "ダート", "dist": "短距離", "good_lineage": ["ヘニーヒューズ", "ドレフォン"]},
-    "中京ダ1800": {"note": "チャンピオンズC等。内枠の先行・好位差しが抜群に有利。", "track": "ダート", "dist": "中距離", "good_lineage": ["キングカメハメハ", "シニスターミニスター"]},
-    "新潟直線1000": {"note": "日本唯一の直線重賞。外枠（7・8枠）が圧倒的に絶対有利。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ジョーカプチーノ"]},
-    "ローカル芝": {"note": "福島・新潟・小倉・函館・札幌。小回りのため、イン先行や前残り警戒。", "track": "芝", "dist": "中距離", "good_lineage": ["ハービンジャー", "ダイワメジャー"]},
-    "ローカルダート": {"note": "小回りのダート。前に行ける減量ジョッキーや快速馬の押し切りが多い。", "track": "ダート", "dist": "中距離", "good_lineage": ["シニスターミニスター", "サウスヴィグラス"]}
+    # 東京競馬場
+    "東京芝1400": {"note": "京王杯SC等。3コーナーまでの直線が長く枠順の有利不利は少ない。短距離のスピードとマイルを乗り切るスタミナのバランスが重要。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ダイワメジャー", "モーリス"]},
+    "東京芝1600": {"note": "安田記念、NHKマイルC等。重賞はマイル以上のスタミナが必要なタフな流れになりやすく、差し・追い込み有利。ロードカナロア/エピファネイア産駒○。", "track": "芝", "dist": "中距離", "good_lineage": ["ロードカナロア", "エピファネイア", "モーリス", "キズナ"]},
+    "東京芝1800": {"note": "毎日王冠等。スタート後すぐに2コーナーのカーブがあるため内枠が有利。キレ味（上がり3Fの速さ）が最重要視される舞台。", "track": "芝", "dist": "中距離", "good_lineage": ["ディープインパクト系", "ハーツクライ", "キングカメハメハ"]},
+    "東京芝2000": {"note": "天皇賞(秋)等。スタート直後に2コーナーがあり、外枠は大きなロス。1桁馬番が超強力。内枠の先行・好位差しが絶対有利。", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "モーリス", "キズナ", "キタサンブラック"]},
+    "東京芝2400": {"note": "日本ダービー、ジャパンC等。日本競馬の最高峰。極端な枠の有利不利はないが、インをロスなく回れる内〜中枠の立ち回り重視。前走での上がり3Fが速い馬が有利。", "track": "芝", "dist": "長距離", "good_lineage": ["キタサンブラック", "ドゥラメンテ", "ハーツクライ", "ディープインパクト系"]},
+    "東京芝2500": {"note": "目黒記念等。坂の途中からのスタートでスタミナ要求値が高い。ハンデ戦も多く、タフに伸びるスタミナ血統が狙い目。", "track": "芝", "dist": "長距離", "good_lineage": ["ハーツクライ", "オルフェーヴル", "ルーラーシップ"]},
+    "東京芝3400": {"note": "ダイヤモンドS。日本屈指の長距離。スローペースからの超ロングスパート持久力戦。スタミナ特化血統・長距離実績馬を素直に信頼。", "track": "芝", "dist": "長距離", "good_lineage": ["オルフェーヴル", "ゴールドシップ", "ハーツクライ"]},
+    "東京ダ1300": {"note": "スタートから最初のコーナーまでが短く、内枠の先行馬が非常に有利。包まれると厳しいので、外枠の快速馬のハナ切りも警戒。", "track": "ダート", "dist": "短距離", "good_lineage": ["ヘニーヒューズ", "サウスヴィグラス", "ドレフォン"]},
+    "東京ダ1400": {"note": "根岸S等。芝スタート。外枠に行くほど芝を走る距離が長くなるため、外枠のスピード馬が圧倒的に有利。直線が長く差しも届く。", "track": "ダート", "dist": "短距離", "good_lineage": ["ヘニーヒューズ", "ロードカナロア", "シニスターミニスター"]},
+    "東京ダ1600": {"note": "フェブラリーS等。スタートが芝で外枠有利。非常にスピードが出やすく、ダートながらマイル以上のスタミナと大型馬のパワーが必須。", "track": "ダート", "dist": "中距離", "good_lineage": ["ヘニーヒューズ", "ドレフォン", "ロードカナロア", "シニスターミニスター"]},
+    "東京ダ2100": {"note": "直線が長く、ダートとしては屈指のスタミナとタフさが必要。スタミナ型の差し馬や、タフな流れを経験してきた馬が強い。", "track": "ダート", "dist": "長距離", "good_lineage": ["シニスターミニスター", "キングカメハメハ", "ハーツクライ系"]},
+
+    # 中山競馬場
+    "中山芝1200": {"note": "スプリンターズS等。スタートから4コーナーまで下り坂が続くため、超ハイペースになりやすい。スピードの持続力と、最後の急坂を耐えるパワーが必要。内枠有利。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ダイワメジャー", "ビッグアーサー"]},
+    "中山芝1600": {"note": "外回り。スタートが1コーナーのポケットにあり、外枠は常に外を回らされるため壊滅的に不利。1枠〜3枠の先行馬が絶対有利。", "track": "芝", "dist": "中距離", "good_lineage": ["ダイワメジャー", "モーリス", "ロードカナロア"]},
+    "中山芝1800": {"note": "中山記念等。内回り。スタート後すぐに1コーナーがあるため先行争いが激しくなりやすい。タフな小回り適性と急坂での加速力が求められる。", "track": "芝", "dist": "中距離", "good_lineage": ["ディープインパクト系", "キングカメハメハ", "ハーツクライ"]},
+    "中山芝2000": {"note": "皐月賞、ホープフルS等。内回り。4回コーナーを回るため器用さが必要。開幕週はイン先行有利、荒れ馬場・重馬場は外差しが台頭。エピファネイア/ハービンジャー○。", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "ハービンジャー", "モーリス", "キズナ"]},
+    "中山芝2200": {"note": "オールカマー等。外回りから内回りへ合流するトリッキーなコース。スタミナと外から長く脚を使える持続力血統が強い。", "track": "芝", "dist": "中距離", "good_lineage": ["ハービンジャー", "ステイゴールド系", "ルーラーシップ"]},
+    "中山芝2500": {"note": "有馬記念等。内回り。内枠(1桁馬番)の勝率が突出しており外枠は圧倒的ロス。急坂を2回超えるため、タフなスタミナと小回りをロスなく回る立ち回りが必須。", "track": "芝", "dist": "長距離", "good_lineage": ["エピファネイア", "キズナ", "ドゥラメンテ", "ゴールドシップ"]},
+    "中山芝3600": {"note": "ステイヤーズS。スタミナのみが要求される究極の長距離。リピーターが非常に多く、ステイゴールドやゴールドシップ系、長距離実績馬が鉄板。", "track": "芝", "dist": "長距離", "good_lineage": ["ゴールドシップ", "オルフェーヴル", "ルーラーシップ"]},
+    "中山ダ1200": {"note": "芝スタートで外枠が有利。テンのスピードが非常に速くなり、前残りになりやすいが、ハイペースが極まると外からの差しも届く。", "track": "ダート", "dist": "短距離", "good_lineage": ["ヘニーヒューズ", "サウスヴィグラス", "ロードカナロア"]},
+    "中山ダ1800": {"note": "非常にタフな急坂がありスタミナが必要。基本は先行馬が圧倒的に有利。重馬場になると泥を嫌う馬が多く、外枠の先行馬がさらに有利に。", "track": "ダート", "dist": "中距離", "good_lineage": ["ホッコータルマエ", "シニスターミニスター", "ヘニーヒューズ", "パイロ"]},
+    "中山ダ2400": {"note": "スタミナ自慢が集まる長距離ダート。バテ合いの過酷なレースになりやすく、先行してじわじわ伸びる大型スタミナ馬や血統が強い。", "track": "ダート", "dist": "長距離", "good_lineage": ["シニスターミニスター", "キングカメハメハ", "クロフネ系"]},
+
+    # 京都競馬場
+    "京都芝1200": {"note": "内回り。3コーナーの坂を上って下るため、下り坂を利用した高速スピードの持続力必要。基本は内枠の先行馬有利。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ビッグアーサー", "ダイワメジャー"]},
+    "京都芝1400": {"note": "重賞は外回り。直線が平坦なため、鋭い瞬発力を持つキレ味血統が有利。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ディープインパクト系", "ダイワメジャー"]},
+    "京都芝1600": {"note": "マイルCS等。外回り。3コーナーの坂の下りから一気にペースが上がる。平坦な直線での高速キレ味勝負になりやすく、ディープ系やエピファネイア産駒○。", "track": "芝", "dist": "中距離", "good_lineage": ["ディープインパクト系", "エピファネイア", "キズナ", "モーリス"]},
+    "京都芝1800": {"note": "外回り。スピードとキレ味の要求値が非常に高い。直線の瞬発力勝負になりやすいため、上がりの速いディープ系やハーツクライ系が中心。", "track": "芝", "dist": "中距離", "good_lineage": ["ディープインパクト系", "ハーツクライ", "キングカメハメハ"]},
+    "京都芝2000": {"note": "秋華賞等。内回り。スタート直後に1コーナーがあり内枠有利。先行・好位差しがベスト。", "track": "芝", "dist": "中距離", "good_lineage": ["キズナ", "エピファネイア", "ドゥラメンテ"]},
+    "京都芝2200": {"note": "エリザベス女王杯等。外回りの長丁場。3コーナーの坂を2回走るため見た目以上にタフ。リピーター注意。", "track": "芝", "dist": "中距離", "good_lineage": ["ハーツクライ", "ハービンジャー", "オルフェーヴル", "キズナ"]},
+    "京都芝2400": {"note": "京都大賞典等。外回り。長距離の王道コース。坂の下りを活かして長く良い脚を使える中長距離実績馬、ドゥラメンテ系やハーツ系が好相性。", "track": "芝", "dist": "長距離", "good_lineage": ["ドゥラメンテ", "ハーツクライ", "キタサンブラック"]},
+    "京都芝3000": {"note": "菊花賞。坂を2回超える。長距離のスタミナはもちろん、坂の下りで引っかからない折り合いのセンスと騎手の腕が最も問われる舞台。", "track": "芝", "dist": "長距離", "good_lineage": ["エピファネイア", "キタサンブラック", "ディープインパクト系"]},
+    "京都芝3200": {"note": "天皇賞(春)。長距離のスタミナと、インをロスなく回る立ち回り、精度。キタサンブラックやステイゴールド系の血が爆発する。", "track": "芝", "dist": "長距離", "good_lineage": ["キタサンブラック", "ゴールドシップ", "オルフェーヴル", "ハーツクライ"]},
+    "京都ダ1200": {"note": "平坦でスピードが出やすい。かなり時計が速くなるため、テンのスピード能力が高い快速馬の内枠先行が有利。", "track": "ダート", "dist": "短距離", "good_lineage": ["ヘニーヒューズ", "サウスヴィグラス", "ドレフォン"]},
+    "京都ダ1400": {"note": "平坦マイル以下。先行勢が止まりにくく前残りが多い。スピードのあるミスプロ系やヘニーヒューズ産駒が安定。", "track": "ダート", "dist": "短距離", "good_lineage": ["ヘニーヒューズ", "シニスターミニスター", "ロードカナロア"]},
+    "京都ダ1800": {"note": "主要ダートコース。急坂がないため、好位につけられる器用さと、最後の直線のスピード持続力が必要。内枠の先行・好位差し安定。", "track": "ダート", "dist": "中距離", "good_lineage": ["シニスターミニスター", "ホッコータルマエ", "キングカメハメハ", "ヘニーヒューズ"]},
+    "京都ダ1900": {"note": "1800mよりさらにスタミナ寄り。タフなスタミナ型ダート馬や、シニスターミニスターなど道悪でもパワーで押し切れる血統が有利。", "track": "ダート", "dist": "長距離", "good_lineage": ["シニスターミニスター", "マジェスティックウォリアー"]},
+
+    # 阪神競馬場
+    "阪神芝1200": {"note": "内回り。急坂があるため、スピードだけでなくパワーが必要。荒れ馬場・重馬場になると一気にタフな消耗戦になり差し有利。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ダイワメジャー", "ビッグアーサー"]},
+    "阪神芝1400": {"note": "内回り。阪神C等。内回りのため、3〜4コーナーの立ち回りと、直線の坂を乗り切るパワーが要求される。タフな持続力血統が良い。", "track": "芝", "dist": "短距離", "good_lineage": ["ダイワメジャー", "ロードカナロア", "モーリス"]},
+    "阪神芝1600": {"note": "外回り。桜花賞、阪神JF等。外回りの直線が長く、非常に実力が反映されやすい。高速馬場なら瞬発力、重馬場ならスタミナパワー型。", "track": "芝", "dist": "中距離", "good_lineage": ["ロードカナロア", "エピファネイア", "キズナ", "ディープインパクト系"]},
+    "阪神芝1800": {"note": "外回り. 直線が長いため実力勝負。少頭数になりやすくスローからのキレ味勝負になりがち。ハーツ系やディープ系の上がり最速馬が狙い目。", "track": "芝", "dist": "中距離", "good_lineage": ["ディープインパクト系", "ハーツクライ", "キングカメハメハ"]},
+    "阪神芝2000": {"note": "内回り。大阪杯等。スタート後すぐに急坂があり、先行争いが落ち着きやすい。内回りの器用さと、直線でもう一度坂を登る強靭なパワーが必要。", "track": "芝", "dist": "中距離", "good_lineage": ["キズナ", "ロードカナロア", "ドゥラメンテ", "エピファネイア"]},
+    "阪神芝2200": {"note": "内回り. 宝塚記念等。非常にタフな内回りコース。時計のかかる馬場になりやすく、スタミナと持続力の消耗戦になりやすい。ステイゴールド系やキズナ○。", "track": "芝", "dist": "中距離", "good_lineage": ["ステイゴールド系", "ハーツクライ", "キズナ", "ルーラーシップ"]},
+    "阪神芝2400": {"note": "外回り。神戸新聞杯等。直線が長いため紛れが少ない。スタミナと直線での末脚の持続力、G1級の実力が素直に要求されるタフなコース。", "track": "芝", "dist": "長距離", "good_lineage": ["ハーツクライ", "ドゥラメンテ", "キタサンブラック"]},
+    "阪神芝3000": {"note": "阪神大賞典。内回りを1周半するタフな長距離。スタミナ型、荒れ馬場になればなるほどステイゴールド/ゴールドシップ系優勢。", "track": "芝", "dist": "長距離", "good_lineage": ["ゴールドシップ", "オルフェーヴル", "キズナ"]},
+    "阪神ダ1200": {"note": "急坂スタートのため、テンのスピードだけでなくパワーが必要。スピードのある外枠の先行馬が泥を被らずに押し切る展開が多い。", "track": "ダート", "dist": "短距離", "good_lineage": ["ヘニーヒューズ", "サウスヴィグラス", "シニスターミニスター"]},
+    "阪神ダ1400": {"note": "プロキオンS等。芝スタートで外枠が圧倒的に有利。非常に時計が速くなりやすく、芝並みのスピード持続力と直線の坂をこなす大型馬が有利。", "track": "ダート", "dist": "短距離", "good_lineage": ["ヘニーヒューズ", "ロードカナロア", "シニスターミニスター"]},
+    "阪神ダ1800": {"note": "主要ダート。スタート直後に急坂を登る。タフで過酷なスタミナ勝負になりやすく、先行して最後までバテずに伸びるシニスターミニスターが強力。", "track": "ダート", "dist": "中距離", "good_lineage": ["シニスターミニスター", "ホッコータルマエ", "キングカメハメハ", "マジェスティックウォリアー"]},
+    "阪神ダ2000": {"note": "シリウスS等。1800mよりもさらにスタミナ要求値が高い。JRAダートの中でも屈指のタフコースで、ダート長距離の適性を持つパワー型が狙い目。", "track": "ダート", "dist": "長距離", "good_lineage": ["シニスターミニスター", "キングカメハメハ"]},
+
+    # 他、主要ローカルコース
+    "中京芝1200": {"note": "高松宮記念等。最後の直線には急坂があり直線も長いため、短距離ながらマイル級のタフさが必要。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ミッキーアイル", "ダイワメジャー"]},
+    "中京ダ1800": {"note": "チャンピオンズC等。1、2コーナーが非常にタイトで、内枠の先行・好位差しが抜群に有利。外枠は致命的なロスになりやすい。", "track": "ダート", "dist": "中距離", "good_lineage": ["キングカメハメハ", "シニスターミニスター", "ホッコータルマエ", "ドレフォン"]},
+    "新潟芝1600": {"note": "関屋記念等。外回り。日本一長い直線（659m）を持つ。極限の瞬発力・キレ味勝負になりやすくディープ系や瞬発力血統有利。", "track": "芝", "dist": "中距離", "good_lineage": ["ディープインパクト系", "ハーツクライ", "スワーヴリチャード"]},
+    "福島ダ1700": {"note": "ローカルダートの代表格。非常に小回りで、内枠から先手を奪える馬、または外枠から強引にハナを奪える快速馬を重視。", "track": "ダート", "dist": "中距離", "good_lineage": ["シニスターミニスター", "パイロ", "ホッコータルマエ", "マジェスティックウォリアー"]},
+    "小倉芝1200": {"note": "小倉2歳S等。下り坂スタートのため超ハイペースの高速時計が出やすい。内枠の先行馬か、スピードのあるマクリ馬有利。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ビッグアーサー", "ダイワメジャー", "ミッキーアイル"]},
+    "函館芝2000": {"note": "函館記念等。洋芝2000m。JRAで最も重い芝コースの1つ。スタミナとパワーを併せ持つハービンジャーやキズナが台頭。", "track": "芝", "dist": "中距離", "good_lineage": ["ハービンジャー", "オルフェーヴル", "ルーラーシップ", "キズナ"]},
+    "札幌芝2000": {"note": "札幌記念等。夏の最大大一番。コーナーが丸く平坦。洋芝のタフな持続力戦になりやすく、実績のある実力馬が強い。", "track": "芝", "dist": "中距離", "good_lineage": ["ハービンジャー", "ステイゴールド系", "キングカメハメハ系", "キズナ"]}
 }
 
 # ==========================================
-# ⚙️ 3. アプリ初期設定 & レイアウト
+# 🏇 JOCKEY_MASTER 精鋭ジョッキーデータ（36名）
 # ==========================================
-st.set_page_config(page_title="競馬予想・完全予想版システム", layout="wide")
-st.title("🏆 競馬予想・ジョッキー＆コース事典 【完全予想版】")
-
-if "loaded_data" not in st.session_state:
-    st.session_state["loaded_data"] = {}
-
-# 📱 スマホ救済ロード機能（URLからの自動読み込み）
-query_params = st.query_params
-if "data" in query_params and not st.session_state.get("url_loaded", False):
-    try:
-        raw_data = query_params["data"]
-        decoded_json = urllib.parse.unquote(raw_data)
-        st.session_state["loaded_data"] = json.loads(decoded_json)
-        st.session_state["url_loaded"] = True
-        st.toast("URLからデータを正常にロードしました！")
-    except:
-        st.error("URLからの自動ロードに失敗しました。下部の『手動ロード』を試してください。")
-
-# --- 🗺️ コース選択セクション ---
-st.header("🗺️ コース選択")
-saved_course = st.session_state["loaded_data"].get("course", "(未選択)") if st.session_state["loaded_data"] else "(未選択)"
-sel_course = st.selectbox(
-    "レースが行われるコースを選択してください:", 
-    ["(未選択)"] + list(COURSE_MASTER.keys()), 
-    index=(["(未選択)"] + list(COURSE_MASTER.keys())).index(saved_course) if saved_course in COURSE_MASTER else 0
-)
-
-auto_track, auto_dist, good_blood_list = "選択なし", "選択なし", []
-if sel_course != "(未選択)":
-    c_info = COURSE_MASTER[sel_course]
-    st.info(f"**【{sel_course} の特徴・有力血統】**\n\n{c_info['note']}")
-    auto_track, auto_dist, good_blood_list = c_info["track"], c_info["dist"], c_info["good_lineage"]
-
-st.divider()
-
-# ==========================================
-# 📋 4. 出馬表入力エリア
-# ==========================================
-st.write("### 📝 出馬表データ入力（18頭フル対応・スマホ保存・インフレ抑制機能搭載）")
-
-# セーブ・ロードボタン
-save_cols = st.columns([4, 4, 4])
-with save_cols[0]:
-    save_clicked = st.button("📥 入力内容を保存データに変換する", use_container_width=True, type="primary")
-with save_cols[1]:
-    load_clicked = st.button("🔄 画面を更新してURLのデータを反映", use_container_width=True)
-
-calculated_results = []
-c_widths = [0.6, 1.4, 0.6, 0.6, 0.9, 1.4, 1.8, 1.2, 0.9, 0.9, 0.9, 0.9, 1.1, 1.1, 1.1, 1.1, 0.9]
-cols = st.columns(c_widths)
-headers = ["馬番", "馬名", "人気", "指数", "前3F", "父馬", "騎手選択", "手入力用", "馬場", "脚質", "枠順", "距離", "プラス条件①", "プラス条件②", "マイナス①", "マイナス②", "スコア"]
-for col, h in zip(cols, headers):
-    col.write(f"**{h}**")
-
-current_inputs = {"course": sel_course, "rows": {}}
-
-# 18頭分の入力行自動生成
-for i in range(1, 19):
-    c = st.columns(c_widths)
-    s_row = st.session_state["loaded_data"].get("rows", {}).get(str(i), {}) if st.session_state["loaded_data"] else {}
+JOCKEY_MASTER = {
+    # 超Sランク・トップランカー
+    "ルメール": {"base_bonus": 10, "good_venues": ["東京", "中山", "京都", "阪神"], "bad_track_bonus": 2, "note": "JRA最強。大舞台の信頼度は異次元。"},
+    "川田": {"base_bonus": 9, "good_venues": ["阪神", "京都", "中京", "小倉"], "bad_track_bonus": 3, "note": "抜群の勝率と先行意識。好位抜け出しの鬼。"},
+    "モレイラ": {"base_bonus": 10, "good_venues": ["東京", "阪神", "京都", "中山"], "bad_track_bonus": 3, "note": "「マジックマン」。短期免許時は文句なしの最優先。"},
+    "レーン": {"base_bonus": 9, "good_venues": ["東京", "中山", "阪神"], "bad_track_bonus": 3, "note": "オーストラリアの名手。重賞勝負強さは折り紙付き。"},
+    "マーカンド": {"base_bonus": 8, "good_venues": ["東京", "中山", "中京"], "bad_track_bonus": 5, "note": "英国の剛腕。道悪や直線での叩き合いで馬を伸ばす。"},
+    "武豊": {"base_bonus": 7, "good_venues": ["京都", "阪神", "東京"], "bad_track_bonus": 2, "note": "伝統のレジェンド。長距離・京都での手綱捌きは神。"},
+    "坂井": {"base_bonus": 7, "good_venues": ["中京", "阪神", "新潟", "東京"], "bad_track_bonus": 3, "note": "積極果敢な逃げ・先行で高い勝率を誇る。"},
+    "横山武": {"base_bonus": 7, "good_venues": ["中山", "東京", "函館", "札幌"], "bad_track_bonus": 4, "note": "中山巧者。洋芝やタフ馬場でもガシガシ追える。"},
+    "戸崎": {"base_bonus": 6, "good_venues": ["東京", "中山", "新潟"], "bad_track_bonus": 2, "note": "関東の安定勢力。直線での粘り込みが得意。"},
     
-    num_val = s_row.get("num", str(i))
-    num = c[0].text_input(f"num_{i}", value=num_val, label_visibility="collapsed")
-    name = c[1].text_input(f"name_{i}", value=s_row.get("name", ""), label_visibility="collapsed", placeholder="馬名")
-    pop = c[2].number_input(f"pop_{i}", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), label_visibility="collapsed")
-    idx = c[3].number_input(f"idx_{i}", value=float(s_row.get("idx", 0.0)), step=0.1, label_visibility="collapsed")
-    l3f = c[4].number_input(f"l3f_{i}", value=float(s_row.get("l3f", 35.0)), step=0.1, label_visibility="collapsed")
-    sire = c[5].text_input(f"sire_{i}", value=s_row.get("sire", ""), label_visibility="collapsed", placeholder="父馬")
+    # 主要実力派・ベテラン
+    "岩田康": {"base_bonus": 5, "good_venues": ["阪神", "京都", "中山"], "bad_track_bonus": 6, "note": "イン突きの極意。荒れ馬場・道悪のイン差し警戒。"},
+    "松山": {"base_bonus": 6, "good_venues": ["京都", "阪神", "中京", "小倉"], "bad_track_bonus": 4, "note": "タフな消耗戦が得意。1日通して非常に安定。"},
+    "岩田望": {"base_bonus": 6, "good_venues": ["中京", "阪神", "小倉", "新潟"], "bad_track_bonus": 3, "note": "若手トップクラス。ダートの複勝率が極めて高い。"},
+    "西村淳": {"base_bonus": 6, "good_venues": ["中京", "京都", "阪神", "新潟"], "bad_track_bonus": 4, "note": "近年急成長。積極的な位置取りとローカル重賞○。"},
+    "デムーロ": {"base_bonus": 5, "good_venues": ["中山", "阪神", "東京"], "bad_track_bonus": 6, "note": "道悪・荒れ馬場での外マクリは一級品の一発屋。"},
+    "和田竜": {"base_bonus": 4, "good_venues": ["京都", "阪神", "中京"], "bad_track_bonus": 7, "note": "【道悪特効】重・不良馬場で追わせたら無類の強さ。"},
+    "幸": {"base_bonus": 4, "good_venues": ["京都", "阪神", "小倉"], "bad_track_bonus": 5, "note": "ダートや道悪の先行粘り込みで穴をあける職人。"},
+    "横山典": {"base_bonus": 5, "good_venues": ["中山", "東京", "函館"], "bad_track_bonus": 3, "note": "ベテランの魔術師。ポツンからの大外一気やイン突き。"},
+    "鮫島駿": {"base_bonus": 5, "good_venues": ["中京", "小倉", "阪神", "新潟"], "bad_track_bonus": 4, "note": "ローカル開催や中京でのコース取りが非常に上手い。"},
+    "菅原明": {"base_bonus": 5, "good_venues": ["東京", "中山", "新潟"], "bad_track_bonus": 4, "note": "関東の実力派。長い直線での追える末脚が武器。"},
+    "三浦": {"base_bonus": 4, "good_venues": ["東京", "中山", "新潟"], "bad_track_bonus": 3, "note": "関東のベテラン。ダートの上位人気馬での安定感。"},
+    "団野": {"base_bonus": 5, "good_venues": ["京都", "阪神", "小倉"], "bad_track_bonus": 4, "note": "大舞台でも物怖じしない度胸と鋭い差し脚が魅力。"},
+    "津村": {"base_bonus": 4, "good_venues": ["東京", "中山", "新潟"], "bad_track_bonus": 4, "note": "G1勝利も果たした実力派。好位立ち回りで真価。"},
+    "北村友": {"base_bonus": 4, "good_venues": ["阪神", "京都", "中京"], "bad_track_bonus": 3, "note": "復活を遂げた実力派。牝馬限定戦やマイル以下で妙味。"},
+    "藤岡佑": {"base_bonus": 4, "good_venues": ["京都", "阪神", "函館"], "bad_track_bonus": 3, "note": "展開を読む目に長け、ペースが落ち着いた先行策○。"},
+    "横山和": {"base_bonus": 5, "good_venues": ["中山", "東京", "札幌"], "bad_track_bonus": 4, "note": "ダート長距離や洋芝などスタミナ舞台で強気。"},
+    "田辺": {"base_bonus": 4, "good_venues": ["東京", "中山"], "bad_track_bonus": 4, "note": "ノーマークの逃げ・先行での大穴演出が代名詞。"},
+    "吉田隼": {"base_bonus": 4, "good_venues": ["中山", "函館", "札幌"], "bad_track_bonus": 3, "note": "ローカル・洋芝での安定感が高く、インを突く。"},
+    "丹内": {"base_bonus": 4, "good_venues": ["函館", "札幌", "福島"], "bad_track_bonus": 5, "note": "北海道・ローカルの帝王。洋芝滞在競馬は鉄板。"},
     
-    jock_list = sorted([k for k in JOCKEY_MASTER.keys() if k != "その他（自由手入力）"]) + ["その他（自由手入力）"]
-    s_jock = s_row.get("jock", "その他（自由手入力）" if s_row.get("custom_jock") else "(未選択)")
-    j_idx = (["(未選択)"] + jock_list).index(s_jock) if s_jock in (["(未選択)"] + jock_list) else 0
-    jock = c[6].selectbox(f"jock_{i}", ["(未選択)"] + jock_list, index=j_idx, label_visibility="collapsed")
-    
-    custom_jock = ""
-    if jock == "その他（自由手入力）":
-        custom_jock = c[7].text_input(f"custom_jock_{i}", value=s_row.get("custom_jock", ""), label_visibility="collapsed", placeholder="騎手名")
-    else:
-        c[7].write("---")
+    # 若手・期待株＆穴の職人
+    "田口": {"base_bonus": 5, "good_venues": ["中京", "京都", "阪神", "小倉"], "bad_track_bonus": 4, "note": "若手の星。抜群の追込力と積極性。"},
+    "西塚": {"base_bonus": 4, "good_venues": ["東京", "中山", "新潟"], "bad_track_bonus": 3, "note": "確かな騎乗技術で頭角を現す関東期待の若手。"},
+    "今村": {"base_bonus": 3, "good_venues": ["小倉", "新潟", "中京"], "bad_track_bonus": 3, "note": "ローカル短距離・ダート戦でのハナ切りで真価。"},
+    "佐々木": {"base_bonus": 5, "good_venues": ["函館", "札幌", "中山"], "bad_track_bonus": 4, "note": "北海道で大ブレイク。先行ポジション取りが秀逸。"},
+    "菱田": {"base_bonus": 3, "good_venues": ["京都", "阪神", "小倉"], "bad_track_bonus": 4, "note": "穴馬を前線に持ってくる粘り強い追い込みが特徴。"},
+    "斎藤": {"base_bonus": 3, "good_venues": ["中京", "小倉", "新潟"], "bad_track_bonus": 3, "note": "先行意識が高く、ローカルのダート戦で警戒。"},
+    "武藤": {"base_bonus": 3, "good_venues": ["東京", "中山"], "bad_track_bonus": 4, "note": "ダートの短距離戦での内枠逃げ粘りに注意。"},
+    "大野": {"base_bonus": 3, "good_venues": ["東京", "中山", "新潟"], "bad_track_bonus": 4, "note": "中山ダートや直線の長いコースでの追い込み特化。"}
+}
+
+BAD_TRACK_SIRES = {
+    "芝": ["キズナ", "ハービンジャー", "エピファネイア", "オルフェーヴル", "ゴールドシップ", "ドゥラメンテ", "モーリス", "ルーラーシップ"],
+    "ダート": ["シニスターミニスター", "ホッコータルマエ", "ヘニーヒューズ", "パイロ", "マジェスティックウォリアー", "ドレフォン"]
+}
+
+class HorseEncoderApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("JRA全コース対応 AI予想システム ver1.01")
+        self.root.geometry("1150x850")
         
-    t_opts = ["選択なし", "芝", "ダート"]
-    t_def = t_opts.index(s_row.get("sel_track")) if s_row.get("sel_track") in t_opts else (t_opts.index(auto_track) if auto_track in t_opts else 0)
-    sel_track = c[8].selectbox(f"p1_{i}", t_opts, index=t_def, label_visibility="collapsed")
-    
-    sty_opts = ["選択なし", "逃げ", "先行", "差し", "追い込み"]
-    sty_def = sty_opts.index(s_row.get("sel_style")) if s_row.get("sel_style") in sty_opts else 0
-    sel_style = c[9].selectbox(f"p2_{i}", sty_opts, index=sty_def, label_visibility="collapsed")
-    
-    f_opts = ["選択なし", "内枠", "外枠"]
-    try:
-        f_def_idx = 1 if int(num) <= 8 else (2 if int(num) >= 13 else 0)
-    except:
-        f_def_idx = 0
-    f_def = f_opts.index(s_row.get("sel_frame")) if s_row.get("sel_frame") in f_opts else f_def_idx
-    sel_frame = c[10].selectbox(f"p3_{i}", f_opts, index=f_def, label_visibility="collapsed")
-    
-    d_opts = ["選択なし", "短距離", "中距離", "長距離"]
-    d_def = d_opts.index(s_row.get("sel_dist")) if s_row.get("sel_dist") in d_opts else (d_opts.index(auto_dist) if auto_dist in d_opts else 0)
-    sel_dist = c[11].selectbox(f"p4_{i}", d_opts, index=d_def, label_visibility="collapsed")
-    
-    plus_opts, minus_opts = ["選択なし"], ["選択なし"]
-    if jock in JOCKEY_MASTER:
-        for k, v in JOCKEY_MASTER[jock]["factors"].items():
-            if k not in ["芝", "ダート", "逃げ", "先行", "差し", "追い込み", "内枠", "外枠", "短距離", "中距離", "長距離"]:
-                if v > 0: plus_opts.append(k)
-                elif v < 0: minus_opts.append(k)
-                
-    sel_plus1 = c[12].selectbox(f"p5_1_{i}", plus_opts, index=plus_opts.index(s_row.get("sel_plus1")) if s_row.get("sel_plus1") in plus_opts else 0, label_visibility="collapsed")
-    sel_plus2 = c[13].selectbox(f"p5_2_{i}", plus_opts, index=plus_opts.index(s_row.get("sel_plus2")) if s_row.get("sel_plus2") in plus_opts else 0, label_visibility="collapsed")
-    sel_minus1 = c[14].selectbox(f"p6_1_{i}", minus_opts, index=minus_opts.index(s_row.get("sel_minus1")) if s_row.get("sel_minus1") in minus_opts else 0, label_visibility="collapsed")
-    sel_minus2 = c[15].selectbox(f"p6_2_{i}", minus_opts, index=minus_opts.index(s_row.get("sel_minus2")) if s_row.get("sel_minus2") in minus_opts else 0, label_visibility="collapsed")
-    
-    current_inputs["rows"][str(i)] = {
-        "num": num, "name": name, "pop": pop, "idx": idx, "l3f": l3f, "sire": sire, "jock": jock, "custom_jock": custom_jock,
-        "sel_track": sel_track, "sel_style": sel_style, "sel_frame": sel_frame, "sel_dist": sel_dist,
-        "sel_plus1": sel_plus1, "sel_plus2": sel_plus2, "sel_minus1": sel_minus1, "sel_minus2": sel_minus2
-    }
-    
-    # ==========================================
-    # 🧮 5. 新・スコア計算ロジック（マイルド化版）
-    # ==========================================
-    score = 0.0
-    note_text = ""
-    
-    if jock != "(未選択)":
-        j_data = JOCKEY_MASTER.get(jock, JOCKEY_MASTER["その他（自由手入力）"])
-        jockey_base = j_data["base"]
-        factors = j_data["factors"]
-        note_text = j_data.get("note", "")
+        style = ttk.Style()
+        style.theme_use("clam")
         
-        jockey_modifier = 0.0
-        chosen_conditions = [sel_track, sel_style, sel_frame, sel_dist, sel_plus1, sel_plus2, sel_minus1, sel_minus2, sel_course]
-        for cond in chosen_conditions:
-            if cond in factors:
-                val = factors[cond]
-                if val < 0 and l3f <= 33.9: val = 0.0  
-                jockey_modifier += val
-                
-        jockey_modifier = min(jockey_modifier, 0.20)
-        jockey_modifier = max(jockey_modifier, -0.20)
+        self.num_horses = tk.IntVar(value=8)
+        self.horse_inputs = []
         
-        final_jockey_rate = jockey_base + jockey_modifier
-        mitigated_jockey_rate = 1.0 + (final_jockey_rate - 1.0) * 0.70
+        self.create_menu_and_header()
+        self.create_main_layout()
         
-        horse_base_score = idx
-        if sire != "" and any(target in sire for target in good_blood_list):
-            horse_base_score += 5.0 
-        if (sel_style in ["逃げ", "先行"]) and (l3f <= 34.5):
-            horse_base_score += 3.0 
+        self.update_course_options()
+        self.change_horse_count()
+
+    def create_menu_and_header(self):
+        header_frame = ttk.LabelFrame(self.root, text=" レース基本設定 ", padding=10)
+        header_frame.pack(fill="x", padx=10, pady=5)
+        
+        ttk.Label(header_frame, text="競馬場:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        self.venue_combo = ttk.Combobox(header_frame, values=["東京", "中山", "京都", "阪神", "中京", "新潟", "福島", "小倉", "函館", "札幌"], width=10, state="readonly")
+        self.venue_combo.grid(row=0, column=1, padx=5, pady=5)
+        self.venue_combo.set("東京")
+        self.venue_combo.bind("<<ComboboxSelected>>", lambda e: self.update_course_options())
+        
+        ttk.Label(header_frame, text="コース:").grid(row=0, column=2, padx=5, pady=5, sticky="w")
+        self.course_combo = ttk.Combobox(header_frame, width=15, state="readonly")
+        self.course_combo.grid(row=0, column=3, padx=5, pady=5)
+        self.course_combo.bind("<<ComboboxSelected>>", lambda e: self.show_course_note())
+        
+        ttk.Label(header_frame, text="馬場状態:").grid(row=0, column=4, padx=5, pady=5, sticky="w")
+        self.track_condition_combo = ttk.Combobox(header_frame, values=["良", "稍重", "重", "不良"], width=8, state="readonly")
+        self.track_condition_combo.grid(row=0, column=5, padx=5, pady=5)
+        self.track_condition_combo.set("良")
+        
+        ttk.Label(header_frame, text="出頭数:").grid(row=0, column=6, padx=5, pady=5, sticky="w")
+        self.spin_horses = tk.Spinbox(header_frame, from_=2, to=18, textvariable=self.num_horses, command=self.change_horse_count, width=5)
+        self.spin_horses.grid(row=0, column=7, padx=5, pady=5)
+        
+        self.calc_btn = ttk.Button(header_frame, text="📊 総合AIスコアを計算", command=self.calculate_scores)
+        self.calc_btn.grid(row=0, column=8, padx=20, pady=5)
+        
+        self.note_label = ttk.Label(header_frame, text="※コースを選択してください", foreground="gray", font=("MS Gothic", 9, "italic"), wraplength=1000)
+        self.note_label.grid(row=1, column=0, columnspan=9, padx=5, pady=5, sticky="w")
+
+    def create_main_layout(self):
+        main_paned = ttk.PanedWindow(self.root, orient="horizontal")
+        main_paned.pack(fill="both", expand=True, padx=10, pady=5)
+        
+        left_frame = ttk.LabelFrame(main_paned, text=" 📝 出走馬＆ジョッキーデータ入力 (騎手欄は直接入力も可能) ", padding=5)
+        self.canvas = tk.Canvas(left_frame, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(left_frame, orient="vertical", command=self.canvas.yview)
+        self.scroll_input_frame = ttk.Frame(self.canvas)
+        
+        self.scroll_input_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.create_window((0, 0), window=self.scroll_input_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        
+        self.canvas.bind_all("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+        
+        self.canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        main_paned.add(left_frame, weight=6)
+        
+        right_frame = ttk.LabelFrame(main_paned, text=" 🏆 最終解析・評価結果一覧 ", padding=5)
+        self.result_text = tk.Text(right_frame, font=("Courier", 10), wrap="none")
+        r_scroll_y = ttk.Scrollbar(right_frame, orient="vertical", command=self.result_text.yview)
+        r_scroll_x = ttk.Scrollbar(right_frame, orient="horizontal", command=self.result_text.xview)
+        self.result_text.configure(yscrollcommand=r_scroll_y.set, xscrollcommand=r_scroll_x.set)
+        
+        self.result_text.pack(side="top", fill="both", expand=True)
+        r_scroll_y.pack(side="right", fill="y")
+        r_scroll_x.pack(side="bottom", fill="x")
+        main_paned.add(right_frame, weight=5)
+
+    def update_course_options(self):
+        v = self.venue_combo.get()
+        valid_courses = [k for k in COURSE_MASTER.keys() if k.startswith(v)]
+        self.course_combo.config(values=valid_courses)
+        if valid_courses:
+            self.course_combo.set(valid_courses[0])
+        else:
+            self.course_combo.set("")
+        self.show_course_note()
+
+    def show_course_note(self):
+        c_key = self.course_combo.get()
+        if c_key in COURSE_MASTER:
+            self.note_label.config(text=f"【コース特徴】 {COURSE_MASTER[c_key]['note']}", foreground="black")
+        else:
+            self.note_label.config(text="※該当するコースデータがありません", foreground="red")
+
+    def change_horse_count(self):
+        for widgets in self.scroll_input_frame.winfo_children():
+            widgets.destroy()
             
-        score = (horse_base_score * mitigated_jockey_rate) - (pop * 0.7)
+        self.horse_inputs = []
         
-    c[16].write(f"**{score:.2f}**")
-    
-    display_jock = custom_jock if jock == "その他（自由手入力）" else (jock if jock != "(未選択)" else "")
-    calculated_results.append({
-        "馬番": num, "馬name": name, "スコア": score, "父馬": sire, "騎手": display_jock, "戦略メモ": note_text
-    })
+        headers = ["馬番", "馬名", "前走着順", "前走人気", "前走上り", "父(種牡馬)", "想定騎手"]
+        widths = [4, 12, 6, 6, 8, 12, 12]
+        for col_idx, (text, w) in enumerate(zip(headers, widths)):
+            lbl = ttk.Label(self.scroll_input_frame, text=text, font=("MS Gothic", 9, "bold"), anchor="center")
+            lbl.grid(row=0, column=col_idx, padx=3, pady=5, sticky="ew")
+            
+        all_jockeys = list(JOCKEY_MASTER.keys())
+        default_sires = ["キズナ", "ロードカナロア", "エピファネイア", "ハーツクライ", "シニスターミニスター", "ドゥラメンテ", "モーリス", "ゴールドシップ", "ハービンジャー", "ルーラーシップ"]
+        
+        for i in range(self.num_horses.get()):
+            row = i + 1
+            
+            num_lbl = ttk.Label(self.scroll_input_frame, text=f" {row} ", anchor="center")
+            num_lbl.grid(row=row, column=0, padx=3, pady=2)
+            
+            ent_name = ttk.Entry(self.scroll_input_frame, width=12)
+            ent_name.insert(0, f"ウマ{row}")
+            ent_name.grid(row=row, column=1, padx=3, pady=2)
+            
+            ent_rank = ttk.Entry(self.scroll_input_frame, width=6)
+            ent_rank.insert(0, str((i % 4) + i // 4 + 1))
+            ent_rank.grid(row=row, column=2, padx=3, pady=2)
+            
+            ent_pop = ttk.Entry(self.scroll_input_frame, width=6)
+            ent_pop.insert(0, str((i % 5) + 1))
+            ent_pop.grid(row=row, column=3, padx=3, pady=2)
+            
+            ent_f3f = ttk.Entry(self.scroll_input_frame, width=8)
+            ent_f3f.insert(0, str(34.0 + (i * 0.2)))
+            ent_f3f.grid(row=row, column=4, padx=3, pady=2)
+            
+            ent_sire = ttk.Entry(self.scroll_input_frame, width=12)
+            ent_sire.insert(0, default_sires[i % len(default_sires)])
+            ent_sire.grid(row=row, column=5, padx=3, pady=2)
+            
+            # 【★改良ポイント】EntryからComboboxに変更 (自由入力も許可する仕様)
+            combo_jock = ttk.Combobox(self.scroll_input_frame, values=all_jockeys, width=10)
+            combo_jock.insert(0, all_jockeys[i % len(all_jockeys)]) 
+            combo_jock.grid(row=row, column=6, padx=3, pady=2)
+            
+            self.horse_inputs.append({
+                "gate": row, "name": ent_name, "rank": ent_rank, 
+                "pop": ent_pop, "f3f": ent_f3f, "sire": ent_sire, "jockey": combo_jock
+            })
+            
+        self.canvas.update_idletasks()
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
-# ==========================================
-# 💾 6. スマホ完全救済ストレージUI
-# ==========================================
-if save_clicked:
-    json_str = json.dumps(current_inputs, ensure_ascii=False)
-    encoded_json = urllib.parse.quote(json_str)
-    share_url = f"?data={encoded_json}"
-    
-    st.success("💾 データ変換に成功しました！以下の方法で保存・復元が可能です。")
-    
-    # 救済ルート①：URLコピー用スクリプト
-    html(f"""
-        <script>
-        const url = window.parent.location.origin + window.parent.location.pathname + "{share_url}";
-        navigator.clipboard.writeText(url).then(function() {{
-            alert('📥 自動保存URLをコピーしました！メモ帳やLINEに貼り付けて保管してください。');
-        }}).catch(function(err) {{
-            prompt('URLが自動コピーできなかったため、以下をすべて選択してコピーしてください：', url);
-        }});
-        </script>
-    """, height=0)
-    
-    # 救済ルート②：URLが動かない時用のテキストコピペエリア
-    st.text_area("📋【バックアップ用の文字】URLが開けない場合は、下の枠内の文字をすべてコピーして保存してください：", value=json_str, height=100)
+    def calculate_scores(self):
+        c_key = self.course_combo.get()
+        if not c_key or c_key not in COURSE_MASTER:
+            messagebox.showerror("エラー", "有効なコースを選択してください。")
+            return
+            
+        current_venue = self.venue_combo.get()
+        course_data = COURSE_MASTER[c_key]
+        condition = self.track_condition_combo.get()
+        is_bad_track = condition in ["重", "不良"]
+        
+        scored_horses = []
+        
+        for idx, inp in enumerate(self.horse_inputs):
+            try:
+                name = inp["name"].get().strip()
+                rank = int(inp["rank"].get())
+                pop = int(inp["pop"].get())
+                f3f = float(inp["f3f"].get())
+                sire = inp["sire"].get().strip()
+                jockey = inp["jockey"].get().strip()
+            except ValueError:
+                messagebox.showerror("入力エラー", f"馬番 {idx+1} の数値データが不正です。")
+                return
+                
+            score = 100
+            
+            # 1. 前走成績補正
+            if rank == 1: score += 5
+            elif rank == 2: score += 2
+            elif rank > 5: score -= (rank - 5) * 3
+            if pop > 5: score -= (pop - 5) * 2
+            
+            # 2. 上り3F能力評価
+            if course_data["track"] == "芝" and course_data["dist"] in ["中距離", "長距離"]:
+                if f3f <= 34.0: score += 10
+                elif f3f <= 35.0: score += 5
+                elif f3f >= 36.5: score -= 8
+            else:
+                if f3f <= 35.0: score += 6
+                elif f3f >= 37.5: score -= 6
+                
+            # 3. コース適合血統ボーナス
+            if sire in course_data["good_lineage"]:
+                score += 6
+                
+            # 4. 道悪血統特効補正
+            if is_bad_track and sire in BAD_TRACK_SIRES.get(course_data["track"], []):
+                score += 8
+                
+            # 5. ジョッキー能力＆舞台適合補正
+            j_advice = "データなし"
+            if jockey in JOCKEY_MASTER:
+                j_data = JOCKEY_MASTER[jockey]
+                j_advice = j_data["note"]
+                score += j_data["base_bonus"]
+                
+                if current_venue in j_data["good_venues"]:
+                    score += 4
+                    
+                if is_bad_track:
+                    score += j_data["bad_track_bonus"]
+            else:
+                # リストにないジョッキーが手入力された場合の処理
+                score += 2
+                j_advice = "リスト外の騎手（標準補正適用）。展開次第。"
+                
+            scored_horses.append({
+                "gate": inp["gate"], "name": name, "sire": sire, "jockey": jockey, "score": score, "j_note": j_advice
+            })
+            
+        # スコアの高い順にソート
+        scored_horses.sort(key=lambda x: x["score"], reverse=True)
+        
+        # 結果画面の描画
+        self.result_text.delete("1.0", tk.END)
+        self.result_text.insert(tk.END, f"👑 JRA全コース対応 AI予想システム ver1.01 👑\n")
+        self.result_text.insert(tk.END, f"◆ 開催舞台: {c_key} ({course_data['track']}/{course_data['dist']})\n")
+        self.result_text.insert(tk.END, f"◆ 馬場状態: 【 {condition} 】\n")
+        if is_bad_track:
+            self.result_text.insert(tk.END, f"⚠️ 道悪警報：各騎手・血統固有の重馬場特効数値を算入済み。\n")
+        self.result_text.insert(tk.END, f"-"*72 + "\n")
+        self.result_text.insert(tk.END, f" 印 |馬番| 馬名          | 騎手     | 血統(父)     | 総合スコア \n")
+        self.result_text.insert(tk.END, f"-"*72 + "\n")
+        
+        marks = ["◎", "○", "▲", "△", "☆"]
+        for rank_idx, h in enumerate(scored_horses):
+            mark = marks[rank_idx] if rank_idx < len(marks) else "  "
+            self.result_text.insert(tk.END, f" {mark} | {h['gate']:02d} | {h['name']:<13s} | {h['jockey']:<8s} | {h['sire']:<12s} | {h['score']:5.1f} pt\n")
+            
+        self.result_text.insert(tk.END, f"-"*72 + "\n\n💡 コース攻略・戦術総評:\n")
+        self.result_text.insert(tk.END, f" {course_data['note']}\n\n")
+        
+        self.result_text.insert(tk.END, "🏆 上位推奨馬のジョッキー補正根拠:\n")
+        for i in range(min(3, len(scored_horses))):
+            h = scored_horses[i]
+            self.result_text.insert(tk.END, f" ・{h['name']} ({h['jockey']}): {h['j_note']}\n")
 
-if load_clicked:
-    html("<script>window.parent.location.reload();</script>", height=0)
-
-st.markdown("---")
-st.subheader("📥 スマホ救済・手動データ復元ボックス")
-load_input = st.text_area("保存しておいた「バックアップ用の文字」があれば、ここに貼り付けて下のボタンを押してください：", value="")
-if st.button("📥 手動ロードを実行（コピペ復元）", use_container_width=True):
-    if load_input:
-        try:
-            st.session_state["loaded_data"] = json.loads(load_input)
-            st.toast("データを手動で復元しました！自動で画面を再読み込みします。")
-            st.rerun()
-        except:
-            st.error("貼り付けられた文字の形式が正しくありません。コピー漏れがないか確認してください。")
-    else:
-        st.warning("文字が入力されていません。")
-
-# ==========================================
-# 🏆 7. ランキング生成
-# ==========================================
-st.divider()
-if st.button("🏆 最終予想ランキングを生成", type="primary", use_container_width=True):
-    res_df = pd.DataFrame(calculated_results)
-    res_df = res_df[res_df["馬name"] != ""].sort_values(by="スコア", ascending=False)
-    
-    if not res_df.empty:
-        st.balloons()
-        st.header(f"🎯 本命推奨馬: {res_df.iloc[0]['馬name']} ({res_df.iloc[0]['騎手']})")
-        st.dataframe(res_df[["馬番", "馬name", "父馬", "スコア", "騎手", "戦略メモ"]], use_container_width=True, hide_index=True)
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = HorseEncoderApp(root)
+    root.mainloop()
