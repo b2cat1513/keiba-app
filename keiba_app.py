@@ -1,8 +1,19 @@
 import streamlit as st
 import pandas as pd
+import json
+import os
 
 # ページ全体の基本設定
 st.set_page_config(page_title="ジェニー予想完全版 ver1.00", layout="wide")
+
+# ==========================================
+# 📂 セーブデータの保存先設定
+# ==========================================
+# デスクトップなど、分かりやすいフォルダのパスを指定してください。
+# ※ Windowsでデスクトップにする場合は "C:/Users/ユーザー名/Desktop/jenny_data.json" のように書きます。
+# ※ 空欄 "" の場合は、このPythonプログラムと同じフォルダに「jenny_data.json」という名前で保存されます。
+SAVE_FILE_PATH = "jenny_data.json"
+
 
 # ==========================================
 # 🗺️ 1. コース完全マスター（全38コース網羅）
@@ -57,7 +68,7 @@ COURSE_MASTER = {
     # 札幌
     "札幌芝1200": {"note": "オール洋芝。カーブが緩やかで直線が短いため内枠の逃げ・先行馬が圧倒的有利。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ダイワメジャー"], "fav_gate": "内枠", "fav_style": "逃げ"},
     "札幌芝2000": {"note": "1コーナーまでが長い。1800mに比べペースが落ち着きやすく、インの立ち回り重視。", "track": "芝", "dist": "中距離", "good_lineage": ["ハーツクライ", "キングカメハメハ系"], "fav_gate": "内枠", "fav_style": "先行"},
-    "札幌ダ1700": {"note": "エルムSなど。1コーナーが近く先行争い激化。基本前残りだがハイペースなら捲り決まる。", "track": "ダート", "dist": "中距離", "good_lineage": ["シニスターミニスター", "ホッコータルマエ"], "fav_gate": "不問", "fav_style": "先行"},
+    "札幌ダ1700": {"note": "エルムSなど。1コーナーが近く先行争い激化. 基本前残りだがハイペースなら捲り決まる。", "track": "ダート", "dist": "中距離", "good_lineage": ["シニスターミニスター", "ホッコータルマエ"], "fav_gate": "不問", "fav_style": "先行"},
 
     # 函館
     "函館芝1200": {"note": "スタートから3角まで下り坂。超ハイペースになりやすいが直線短く前残り警戒。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ビッグアーサー"], "fav_gate": "内枠", "fav_style": "逃げ"},
@@ -81,7 +92,7 @@ COURSE_MASTER = {
 }
 
 # ==========================================
-# 🏇 2. ジョッキー事典マスター（実力・リーディング50名完全統合）
+# 🏇 2. ジョッキー事典マスター
 # ==========================================
 JOCKEY_MASTER = {
     "ルメール": {"base_bonus": 10, "good_venues": ["東京", "中山", "京都", "阪神"], "bad_track_bonus": 2, "note": "JRA最高峰。G1・大舞台・長距離の信頼度は異次元。"},
@@ -140,24 +151,66 @@ BAD_TRACK_SIRES = {
 }
 
 # ==========================================
+# 💾 セーブ・ロードの内部処理
+# ==========================================
+# データをロードして一時記憶（Session State）に入れる関数
+def load_data_from_file():
+    if os.path.exists(SAVE_FILE_PATH):
+        try:
+            with open(SAVE_FILE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                st.session_state["loaded_data"] = data
+                return True
+        except Exception as e:
+            st.error(f"ロード中にエラーが発生しました: {e}")
+    return False
+
+# ==========================================
 # 💻 3. アプリケーション メイン UI
 # ==========================================
 st.title("🎯 ジェニー予想完全版 ver1.00")
-st.caption("【完全版】全主要38コース × 50名トップジョッキー事典完全融合・手動加減点プルダウン完全復活モデル")
+st.caption("【完全版】全主要38コース × 50名トップジョッキー事典完全融合・セーブ＆ロード機能搭載モデル")
+
+# --- 📁 セーブデータ操作パネル ---
+st.sidebar.header("💾 セーブデータ管理")
+if os.path.exists(SAVE_FILE_PATH):
+    st.sidebar.success("✅ 前回保存されたデータがあります")
+else:
+    st.sidebar.warning("⚠️ まだセーブデータがありません")
+
+# ロードボタンの配置
+if st.sidebar.button("📂 データを読み込む（ロード）"):
+    if load_data_from_file():
+        st.sidebar.success("データの読み込みに成功しました！下の入力欄に反映されています。")
+        # 画面を再描画させて反映
+        st.rerun()
+    else:
+        st.sidebar.error("セーブファイルが見つかりません。")
 
 # 📍 1. 上部設定エリア
 st.header("📍 レース基本環境")
 col_cfg1, col_cfg2, col_cfg3 = st.columns(3)
 
+# ロードされたデータがあるか確認
+loaded_data = st.session_state.get("loaded_data", {})
+
 with col_cfg1:
-    venue = st.selectbox("競馬場選択", ["東京", "中山", "京都", "阪神", "中京", "新潟", "福島", "小倉", "函館", "札幌"], index=0)
+    default_venue = loaded_data.get("venue", "東京")
+    venue_list = ["東京", "中山", "京都", "阪神", "中京", "新潟", "福島", "小倉", "函館", "札幌"]
+    venue_idx = venue_list.index(default_venue) if default_venue in venue_list else 0
+    venue = st.selectbox("競馬場選択", venue_list, index=venue_idx)
 
 with col_cfg2:
     valid_courses = [k for k in COURSE_MASTER.keys() if k.startswith(venue)]
-    course_key = st.selectbox("コース選択", valid_courses if valid_courses else ["該当なし"])
+    default_course = loaded_data.get("course_key", "")
+    course_idx = valid_courses.index(default_course) if default_course in valid_courses else 0
+    course_key = st.selectbox("コース選択", valid_courses if valid_courses else ["該当なし"], index=course_idx)
 
 with col_cfg3:
-    condition = st.selectbox("馬場状態（道悪判定用）", ["良", "稍重", "重", "不良"], index=0)
+    default_condition = loaded_data.get("condition", "良")
+    cond_list = ["良", "稍重", "重", "不良"]
+    cond_idx = cond_list.index(default_condition) if default_condition in cond_list else 0
+    condition = st.selectbox("馬場状態（道悪判定用）", cond_list, index=cond_idx)
     is_bad_track = condition in ["重", "不良"]
 
 # コース情報のサマリー自動表示
@@ -169,68 +222,105 @@ else:
     st.stop()
 
 # ------------------------------------------
-# 📱 2. 出走馬一括データ入力（スマホ救済 form）
+# 📱 2. 出走馬一括データ入力
 # ------------------------------------------
 st.write("---")
 st.header("📝 出走馬データ一括入力")
-st.caption("※「出頭数」を増やすと、その数だけ正確に入力欄が下に展開されます。最下部のボタンで一発計算します。")
 
-# ここで設定した出頭数が正しく反映されるようループを完全修正しました！
-num_horses = st.number_input("出頭数（入力枠の数）", min_value=2, max_value=18, value=12, step=1)
+default_num_horses = int(loaded_data.get("num_horses", 12))
+num_horses = st.number_input("出頭数（入力枠の数）", min_value=2, max_value=18, value=default_num_horses, step=1)
 
 col_left, col_right = st.columns([8.0, 4.0])
 
 with col_left:
+    # フォームの前にセーブ用データの受け皿を作っておく
+    current_form_data = {}
+    
     with st.form(key="jenny_input_form"):
         
         jock_list = sorted(list(JOCKEY_MASTER.keys()))
         jock_options = ["(その他/手入力する)"] + jock_list
         sample_sires = ["キタサンブラック", "ゴールドシップ", "エピファネイア", "ハーツクライ", "オルフェーヴル", "ルーラーシップ"]
         
-        # 🟢 加減点プルダウン用の選択肢定義
         plus_options = {"なし": 0, "＋1 (好気配)": 1, "＋2 (馬体増減理想)": 2, "＋3 (パドック抜群)": 3, "＋5 (究極のメイチ)": 5}
         minus_options = {"なし": 0, "ー1 (チャカつき)": -1, "ー2 (大幅馬体重増減)": -2, "ー3 (入れ込み酷い)": -3, "ー5 (デキ落ち)": -5}
         
         horse_inputs = []
+        loaded_horses = loaded_data.get("horses", [])
         
-        # 固定配列ではなく、ユーザーが指定した「num_horses」の数だけ完璧に入力欄をループ生成します
         for i in range(int(num_horses)):
             gate = i + 1
             st.markdown(f"##### 🐴 馬番 {gate:02d}")
             
-            # 手動加減点プルダウンを組み込むため、横幅の比率を細かく最適化
+            # 前回保存されたその馬番のデータがあるか探す
+            saved_h = next((h for h in loaded_horses if h["gate"] == gate), {})
+            
             c1, c2, c3, c4, c5, c6, c7 = st.columns([1.5, 0.9, 0.9, 1.3, 1.6, 2.0, 2.0])
             
             with c1:
-                h_name = st.text_input("馬名", value=f"競走馬{gate}", key=f"form_name_{gate}")
+                val_name = saved_h.get("name", f"競走馬{gate}")
+                h_name = st.text_input("馬名", value=val_name, key=f"form_name_{gate}")
             with c2:
-                h_idx = st.number_input("能力値", min_value=0, max_value=200, value=75, key=f"form_idx_{gate}")
+                val_idx = saved_h.get("idx", 75)
+                h_idx = st.number_input("能力値", min_value=0, max_value=200, value=val_idx, key=f"form_idx_{gate}")
             with c3:
-                h_pop = st.number_input("人気", min_value=1, max_value=18, value=((i % 12) + 1), key=f"form_pop_{gate}")
+                val_pop = saved_h.get("pop", ((i % 12) + 1))
+                h_pop = st.number_input("人気", min_value=1, max_value=18, value=val_pop, key=f"form_pop_{gate}")
             with c4:
-                h_f3f = st.number_input("最速上がり", min_value=30.0, max_value=45.0, value=34.2, step=0.1, format="%.1f", key=f"form_f3f_{gate}")
+                val_f3f = saved_h.get("f3f", 34.2)
+                h_f3f = st.number_input("最速上がり", min_value=30.0, max_value=45.0, value=val_f3f, step=0.1, format="%.1f", key=f"form_f3f_{gate}")
             with c5:
-                h_sire = st.text_input("父(種牡馬)", value=sample_sires[i % len(sample_sires)], key=f"form_sire_{gate}")
+                val_sire = saved_h.get("sire", sample_sires[i % len(sample_sires)])
+                h_sire = st.text_input("父(種牡馬)", value=val_sire, key=f"form_sire_{gate}")
             with c6:
-                default_idx = (i % len(jock_list)) + 1 if (i % len(jock_list)) + 1 < len(jock_options) else 1
+                val_j_sel = saved_h.get("j_sel", "")
+                default_idx = jock_options.index(val_j_sel) if val_j_sel in jock_options else ((i % len(jock_list)) + 1 if (i % len(jock_list)) + 1 < len(jock_options) else 1)
                 selected_jock = st.selectbox("想定騎手", jock_options, index=default_idx, key=f"form_j_sel_{gate}")
+                
                 if selected_jock == "(その他/手入力する)":
-                    final_jockey = st.text_input("✍️ 騎手手入力", value="柴田善臣", key=f"form_j_txt_{gate}")
+                    val_j_txt = saved_h.get("jockey", "柴田善臣")
+                    final_jockey = st.text_input("✍️ 騎手手入力", value=val_j_txt, key=f"form_j_txt_{gate}")
                 else:
                     final_jockey = selected_jock
             
-            # 🔥 以前のアプリから引き継いだ手動加減点プルダウンエリア
             with c7:
-                p_label = st.selectbox("➕ プラス項目", list(plus_options.keys()), index=0, key=f"form_plus_{gate}")
-                m_label = st.selectbox("➖ マイナス項目", list(minus_options.keys()), index=0, key=f"form_minus_{gate}")
+                val_plus = saved_h.get("plus_label", "なし")
+                p_idx = list(plus_options.keys()).index(val_plus) if val_plus in plus_options else 0
+                p_label = st.selectbox("➕ プラス項目", list(plus_options.keys()), index=p_idx, key=f"form_plus_{gate}")
+                
+                val_minus = saved_h.get("minus_label", "なし")
+                m_idx = list(minus_options.keys()).index(val_minus) if val_minus in minus_options else 0
+                m_label = st.selectbox("➖ マイナス項目", list(minus_options.keys()), index=m_idx, key=f"form_minus_{gate}")
+                
                 manual_adjustment = plus_options[p_label] + minus_options[m_label]
                     
             horse_inputs.append({
                 "gate": gate, "name": h_name, "idx": h_idx, "pop": h_pop, "f3f": h_f3f, 
-                "sire": h_sire, "jockey": final_jockey, "manual_adj": manual_adjustment
+                "sire": h_sire, "jockey": final_jockey, "j_sel": selected_jock,
+                "plus_label": p_label, "minus_label": m_label, "manual_adj": manual_adjustment
             })
             
-        submit_button = st.form_submit_button(label="🚀 ジェニー予想を実行（最終解析）")
+        c_btn1, c_btn2 = st.columns([1, 1])
+        with c_btn1:
+            submit_button = st.form_submit_button(label="🚀 ジェニー予想を実行（最終解析）")
+        with c_btn2:
+            save_button = st.form_submit_button(label="💾 現在の入力を保存（セーブ）")
+
+    # セーブボタンが押された時のファイル書き込み処理
+    if save_button:
+        save_data = {
+            "venue": venue,
+            "course_key": course_key,
+            "condition": condition,
+            "num_horses": num_horses,
+            "horses": horse_inputs
+        }
+        try:
+            with open(SAVE_FILE_PATH, "w", encoding="utf-8") as f:
+                json.dump(save_data, f, ensure_ascii=False, indent=4)
+            st.success(f"💾 データを正常にセーブしました！次回からは左側の「ファイルを読み込む」ボタンで復元できます。")
+        except Exception as e:
+            st.error(f"セーブ中にエラーが発生しました: {e}")
 
 # ==========================================
 # 🧮 4. 実績コアロジック & 解析結果表示
@@ -242,22 +332,20 @@ with col_right:
         scored_output = []
         
         if course_data.get("dist") == "長距離":
-            st.info("🏁 **長距離特化モード**: 3000m以上のスタミナ適性に寄せた専用配点で計算。")
+            st.info("🏁 **長距離特化モード**で作動中")
         if is_bad_track:
             st.warning(f"☔ **道悪重馬場補正が作動中！**")
         else:
-            st.success("☀️ スピード・キレ味重視の通常ロジックで計算しました。")
+            st.success("☀️ 通常ロジックで計算しました。")
 
         for h in horse_inputs:
             base_score = float(h["idx"])
             bonus = 0.0
             
-            # ① 人気による微調整
             if h["pop"] == 1: bonus += 4.0
             elif h["pop"] == 2: bonus += 2.0
             elif h["pop"] > 5: bonus -= (h["pop"] - 5) * 1.0
             
-            # ② 上がり3Fのキレ味補正
             if course_data.get("dist") == "長距離":
                 if h["f3f"] <= 34.2: bonus += 12.0
                 elif h["f3f"] <= 35.0: bonus += 7.0
@@ -266,17 +354,14 @@ with col_right:
                 if h["f3f"] <= 33.8: bonus += 10.0
                 elif h["f3f"] <= 34.5: bonus += 5.0
             
-            # ③ コース適合血統補正
             if h["sire"] in course_data["good_lineage"]:
                 bonus += 6.0 if course_data.get("dist") == "長距離" else 5.0
                 
-            # ④ 馬場状態（重・不良）による血統特効補正
             if is_bad_track:
                 target_sires = BAD_TRACK_SIRES.get(course_data["track"], [])
                 if h["sire"] in target_sires:
                     bonus += 8.0
             
-            # ⑤ 50名事典マスターの照合
             jockey_name = h["jockey"].strip()
             jockey_note = ""
             
@@ -299,7 +384,6 @@ with col_right:
                 bonus += fallback_bonus
                 jockey_note = f"事典外一律 +{fallback_bonus}pt"
                 
-            # 🔥 ⑥ 手動加減点プルダウンの数値をここで完全合算！
             bonus += h["manual_adj"]
             if h["manual_adj"] != 0:
                 jockey_note += f" / 手動直前補正 {'+' if h['manual_adj'] > 0 else ''}{h['manual_adj']}pt"
@@ -333,4 +417,4 @@ with col_right:
             st.caption(f"鞍上: {h['jockey']} | 補正内容: {h['note']}")
             
     else:
-        st.info("👈 左側のデータフォームから出頭数を指定して入力し、『ジェニー予想を実行』ボタンを押してください。")
+        st.info("👈 左側から入力（またはロード）して『予想を実行』ボタンを押してください。")
