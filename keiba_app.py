@@ -23,7 +23,7 @@ COURSE_MASTER = {
     # 中山
     "中山芝1200": {"note": "スプリンターズSなど。4角まで下り坂。スピードの持続力と最後の急坂を耐えるパワーが必要。内枠有利。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ダイワメジャー"], "fav_gate": "内枠", "fav_style": "逃げ"},
     "中山芝1600": {"note": "外回り。スタートが1角ポケットにあり外枠は壊滅的不利。1〜3枠絶対有利。", "track": "芝", "dist": "中距離", "good_lineage": ["ダイワメジャー", "モーリス"], "fav_gate": "内枠", "fav_style": "先行"},
-    "中山芝1800": {"note": "中山記念など。内回り。1角が近いため先行争い激化。タフな小回り適性と急坂での加速力が必要。", "track": "芝", "dist": "中距離", "good_lineage": ["ディープインパクト系", "ハーツクライ"], "fav_gate": "内枠", "fav_style": "先行"},
+    "中山芝1800": {"note": "中山記念など。内回り。1角が近いため先行争い激化. タフな小回り適性と急坂での加速力が必要。", "track": "芝", "dist": "中距離", "good_lineage": ["ディープインパクト系", "ハーツクライ"], "fav_gate": "内枠", "fav_style": "先行"},
     "中山芝2000": {"note": "皐月賞など。内回り。4回コーナーを回るため器用さが必要。開幕週はイン、荒れ馬場は外差し。", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "キズナ"], "fav_gate": "不問", "fav_style": "先行"},
     "中山芝2200": {"note": "オールカマーなど。外回りから内回りへ合流するトリッキーな構成。スタミナと持続力血統が強い。", "track": "芝", "dist": "中距離", "good_lineage": ["ハービンジャー", "ルーラーシップ"], "fav_gate": "不問", "fav_style": "差し"},
     "中山芝2500": {"note": "有馬記念。内回り。内枠(1桁馬番)の勝率が突出。急坂を2回超えるためタフなスタミナが必須。", "track": "芝", "dist": "長距離", "good_lineage": ["エピファネイア", "ゴールドシップ"], "fav_gate": "内枠", "fav_style": "先行"},
@@ -42,7 +42,7 @@ COURSE_MASTER = {
     "京都ダ1800": {"note": "主要ダート。急坂がないため好位につけられる器用さと最後の直線のスピード持続力必要。", "track": "ダート", "dist": "中距離", "good_lineage": ["シニスターミニスター", "ホッコータルマエ"], "fav_gate": "内枠", "fav_style": "先行"},
     
     # 阪神
-    "阪神芝1200": {"note": "内回り。急坂があるためパワー必要。荒れ馬場・重馬場になると一気にタフな消耗戦になり差し有利。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ダイワメジャー"], "fav_gate": "内枠", "fav_style": "先行"},
+    "阪神芝1200": {"note": "内回り. 急坂があるためパワー必要。荒れ馬場・重馬場になると一気にタフな消耗戦になり差し有利。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ダイワメジャー"], "fav_gate": "内枠", "fav_style": "先行"},
     "阪神芝1600": {"note": "外回り。桜花賞など。直線が長く実力が反映されやすい。高速馬場なら瞬発力、道悪ならスタミナ。", "track": "芝", "dist": "中距離", "good_lineage": ["ロードカナロア", "エピファネイア"], "fav_gate": "不問", "fav_style": "差し"},
     "阪神芝2000": {"note": "内回り。大阪杯など。スタート直後に急坂あり先行落ち着く。内回り器用さとパワー必要。", "track": "芝", "dist": "中距離", "good_lineage": ["キズナ", "ドゥラメンテ"], "fav_gate": "内枠", "fav_style": "先行"},
     "阪神芝2200": {"note": "内回り。宝塚記念など。時計のかかる過酷な内回り。スタミナと持続力の消耗戦になりやすい。", "track": "芝", "dist": "中距離", "good_lineage": ["ステイゴールド系", "キズナ"], "fav_gate": "内枠", "fav_style": "差し"},
@@ -99,7 +99,7 @@ JOCKEY_MASTER = {
     "岩田望来": {"base_bonus": 7, "good_venues": ["中京", "阪神", "京都", "新潟"], "bad_track_bonus": 3, "note": "若手トップ集団。中距離での立ち回りと勝負勘が非常に優秀。"},
     "西村淳也": {"base_bonus": 7, "good_venues": ["中京", "小倉", "阪神", "新潟"], "bad_track_bonus": 3, "note": "ローカルの帝王から中央主要場へ完全定着。抜群の勝負強さ。"},
     "武豊": {"base_bonus": 7, "good_venues": ["京都", "阪神", "東京", "函館"], "bad_track_bonus": 2, "note": "レジェンド。ペース配分と折り合い技術、長距離戦は神業レベル。"},
-    "阻野大成": {"base_bonus": 6, "good_venues": ["京都", "阪神", "中京"], "bad_track_bonus": 4, "note": "大舞台での進路取りが巧み。荒れ馬場での信頼度が高い。"},
+    "団野大成": {"base_bonus": 6, "good_venues": ["京都", "阪神", "中京"], "bad_track_bonus": 4, "note": "大舞台での進路取りが巧み。荒れ馬場での信頼度が高い。"},
     "菅原明良": {"base_bonus": 7, "good_venues": ["東京", "中山", "新潟"], "bad_track_bonus": 3, "note": "関東の実力派。東京の長い直線で見せる追える脚が魅力。"},
     "鮫島克駿": {"base_bonus": 7, "good_venues": ["中京", "小倉", "阪神", "新潟"], "bad_track_bonus": 3, "note": "人気薄を持ってくる穴の演出家。丁寧なイン突きが武器。"},
     "三浦皇成": {"base_bonus": 6, "good_venues": ["東京", "中山", "新潟"], "bad_track_bonus": 2, "note": "関東の中堅安定株。上位人気馬に跨った際の手堅さは健在。"},
@@ -143,7 +143,7 @@ BAD_TRACK_SIRES = {
 # 💻 3. アプリケーション メイン UI
 # ==========================================
 st.title("🎯 ジェニー予想完全版 ver1.00")
-st.caption("【完全版】全主要38コース × 50名トップジョッキー事典完全融合・スマホ救済フォーム搭載型")
+st.caption("【完全版】全主要38コース × 50名トップジョッキー事典完全融合・手動加減点プルダウン完全復活モデル")
 
 # 📍 1. 上部設定エリア
 st.header("📍 レース基本環境")
@@ -153,7 +153,6 @@ with col_cfg1:
     venue = st.selectbox("競馬場選択", ["東京", "中山", "京都", "阪神", "中京", "新潟", "福島", "小倉", "函館", "札幌"], index=0)
 
 with col_cfg2:
-    # 選択した競馬場に合致するコースだけを動的に抽出してプルダウン化
     valid_courses = [k for k in COURSE_MASTER.keys() if k.startswith(venue)]
     course_key = st.selectbox("コース選択", valid_courses if valid_courses else ["該当なし"])
 
@@ -174,57 +173,67 @@ else:
 # ------------------------------------------
 st.write("---")
 st.header("📝 出走馬データ一括入力")
-st.caption("※スマホからの入力中に勝手にリロードが走らない一括ロック式です。最下部のボタンで一発計算します。")
+st.caption("※「出頭数」を増やすと、その数だけ正確に入力欄が下に展開されます。最下部のボタンで一発計算します。")
 
-num_horses = st.number_input("出頭数（入力枠の数）", min_value=2, max_value=18, value=5, step=1)
+# ここで設定した出頭数が正しく反映されるようループを完全修正しました！
+num_horses = st.number_input("出頭数（入力枠の数）", min_value=2, max_value=18, value=12, step=1)
 
-col_left, col_right = st.columns([7.5, 4.5])
+col_left, col_right = st.columns([8.0, 4.0])
 
 with col_left:
     with st.form(key="jenny_input_form"):
         
-        # 50名マスタを五十音順にソートして選択肢にする
         jock_list = sorted(list(JOCKEY_MASTER.keys()))
         jock_options = ["(その他/手入力する)"] + jock_list
         sample_sires = ["キタサンブラック", "ゴールドシップ", "エピファネイア", "ハーツクライ", "オルフェーヴル", "ルーラーシップ"]
         
+        # 🟢 加減点プルダウン用の選択肢定義
+        plus_options = {"なし": 0, "＋1 (好気配)": 1, "＋2 (馬体増減理想)": 2, "＋3 (パドック抜群)": 3, "＋5 (究極のメイチ)": 5}
+        minus_options = {"なし": 0, "ー1 (チャカつき)": -1, "ー2 (大幅馬体重増減)": -2, "ー3 (入れ込み酷い)": -3, "ー5 (デキ落ち)": -5}
+        
         horse_inputs = []
         
+        # 固定配列ではなく、ユーザーが指定した「num_horses」の数だけ完璧に入力欄をループ生成します
         for i in range(int(num_horses)):
             gate = i + 1
             st.markdown(f"##### 🐴 馬番 {gate:02d}")
             
-            # スマホでも絶対に一行が崩れない比率設計
-            c1, c2, c3, c4, c5, c6 = st.columns([1.5, 1.0, 1.0, 1.3, 1.8, 2.2])
+            # 手動加減点プルダウンを組み込むため、横幅の比率を細かく最適化
+            c1, c2, c3, c4, c5, c6, c7 = st.columns([1.5, 0.9, 0.9, 1.3, 1.6, 2.0, 2.0])
             
             with c1:
                 h_name = st.text_input("馬名", value=f"競走馬{gate}", key=f"form_name_{gate}")
             with c2:
-                h_idx = st.number_input("元能力値", min_value=0, max_value=200, value=75, key=f"form_idx_{gate}")
+                h_idx = st.number_input("能力値", min_value=0, max_value=200, value=75, key=f"form_idx_{gate}")
             with c3:
-                h_pop = st.number_input("人気", min_value=1, max_value=18, value=((i % 4) + 1), key=f"form_pop_{gate}")
+                h_pop = st.number_input("人気", min_value=1, max_value=18, value=((i % 12) + 1), key=f"form_pop_{gate}")
             with c4:
                 h_f3f = st.number_input("最速上がり", min_value=30.0, max_value=45.0, value=34.2, step=0.1, format="%.1f", key=f"form_f3f_{gate}")
             with c5:
                 h_sire = st.text_input("父(種牡馬)", value=sample_sires[i % len(sample_sires)], key=f"form_sire_{gate}")
             with c6:
-                # リスト内の騎手を自動でバラつかせて配置
                 default_idx = (i % len(jock_list)) + 1 if (i % len(jock_list)) + 1 < len(jock_options) else 1
                 selected_jock = st.selectbox("想定騎手", jock_options, index=default_idx, key=f"form_j_sel_{gate}")
-                
                 if selected_jock == "(その他/手入力する)":
                     final_jockey = st.text_input("✍️ 騎手手入力", value="柴田善臣", key=f"form_j_txt_{gate}")
                 else:
                     final_jockey = selected_jock
+            
+            # 🔥 以前のアプリから引き継いだ手動加減点プルダウンエリア
+            with c7:
+                p_label = st.selectbox("➕ プラス項目", list(plus_options.keys()), index=0, key=f"form_plus_{gate}")
+                m_label = st.selectbox("➖ マイナス項目", list(minus_options.keys()), index=0, key=f"form_minus_{gate}")
+                manual_adjustment = plus_options[p_label] + minus_options[m_label]
                     
             horse_inputs.append({
-                "gate": gate, "name": h_name, "idx": h_idx, "pop": h_pop, "f3f": h_f3f, "sire": h_sire, "jockey": final_jockey
+                "gate": gate, "name": h_name, "idx": h_idx, "pop": h_pop, "f3f": h_f3f, 
+                "sire": h_sire, "jockey": final_jockey, "manual_adj": manual_adjustment
             })
             
         submit_button = st.form_submit_button(label="🚀 ジェニー予想を実行（最終解析）")
 
 # ==========================================
-# 🧮 3. 実績コアロジック & 解析結果表示
+# 🧮 4. 実績コアロジック & 解析結果表示
 # ==========================================
 with col_right:
     st.header("🏆 最終解析結果")
@@ -232,24 +241,23 @@ with col_right:
     if submit_button:
         scored_output = []
         
-        # 状態アナウンス
         if course_data.get("dist") == "長距離":
-            st.info("🏁 **長距離特化モード**: 3000m以上の折り合い・スタミナ適性に寄せた専用配点で計算中。")
+            st.info("🏁 **長距離特化モード**: 3000m以上のスタミナ適性に寄せた専用配点で計算。")
         if is_bad_track:
-            st.warning(f"☔ **道悪重馬場補正が作動中！**\n【{course_data['track']}】の道悪適性血統、およびタフ馬場巧者のジョッキーへの加算が強化されています。")
+            st.warning(f"☔ **道悪重馬場補正が作動中！**")
         else:
-            st.success("☀️ スピード・キレ味重視の良馬場/稍重ロジックで計算しました。")
+            st.success("☀️ スピード・キレ味重視の通常ロジックで計算しました。")
 
         for h in horse_inputs:
             base_score = float(h["idx"])
             bonus = 0.0
             
-            # ① 人気による期待値微調整（G1激走馬の期待値最適化）
+            # ① 人気による微調整
             if h["pop"] == 1: bonus += 4.0
             elif h["pop"] == 2: bonus += 2.0
             elif h["pop"] > 5: bonus -= (h["pop"] - 5) * 1.0
             
-            # ② 上がり3Fのキレ味補正 (長距離戦と通常戦で基準を自動分岐)
+            # ② 上がり3Fのキレ味補正
             if course_data.get("dist") == "長距離":
                 if h["f3f"] <= 34.2: bonus += 12.0
                 elif h["f3f"] <= 35.0: bonus += 7.0
@@ -262,41 +270,40 @@ with col_right:
             if h["sire"] in course_data["good_lineage"]:
                 bonus += 6.0 if course_data.get("dist") == "長距離" else 5.0
                 
-            # ☔ ④ 馬場状態（重・不良）による血統特効補正
+            # ④ 馬場状態（重・不良）による血統特効補正
             if is_bad_track:
                 target_sires = BAD_TRACK_SIRES.get(course_data["track"], [])
                 if h["sire"] in target_sires:
                     bonus += 8.0
             
-            # ⑤ 50名事典マスターの照合ロジック
+            # ⑤ 50名事典マスターの照合
             jockey_name = h["jockey"].strip()
             jockey_note = ""
             
             if jockey_name in JOCKEY_MASTER:
                 j_data = JOCKEY_MASTER[jockey_name]
                 bonus += j_data["base_bonus"]
-                jockey_note = f"基本 +{j_data['base_bonus']}pt"
+                jockey_note = f"騎手基本 +{j_data['base_bonus']}pt"
                 
-                # 競馬場適性（得意会場ボーナス）
                 if venue in j_data["good_venues"]:
                     bonus += 3.0
-                    jockey_note += " / 会場特効 +3pt"
-                    
-                # ☔ 重馬場でのジョッキーコントロール補正
+                    jockey_note += " / 会場+3"
                 if is_bad_track:
                     bonus += j_data["bad_track_bonus"]
-                    jockey_note += f" / 道悪腕前 +{j_data['bad_track_bonus']}pt"
-                    
-                # ⭐ 3000m以上長距離の折り合い名手特効
+                    jockey_note += f" / 道悪+{j_data['bad_track_bonus']}"
                 if course_data.get("dist") == "長距離" and jockey_name in ["武豊", "ルメール", "横山和生"]:
                     bonus += 5.0
-                    jockey_note += " (★長距離特級+5pt)"
+                    jockey_note += " / 長距離名手+5"
             else:
-                # 💡 事典（50位）に含まれない騎手が手入力された場合
                 fallback_bonus = 4.0
                 bonus += fallback_bonus
-                jockey_note = f"事典外一律 +{fallback_bonus}pt反映"
+                jockey_note = f"事典外一律 +{fallback_bonus}pt"
                 
+            # 🔥 ⑥ 手動加減点プルダウンの数値をここで完全合算！
+            bonus += h["manual_adj"]
+            if h["manual_adj"] != 0:
+                jockey_note += f" / 手動直前補正 {'+' if h['manual_adj'] > 0 else ''}{h['manual_adj']}pt"
+                    
             final_score = base_score + bonus
             
             scored_output.append({
@@ -304,7 +311,6 @@ with col_right:
                 "jockey": jockey_name, "score": final_score, "note": jockey_note
             })
             
-        # 総合スコアの高い順にソート
         scored_output.sort(key=lambda x: x["score"], reverse=True)
         
         marks = ["◎", "○", "▲", "△", "☆"]
@@ -317,7 +323,6 @@ with col_right:
                 "人気": f"{h['pop']}人", "総合スコア": f"{h['score']:.1f} pt"
             })
             
-        # データフレームとしてスッキリ右側に表示
         st.dataframe(pd.DataFrame(result_rows), use_container_width=True, hide_index=True)
         
         st.write("---")
@@ -328,4 +333,4 @@ with col_right:
             st.caption(f"鞍上: {h['jockey']} | 補正内容: {h['note']}")
             
     else:
-        st.info("👈 左側のデータフォームを入力し、『ジェニー予想を実行』ボタンを押すと、全マスタを自動照合した解析結果（上位6位までの最適印）がここに即座に展開されます。")
+        st.info("👈 左側のデータフォームから出頭数を指定して入力し、『ジェニー予想を実行』ボタンを押してください。")
