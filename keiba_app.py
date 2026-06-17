@@ -14,7 +14,7 @@ JOCKEY_MASTER = {
     "武豊": {"base": 1.20, "factors": {"芝": 0.05, "継続騎乗": 0.15, "人気薄": 0.15, "距離延長": 0.15, "京都芝2000": 0.15, "京都芝2200": 0.15, "東京芝2400": 0.15}, "note": "継続騎乗・大舞台での一発◎。京都コースを最も熟知するレジェンド"},
     "松山弘平": {"base": 1.15, "factors": {"ダート": 0.15, "新馬戦": 0.15, "前哨戦": 0.15, "中山ダ1800": 0.15, "京都ダ1800": 0.15}, "note": "ダート・新馬戦◎。非常に堅実で、乗り替わりも苦にしない"},
     "岩田望来": {"base": 1.10, "factors": {"マイル以下の差し": 0.15, "乗り替わり": 0.15, "中京芝1600": 0.10, "阪神芝1600": 0.10}, "note": "乗り替わり・マイル以下の差し○。平場・特別戦での安定感が高い"},
-    "西村淳也": {"base": 1.10, "factors": {"京都芝": 0.15, "先行": 0.05, "京都芝1600": 0.15, "阪神芝1400": 0.15}, "note": "京都芝・先行策◎。G1でも穴を明ける度胸と勝負強さあり"},
+    "西村淳也": {"base": 1.10, "factors": {"京都芝": 0.15, "先行": 0.05, "京都芝1600": 0.15, "阪神芝1400": 0.15}, "note": "京都芝・先行策◎。G1でも穴を明ける度厚と勝負強さあり"},
     "団野大成": {"base": 1.10, "factors": {"短距離重賞": 0.15, "荒れ馬場": 0.15, "京都芝1200": 0.15, "阪神芝1600": 0.10}, "note": "短距離重賞・荒れた芝◎。勝負どころでの思い切りの良さが魅力"},
     "鮫島克駿": {"base": 1.10, "factors": {"イン突き": 0.15, "中長距離": 0.15, "ダート外枠": 0.15, "中京芝2000": 0.10}, "note": "好位イン突き・中長距離◎。ロスを抑える立ち回りが得意"},
     "高杉吏麒": {"base": 1.05, "factors": {"減量活かした先行": 0.15, "ローカル芝": 0.10, "ローカルダート": 0.10, "短距離": 0.05}, "note": "急成長中の若手。減量を活かした積極策やローカルでの穴に要注意"},
@@ -57,84 +57,90 @@ JOCKEY_MASTER = {
 # 🗺️ 2. コース事典マスターデータ
 # ==========================================
 COURSE_MASTER = {
-    "東京芝1600": {"note": "重賞は差し・追い込み有利。ロードカナロア/エピファネイア産駒○", "track": "芝", "dist": "中距離", "good_lineage": ["ロードカナロア", "エピファネイア", "モーリス"]},
-    "東京芝2000": {"note": "天皇賞秋等。1桁馬番(①〜⑧)が超強力。1枠有利。", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "モーリス", "キズナ", "キタサンブラック"]},
-    "東京芝2400": {"note": "日本ダービー等。内〜中枠の立ち回り重視。前走速い脚を使った馬が有利。", "track": "芝", "dist": "長距離", "good_lineage": ["キタサンブラック", "ドゥラメンテ", "ハーツクライ"]},
-    "東京ダ1600": {"note": "フェブラリーS等。スタートが芝で外枠有利。大型馬有利。", "track": "ダート", "dist": "中距離", "good_lineage": ["ヘニーヒューズ", "ドレフォン", "ロードカナロア"]},
-    "中山芝2000": {"note": "皐月賞等。荒れ馬場は外差し○。エピファネイア/ハービンジャー○。", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "ハービンジャー", "モーリス"]},
-    "中山芝2500": {"note": "有馬記念等。内枠（1桁馬番）の勝率が突出。高速馬場は内枠有利。", "track": "芝", "dist": "長距離", "good_lineage": ["エピファネイア", "キズナ", "ドゥラメンテ", "ゴールドシップ"]},
-    "中山ダ1800": {"note": "非常にタフでスタミナが必要。先行馬が圧倒的に有利。", "track": "ダート", "dist": "中距離", "good_lineage": ["ホッコータルマエ", "シニスターミニスター"]},
-    "京都芝1600": {"note": "マイルCS等。外回り。ディープ系や差し馬台頭。", "track": "芝", "dist": "中距離", "good_lineage": ["ディープインパクト系", "エピファネイア", "キズナ"]},
-    "京都芝2200": {"note": "エリザベス女王杯、宝塚記念(代替)等。スタミナ要求値が高くリピーター注意。", "track": "芝", "dist": "中距離", "good_lineage": ["ハーツクライ", "ハービンジャー", "オルフェーヴル"]},
-    "阪神芝1600": {"note": "桜花賞等。外回り。高速馬場は外差し、ロードカナロア/エピファネイア○。", "track": "芝", "dist": "中距離", "good_lineage": ["ロードカナロア", "エピファネイア", "キズナ"]},
-    "阪神芝2200": {"note": "宝塚記念等。内回りコース。非常にタフなスタミナ消耗戦になりやすい。", "track": "芝", "dist": "中距離", "good_lineage": ["ステイゴールド系", "ハーツクライ", "キズナ"]},
-    "中京ダ1800": {"note": "チャンピオンズC等。内枠の先行・好位差しが抜群に有利。", "track": "ダート", "dist": "中距離", "good_lineage": ["キングカメハメハ", "シニスターミニスター"]},
-    "ローカル芝": {"note": "福島・新潟・小倉・函館・札幌。小回りのため、イン先行や前残り警戒。", "track": "芝", "dist": "中距離", "good_lineage": ["ハービンジャー", "ダイワメジャー"]},
-    "ローカルダート": {"note": "小回りのダート。前に行ける減量ジョッキーや快速馬の押し切りが多い。", "track": "ダート", "dist": "中距離", "good_lineage": ["シニスターミニスター", "サウスヴィグラス"]}
+    "東京芝1600m": {"note": "2月内枠、2月以外外枠。同距離＆距離短縮馬、重賞は差し・追い込み有利。ロードカナロア/エピファネイア/モーリス/キズナ/ハーツクライ。", "track": "芝", "dist": "中距離", "good_lineage": ["ディープインパクト系", "ハーツクライ系", "ロードカナロア"], "fav_style": "差し"},
+    "東京芝2000m": {"note": "1枠有利。前走同距離＆距離短縮が好走。エピファネイア/モーリス牡馬/キズナ/ハーツクライ/ロードカナロア。", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "モーリス", "キズナ", "ハーツクライ系"], "fav_style": "先行・差し"},
+    "東京芝2400m": {"note": "オークスは差し・追い込み。ジャパンカップはダービー・オークス3着以内の3歳馬有利。インをロスなく回れる内〜中枠有利。", "track": "芝", "dist": "長距離", "good_lineage": ["キタサンブラック", "ドゥラメンテ", "ディープインパクト系"], "fav_style": "差し"},
+    "東京ダート1600m": {"note": "外枠有利。前走同距離＆距離短縮馬。ヘニーヒューズ/ドレフォン(逃げ先行有利)。マイル以上のスタミナとパワー必須。", "track": "ダート", "dist": "中距離", "good_lineage": ["ヘニーヒューズ", "ドレフォン", "シニスターミニスター"], "fav_style": "先行"},
+    "中山芝1200m": {"note": "ファインニードル産駒○、アメリカンペイトリオット産駒○。スピードの持続力と最後の急坂を耐えるパワーが必要。内枠有利。", "track": "芝", "dist": "短距離", "good_lineage": ["ファインニードル", "アメリカンペイトリオット", "ロードカナロア"], "fav_style": "逃げ"},
+    "中山芝2000m": {"note": "皐月賞はマイル〜1800m重賞実績馬○。荒れ馬場は外差し○。エピファネイア/キズナ/ドゥラメンテ/モーリス/ロードカナロア。", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "キズナ", "ドゥラメンテ", "モーリス"], "fav_style": "先行"},
+    "中山芝2500m": {"note": "高速馬場の有馬記念は東京中距離G1実績馬○。高速馬場は内枠、荒れ馬場は外枠有利。エピファネイア/キズナ/ゴールドシップ。", "track": "芝", "dist": "長距離", "good_lineage": ["エピファネイア", "キズナ", "ゴールドシップ"], "fav_style": "先行"},
+    "中京芝1200m": {"note": "内枠、距離短縮馬の内枠、内枠の逃げ先行馬○。ロードカナロア/ビッグアーサー/ミッキーアイル/ダイワメジャー。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ビッグアーサー", "ミッキーアイル", "ダイワメジャー"], "fav_style": "逃げ先行"},
+    "中京ダート1800m": {"note": "内をロスなく立ち回れる逃げ先行馬○。時計がかかると外差し○。チャンピオンズCなど内枠有利。", "track": "ダート", "dist": "中距離", "good_lineage": ["シニスターミニスター", "ホッコータルマエ"], "fav_style": "逃げ先行"},
+    "京都芝1600m(外)": {"note": "同距離＆距離短縮馬。高速馬場は上がり時計重視○。荒れ馬場は外枠有利(キズナ/エピファネイア/ロードカナロア)。", "track": "芝", "dist": "中距離", "good_lineage": ["キズナ", "エピファネイア", "ロードカナロア"], "fav_style": "差し"},
+    "京都芝2000m": {"note": "上級条件は差し馬○。秋華賞は差し馬・オークス出走馬が狙い目。キズナ/キタサンブラック/エピファネイア/ドゥラメンテ。", "track": "芝", "dist": "中距離", "good_lineage": ["キズナ", "キタサンブラック", "エピファネイア", "ドゥラメンテ"], "fav_style": "差し"},
+    "京都芝2200m": {"note": "馬場良好なら内枠○。エリザベス女王杯も内枠有利。キズナ牝馬/サトノダイヤモンド/モーリス。", "track": "芝", "dist": "中距離", "good_lineage": ["キズナ", "サトノダイヤモンド", "モーリス"], "fav_style": "先行・差し"},
+    "京都芝3000m": {"note": "外枠有利。父または母父ステイゴールド系○。小柄なエピファネイア/ゴールドシップ/キタサンブラック。", "track": "芝", "dist": "長距離", "good_lineage": ["ステイゴールド系", "ゴールドシップ", "キタサンブラック"], "fav_style": "先行・差し"},
+    "京都芝3200m": {"note": "人気馬○。または母父ステイゴールド系。前走阪神大賞典で上がり最速の馬○。スタミナ絶対条件。", "track": "芝", "dist": "長距離", "good_lineage": ["ステイゴールド系", "メジロマックイーン"], "fav_style": "先行・差し"},
+    "阪神芝1600m": {"note": "内枠有利。高速馬場は外差し、同距離＆距離短縮馬○。ロードカナロア/エピファネイア/モーリス/キズナ/ハーツクライ。", "track": "芝", "dist": "中距離", "good_lineage": ["ロードカナロア", "エピファネイア", "モーリス", "キズナ", "ハーツクライ系"], "fav_style": "差し"},
+    "阪神芝2000m": {"note": "外枠の先行馬有利。大阪杯は内差し。ドゥラメンテ牝馬/ルーラーシップ/キズナ/エピファネイア/ハーツクライ。", "track": "芝", "dist": "中距離", "good_lineage": ["ドゥラメンテ", "ルーラーシップ", "キズナ", "エピファネイア", "ハーツクライ系"], "fav_style": "先行"},
+    "阪神芝2200m": {"note": "先行〜中団差し馬○。キズナ/ルーラーシップ/イスラボニータ/キタサンブラック。宝塚記念はタフな馬場適性重視。", "track": "芝", "dist": "中距離", "good_lineage": ["キズナ", "ルーラーシップ", "イスラボニータ", "キタサンブラック"], "fav_style": "先行・差し"}
 }
 
 # ==========================================
-# 🧬 3. 【新機能】血統ごとの重馬場適性マスター
+# 🧬 3. 血統の系統自動判定マスター
 # ==========================================
-# A: 鬼, B: パワー型, C: 普通, D: キレ重視(苦手)
+BLOOD_LINEAGE_MAP = {
+    "ディープインパクト系": ["ディープインパクト", "キズナ", "コントレイル", "サトノダイヤモンド", "リアルインパクト", "ミッキーアイル", "ワールドエース"],
+    "ハーツクライ系": ["ハーツクライ", "ジャスタウェイ", "スワーヴリチャード", "サリオス", "シュヴァルグラン"],
+    "ステイゴールド系": ["ステイゴールド", "オルフェーヴル", "ゴールドシップ", "インディチャンプ", "ウインバリアシオン"],
+    "キングカメハメハ系": ["キングカメハメハ", "ロードカナロア", "ドゥラメンテ", "ルーラーシップ", "レイデオロ", "ホッコータルマエ"],
+    "エピファネイア": ["エピファネイア"],
+    "モーリス": ["モーリス"],
+    "キタサンブラック": ["キタサンブラック"],
+    "ヘニーヒューズ": ["ヘニーヒューズ"],
+    "ドレフォン": ["ドレフォン"],
+    "シニスターミニスター": ["シニスターミニスター"]
+}
+
+def auto_detect_lineage(sire_name):
+    if not sire_name: return []
+    detected = []
+    for system_name, match_list in BLOOD_LINEAGE_MAP.items():
+        for target in match_list:
+            if target in sire_name:
+                detected.append(system_name)
+                break
+    return detected
+
 SIRE_TRACK_APTITUDE = {
     "キズナ": "A", "オルフェーヴル": "A", "ゴールドシップ": "A", "ハービンジャー": "A", "クロフネ": "A", "シニスターミニスター": "A",
     "ドゥラメンテ": "B", "エピファネイア": "B", "モーリス": "B", "ルーラーシップ": "B", "キングカメハメハ": "B", "キタサンブラック": "B",
-    "ロードカナロア": "C", "ハーツクライ": "C", 
-    "ディープインパクト": "D", "スワーヴリチャード": "D", "ジャスタウェイ": "D"
+    "ロードカナロア": "C", "ハーツクライ": "C", "ディープインパクト": "D"
 }
 
-def get_base_sire_aptitude(sire_name):
-    if not sire_name: return "C"
-    for sire, apt in SIRE_TRACK_APTITUDE.items():
-        if sire in sire_name: return apt
-    return "C"
-
 def determine_final_aptitude(sire_name, has_past_record):
-    base_apt = get_base_sire_aptitude(sire_name)
+    base_apt = "C"
+    for sire, apt in SIRE_TRACK_APTITUDE.items():
+        if sire in sire_name:
+            base_apt = apt
+            break
     if has_past_record:
-        if base_apt == "D": return "B"
-        elif base_apt == "C": return "B"
+        if base_apt in ["C", "D"]: return "B"
         elif base_apt == "B": return "A"
     return base_apt
 
 # ==========================================
-# ⚙️ 4. アプリ初期設定 & レイアウト
+# ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="競馬予想・重馬場緊急補正対応システム", layout="wide")
-st.title("🏆 競馬予想・重馬場緊急補正＆過去実績システム 【V2完全版】")
+st.set_page_config(page_title="ジェニー予想AI版ver2.20", layout="wide")
+st.title("🏆 ジェニー予想AI版ver2.20")
 
+if "history_log" not in st.session_state:
+    st.session_state["history_log"] = []
 if "loaded_data" not in st.session_state:
     st.session_state["loaded_data"] = {}
 
-# 📱 スマホ救済ロード機能（URLからの自動読み込み）
-query_params = st.query_params
-if "data" in query_params and not st.session_state.get("url_loaded", False):
-    try:
-        raw_data = query_params["data"]
-        decoded_json = urllib.parse.unquote(raw_data)
-        st.session_state["loaded_data"] = json.loads(decoded_json)
-        st.session_state["url_loaded"] = True
-        st.toast("URLからデータを正常にロードしました！")
-    except:
-        st.error("URLからの自動ロードに失敗しました。")
-
-# --- 🛰️ 当日の環境設定エリア（コース ＆ 馬場状態） ---
+# --- 🛰️ 当当日環境設定エリア ---
 st.header("🛰️ 当日のレース環境")
-env_cols = st.columns(2)
-
+env_cols = st.columns(3)
 with env_cols[0]:
-    saved_course = st.session_state["loaded_data"].get("course", "(未選択)") if st.session_state["loaded_data"] else "(未選択)"
-    sel_course = st.selectbox(
-        "🗺️ レースコースを選択:", 
-        ["(未選択)"] + list(COURSE_MASTER.keys()), 
-        index=(["(未選択)"] + list(COURSE_MASTER.keys())).index(saved_course) if saved_course in COURSE_MASTER else 0
-    )
-
+    saved_course = st.session_state["loaded_data"].get("course", "(未選択)")
+    sel_course = st.selectbox("🗺️ レースコースを選択:", ["(未選択)"] + list(COURSE_MASTER.keys()), index=(["(未選択)"] + list(COURSE_MASTER.keys())).index(saved_course) if saved_course in COURSE_MASTER else 0)
 with env_cols[1]:
-    # ⚡ 【改善の核心】当日馬場状態の選択プルダウン
     saved_condition = st.session_state["loaded_data"].get("track_condition", "良")
-    track_condition = st.selectbox("🌧️ リアルタイム馬場状態（直前変更可能）:", ["良", "稍重", "重・不良"], index=["良", "稍重", "重・不良"].index(saved_condition))
+    track_condition = st.selectbox("🌧️ 馬場状態:", ["良", "稍重", "重・不良"], index=["良", "稍重", "重・不良"].index(saved_condition))
+with env_cols[2]:
+    total_budget = st.number_input("💰 このレースの想定軍資金 (円):", min_value=100, max_value=100000, value=5000, step=100)
 
 auto_track, auto_dist, good_blood_list = "選択なし", "選択なし", []
 if sel_course != "(未選択)":
@@ -145,72 +151,49 @@ if sel_course != "(未選択)":
 st.divider()
 
 # ==========================================
-# 📋 5. 出馬表入力エリア
+# 📋 出馬表入力エリア
 # ==========================================
-st.write("### 📝 出馬表データ入力（18頭対応・道悪実績チェックボックス搭載）")
+st.write("### 📝 出馬表データ入力")
 
-# セーブ・ロードボタン
-save_cols = st.columns([4, 4, 4])
-with save_cols[0]:
-    save_clicked = st.button("📥 入力内容を保存データに変換する", use_container_width=True, type="primary")
-with save_cols[1]:
-    load_clicked = st.button("🔄 画面を更新してURLのデータを反映", use_container_width=True)
-
-calculated_results = []
-# 列幅の微調整（道悪実績チェックボックス用に幅を追加）
-c_widths = [0.6, 1.4, 0.6, 0.6, 0.8, 1.3, 0.8, 1.3, 1.3, 0.8, 0.8, 0.8, 0.8, 1.0, 1.0, 0.8, 0.8, 0.9]
+c_widths = [0.6, 1.4, 0.6, 0.6, 0.8, 1.3, 0.8, 1.3, 1.0, 0.8, 0.8, 0.8, 0.8, 1.0, 1.0, 0.8, 0.8, 0.9]
 cols = st.columns(c_widths)
 headers = ["馬番", "馬名", "人気", "指数", "前3F", "父馬", "道悪実績", "騎手選択", "手入力用", "馬場", "脚質", "枠順", "距離", "プラス①", "プラス②", "マイナス①", "マイナス②", "最終スコア"]
 for col, h in zip(cols, headers):
     col.write(f"**{h}**")
 
 current_inputs = {"course": sel_course, "track_condition": track_condition, "rows": {}}
+style_counts = {"逃げ": 0, "先行": 0, "差し": 0, "追い込み": 0}
 
+row_tmp_data = []
 for i in range(1, 19):
     c = st.columns(c_widths)
-    s_row = st.session_state["loaded_data"].get("rows", {}).get(str(i), {}) if st.session_state["loaded_data"] else {}
+    s_row = st.session_state["loaded_data"].get("rows", {}).get(str(i), {})
     
-    num_val = s_row.get("num", str(i))
-    num = c[0].text_input(f"num_{i}", value=num_val, label_visibility="collapsed")
-    name = c[1].text_input(f"name_{i}", value=s_row.get("name", ""), label_visibility="collapsed", placeholder="馬名")
+    num = c[0].text_input(f"num_{i}", value=s_row.get("num", str(i)), label_visibility="collapsed")
+    name = c[1].text_input(f"name_{i}", value=s_row.get("name", ""), label_visibility="collapsed")
     pop = c[2].number_input(f"pop_{i}", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), label_visibility="collapsed")
     idx = c[3].number_input(f"idx_{i}", value=float(s_row.get("idx", 0.0)), step=0.1, label_visibility="collapsed")
     l3f = c[4].number_input(f"l3f_{i}", value=float(s_row.get("l3f", 35.0)), step=0.1, label_visibility="collapsed")
     sire = c[5].text_input(f"sire_{i}", value=s_row.get("sire", ""), label_visibility="collapsed", placeholder="父馬")
-    
-    # ⚡ 【改善項目】過去に重・不良で3着以内の実績があるかどうかのチェック
     has_heavy_record = c[6].checkbox(f"rec_{i}", value=s_row.get("heavy_record", False), label_visibility="collapsed")
     
     jock_list = sorted([k for k in JOCKEY_MASTER.keys() if k != "その他（自由手入力）"]) + ["その他（自由手入力）"]
-    s_jock = s_row.get("jock", "その他（自由手入力）" if s_row.get("custom_jock") else "(未選択)")
-    j_idx = (["(未選択)"] + jock_list).index(s_jock) if s_jock in (["(未選択)"] + jock_list) else 0
-    jock = c[7].selectbox(f"jock_{i}", ["(未選択)"] + jock_list, index=j_idx, label_visibility="collapsed")
+    jock = c[7].selectbox(f"jock_{i}", ["(未選択)"] + jock_list, index=(["(未選択)"] + jock_list).index(s_row.get("jock", "(未選択)")) if s_row.get("jock") in (["(未選択)"] + jock_list) else 0, label_visibility="collapsed")
     
-    custom_jock = ""
-    if jock == "その他（自由手入力）":
-        custom_jock = c[8].text_input(f"custom_jock_{i}", value=s_row.get("custom_jock", ""), label_visibility="collapsed", placeholder="騎手名")
-    else:
-        c[8].write("---")
+    custom_jock = c[8].text_input(f"custom_jock_{i}", value=s_row.get("custom_jock", ""), label_visibility="collapsed") if jock == "その他（自由手入力）" else ""
+    if jock != "その他（自由手入力）": c[8].write("---")
         
-    t_opts = ["選択なし", "芝", "ダート"]
-    t_def = t_opts.index(s_row.get("sel_track")) if s_row.get("sel_track") in t_opts else (t_opts.index(auto_track) if auto_track in t_opts else 0)
-    sel_track = c[9].selectbox(f"p1_{i}", t_opts, index=t_def, label_visibility="collapsed")
+    sel_track = c[9].selectbox(f"p1_{i}", ["選択なし", "芝", "ダート"], index=["選択なし", "芝", "ダート"].index(s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")), label_visibility="collapsed")
+    sel_style = c[10].selectbox(f"p2_{i}", ["選択なし", "逃げ", "先行", "差し", "追い込み"], index=["選択なし", "逃げ", "先行", "差し", "追い込み"].index(s_row.get("sel_style", "選択なし")), label_visibility="collapsed")
     
-    sty_opts = ["選択なし", "逃げ", "先行", "差し", "追い込み"]
-    sty_def = sty_opts.index(s_row.get("sel_style")) if s_row.get("sel_style") in sty_opts else 0
-    sel_style = c[10].selectbox(f"p2_{i}", sty_opts, index=sty_def, label_visibility="collapsed")
-    
+    if name and sel_style in style_counts:
+        style_counts[sel_style] += 1
+        
     f_opts = ["選択なし", "内枠", "外枠"]
-    try:
-        f_def_idx = 1 if int(num) <= 8 else (2 if int(num) >= 13 else 0)
-    except:
-        f_def_idx = 0
-    f_def = f_opts.index(s_row.get("sel_frame")) if s_row.get("sel_frame") in f_opts else f_def_idx
-    sel_frame = c[11].selectbox(f"p3_{i}", f_opts, index=f_def, label_visibility="collapsed")
-    
-    d_opts = ["選択なし", "短距離", "中距離", "長距離"]
-    d_def = d_opts.index(s_row.get("sel_dist")) if s_row.get("sel_dist") in d_opts else (d_opts.index(auto_dist) if auto_dist in d_opts else 0)
-    sel_dist = c[12].selectbox(f"p4_{i}", d_opts, index=d_def, label_visibility="collapsed")
+    try: f_def_idx = 1 if int(num) <= 8 else (2 if int(num) >= 13 else 0)
+    except: f_def_idx = 0
+    sel_frame = c[11].selectbox(f"p3_{i}", f_opts, index=f_opts.index(s_row.get("sel_frame", f_opts[f_def_idx])), label_visibility="collapsed")
+    sel_dist = c[12].selectbox(f"p4_{i}", ["選択なし", "短距離", "中距離", "長距離"], index=["選択なし", "短距離", "中距離", "長距離"].index(s_row.get("sel_dist", auto_dist if auto_dist in ["短距離", "中距離", "長距離"] else "選択なし")), label_visibility="collapsed")
     
     plus_opts, minus_opts = ["選択なし"], ["選択なし"]
     if jock in JOCKEY_MASTER:
@@ -231,109 +214,207 @@ for i in range(1, 19):
         "sel_minus1": sel_minus1, "sel_minus2": sel_minus2
     }
     
-    # 🧮 スコア基本計算
+    row_tmp_data.append((num, name, pop, idx, l3f, sire, has_heavy_record, jock, custom_jock, sel_track, sel_style, sel_frame, sel_dist, sel_plus1, sel_plus2, sel_minus1, sel_minus2, c[17]))
+
+# ==========================================
+# 🏁 4. 展開（ペース）AI自動予測
+# ==========================================
+st.write("### 🏁 展開（ペース）AI自動予測結果")
+pace_status = "ミドルペース（フラット）"
+pace_bonus = {"逃げ": 0.0, "先行": 0.0, "差し": 0.0, "追い込み": 0.0}
+
+total_active_horses = sum(style_counts.values())
+if total_active_horses >= 3:
+    front_runner_ratio = (style_counts["逃げ"] + style_counts["先行"]) / total_active_horses
+    if style_counts["逃げ"] >= 3 or front_runner_ratio >= 0.55:
+        pace_status = "🔥 ハイペース（前崩れ・差し追い込み超有利）"
+        pace_bonus = {"逃げ": -4.0, "先行": -2.0, "差し": 3.0, "追い込み": 5.0}
+    elif style_counts["逃げ"] == 0 and front_runner_ratio <= 0.25:
+        pace_status = "🐌 スローペース（超前残り・逃げ先行絶対有利）"
+        pace_bonus = {"逃げ": 5.0, "先行": 3.0, "差し": -2.0, "追い込み": -4.0}
+
+st.info(f"**現在の登録馬から算出された展開:** {pace_status} (逃げ:{style_counts['逃げ']}頭, 先行:{style_counts['先行']}頭, 差し:{style_counts['差し']}頭, 追込:{style_counts['追い込み']}頭)")
+
+# スコア計算
+calculated_results = []
+for item in row_tmp_data:
+    num, name, pop, idx, l3f, sire, has_heavy_record, jock, custom_jock, sel_track, sel_style, sel_frame, sel_dist, sel_plus1, sel_plus2, sel_minus1, sel_minus2, score_cell = item
+    
     score = 0.0
-    note_text = ""
     final_apt = "C"
     
-    if jock != "(未選択)":
+    if jock != "(未選択)" and name != "":
         j_data = JOCKEY_MASTER.get(jock, JOCKEY_MASTER["その他（自由手入力）"])
-        jockey_base = j_data["base"]
-        factors = j_data["factors"]
-        note_text = j_data.get("note", "")
-        
         jockey_modifier = 0.0
         chosen_conditions = [sel_track, sel_style, sel_frame, sel_dist, sel_plus1, sel_plus2, sel_minus1, sel_minus2, sel_course]
         for cond in chosen_conditions:
-            if cond in factors:
-                val = factors[cond]
-                if val < 0 and l3f <= 33.9: val = 0.0  
-                jockey_modifier += val
+            if cond in j_data["factors"]:
+                jockey_modifier += j_data["factors"][cond]
+            elif cond and cond.endswith("m") and cond[:-1] in j_data["factors"]:
+                jockey_modifier += j_data["factors"][cond[:-1]]
                 
-        jockey_modifier = min(jockey_modifier, 0.20)
-        jockey_modifier = max(jockey_modifier, -0.20)
-        
-        final_jockey_rate = jockey_base + jockey_modifier
+        if jockey_modifier < 0 and l3f <= 33.9: jockey_modifier = 0.0  
+        final_jockey_rate = j_data["base"] + max(min(jockey_modifier, 0.20), -0.20)
         mitigated_jockey_rate = 1.0 + (final_jockey_rate - 1.0) * 0.70
         
+        # 🧬 【コースマスター連動】血統自動判定＆曖昧ネスト照合ロジック
         horse_base_score = idx
-        if sire != "" and any(target in sire for target in good_blood_list):
-            horse_base_score += 5.0 
-        if (sel_style in ["逃げ", "先行"]) and (l3f <= 34.5):
-            horse_base_score += 3.0 
+        detected_lineages = auto_detect_lineage(sire)
+        
+        lineage_matched = False
+        for target in good_blood_list:
+            # パターン①: コース側のキーワードが父馬名に直接含まれるか (例: ロードカナロア)
+            if target in sire or (sire and sire in target):
+                lineage_matched = True
+            # パターン②: 自動判定された大系統名がコース側の指定と一致するか (例: ディープインパクト系)
+            for detected in detected_lineages:
+                if target in detected or detected in target:
+                    lineage_matched = True
             
+        if lineage_matched:
+            horse_base_score += 5.0  # ★特注血統ボーナス加算
+            
+        # 🏃 【コースマスター連動】有利脚質の完全自動判定
+        if sel_course != "(未選択)":
+            fav_style = COURSE_MASTER[sel_course].get("fav_style", "")
+            if sel_style in fav_style and sel_style != "選択なし":
+                horse_base_score += 3.0  # ★適合脚質ボーナス加算
+
+        if (sel_style in ["逃げ", "先行"]) and (l3f <= 34.5): horse_base_score += 3.0 
+        
         score = (horse_base_score * mitigated_jockey_rate) - (pop * 0.7)
         
-        # 🌧️ 【新機能】緊急重馬場ロジックの介入
+        # 🏁 展開補正
+        if sel_style in pace_bonus:
+            score += pace_bonus[sel_style]
+        
+        # 🌧️ 道悪適性
         final_apt = determine_final_aptitude(sire, has_heavy_record)
         if track_condition == "稍重":
             if final_apt == "A": score += 2.0
             elif final_apt == "D": score -= 3.0
         elif track_condition == "重・不良":
-            if final_apt == "A": score += 5.0      # 道悪の鬼（補正大）
-            elif final_apt == "B": score += 2.0     # タフ馬場得意
-            elif final_apt == "C": score -= 4.0     # 切れ味ダウン
-            elif final_apt == "D": score -= 10.0    # 泥で大惨敗リスク
+            if final_apt == "A": score += 5.0
+            elif final_apt == "B": score += 2.0
+            elif final_apt == "C": score -= 4.0
+            elif final_apt == "D": score -= 10.0
             
-    c[17].write(f"**{score:.2f}**")
-    
-    display_jock = custom_jock if jock == "other" else (jock if jock != "(未選択)" else "")
+    score_cell.write(f"**{score:.2f}**")
+    display_jock = custom_jock if jock == "その他（自由手入力）" else (jock if jock != "(未選択)" else "")
     calculated_results.append({
-        "馬番": num, "馬name": name, "最終スコア": score, "父馬": sire, "重道悪適性": final_apt, "騎手": display_jock, "戦略メモ": note_text
+        "馬番": num, "馬名": name, "最終スコア": score, "人気": pop, "父馬": sire, "重道悪適性": final_apt, "騎手": display_jock, "戦略メモ": j_data.get("note", "") if jock != "(未選択)" else ""
     })
 
-# ==========================================
-# 💾 6. スマホストレージバックアップUI
-# ==========================================
-if save_clicked:
-    json_str = json.dumps(current_inputs, ensure_ascii=False)
-    encoded_json = urllib.parse.quote(json_str)
-    share_url = f"?data={encoded_json}"
-    st.success("💾 データ変換に成功しました！")
-    html(f"""<script>
-        const url = window.parent.location.origin + window.parent.location.pathname + "{share_url}";
-        navigator.clipboard.writeText(url).then(function() {{ alert('📥 自動保存URLをコピーしました！'); }});
-        </script>""", height=0)
-    st.text_area("📋 バックアップ用の文字：", value=json_str, height=100)
-
-if load_clicked:
-    html("<script>window.parent.location.reload();</script>", height=0)
-
-st.markdown("---")
-st.subheader("📥 スマホ救済・手動データ復元ボックス")
-load_input = st.text_area("保存しておいた「バックアップ用の文字」があれば貼り付けてください：", value="")
-if st.button("📥 手動ロードを実行（コピペ復元）", use_container_width=True):
-    if load_input:
-        try:
-            st.session_state["loaded_data"] = json.loads(load_input)
-            st.toast("データを手動で復元しました！")
-            st.rerun()
-        except: st.error("形式が正しくありません。")
-
-# ==========================================
-# 🏆 7. ランキング生成 ＆ 買い方提案
-# ==========================================
+# 保存・復元
 st.divider()
-if st.button("🏆 最終予想ランキングを生成", type="primary", use_container_width=True):
+save_cols = st.columns(2)
+with save_cols[0]:
+    if st.button("📥 入力内容を自動保存URLに変換"):
+        json_str = json.dumps(current_inputs, ensure_ascii=False)
+        encoded_json = urllib.parse.quote(json_str)
+        html(f"""<script>
+            const url = window.parent.location.origin + window.parent.location.pathname + "?data={encoded_json}";
+            navigator.clipboard.writeText(url).then(function() {{ alert('📥 自動保存URLをコピーしました！'); }});
+            </script>""", height=0)
+
+# ==========================================
+# 🏆 ランキング生成 & 買い目自動生成
+# ==========================================
+if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primary", use_container_width=True):
     res_df = pd.DataFrame(calculated_results)
-    res_df = res_df[res_df["馬name"] != ""].sort_values(by="最終スコア", ascending=False)
+    res_df = res_df[res_df["馬名"] != ""].sort_values(by="最終スコア", ascending=False)
     
     if not res_df.empty:
         st.balloons()
-        st.header(f"🎯 本命推奨馬: {res_df.iloc[0]['馬name']} ({res_df.iloc[0]['騎手']})")
-        st.dataframe(res_df[["馬番", "馬name", "父馬", "重道悪適性", "最終スコア", "騎手", "戦略メモ"]], use_container_width=True, hide_index=True)
         
-        # 🌧️ 馬場状態に合わせた「買い方自動アドバイス」
-        st.subheader("💡 今日の馬場に合わせた最適買い方指南")
-        if track_condition == "重・不良":
-            st.warning("⚠️ **現在【重・不良】モードです！人気馬でも泥で沈むリスクが高まっています。**")
-            st.markdown("""
-            * **推奨戦略：スコア上位5頭の【ワイドBOX】または【馬連BOX】（各10点）**
-            * **理由：** 2頭軸固定は非常に危険です。スコア上位のパワー型（適性A・B）同士が泥んこ馬場を抜け出してくる形に網を張るのが最も安全です。
-            """)
-        else:
-            st.success("☀️ **現在【良馬場・標準】モードです！実力がそのまま反映されやすい舞台です。**")
-            st.markdown("""
-            * **推奨戦略：スコア1位・2位の【3連複2頭軸流し】**
-            * **理由：** 紛れが少ないため、システムが算出した『2強』をそのまま信頼し、3着にスコア上位〜穴馬（川田騎手など）を据えるのが最も効率的です。
-            """)
+        symbols = ["◎", "○", "▲", "△", "⭐︎"]
+        res_df["印"] = [symbols[idx] if idx < len(symbols) else " " for idx in range(len(res_df))]
+        
+        st.header(f"🎯 本命馬: {res_df.iloc[0]['印']} {res_df.iloc[0]['馬名']} ({res_df.iloc[0]['騎手']})")
+        st.dataframe(res_df[["印", "馬番", "馬名", "人気", "父馬", "最終スコア", "騎手", "重道悪適性"]], use_container_width=True, hide_index=True)
+        
+        st.subheader("💰 AI最適化推奨買い目 ＆ 資金配分シミュレーター")
+        top_horses = res_df.head(5).to_dict(orient="records")
+        
+        if len(top_horses) >= 3:
+            h_maru = top_horses[0]["馬番"]  # ◎
+            h_fuku = top_horses[1]["馬番"]  # ○
+            h_ana = top_horses[2]["馬番"]   # ▲
+            h_sa = [h["馬番"] for h in top_horses[3:5]] # △, ⭐︎
+            
+            pool_maruren = total_budget * 0.40
+            pool_sanrenpuku = total_budget * 0.40
+            pool_sanrentan = total_budget * 0.20
+            
+            tickets = []
+            maruren_targets = [h_fuku, h_ana] + h_sa
+            weights = [0.4, 0.3, 0.15, 0.15]
+            for target, w in zip(maruren_targets, weights):
+                amt = max(100, int((pool_maruren * w) // 100) * 100)
+                tickets.append({"券種": "馬連", "買い目": f"{h_maru} ➔ {target}", "推奨投資額": f"{amt}円", "狙い": "軸堅実プラン"})
+                
+            sanren_combos = [
+                f"{h_maru} - {h_fuku} - {h_ana}",
+                f"{h_maru} - {h_fuku} - {h_sa[0]}",
+                f"{h_maru} - {h_fuku} - {h_sa[1]}",
+                f"{h_maru} - {h_ana} - {h_sa[0]}",
+                f"{h_maru} - {h_ana} - {h_sa[1]}",
+            ]
+            each_sanren = max(100, int((pool_sanrenpuku / len(sanren_combos)) // 100) * 100)
+            for combo in sanren_combos:
+                tickets.append({"券種": "3連複", "買い目": combo, "推奨投資額": f"{each_sanren}円", "狙い": "高回収リターン"})
+                
+            tickets.append({"券種": "3連単", "買い目": f"{h_maru} ➔ {h_fuku} ➔ {h_ana}", "推奨投資額": f"{int((pool_sanrentan * 0.6) // 100) * 100}円", "狙い": "一撃必殺・本線"})
+            tickets.append({"券種": "3連単", "買い目": f"{h_maru} ➔ {h_fuku} ➔ {h_sa[0]}", "推奨投資額": f"{int((pool_sanrentan * 0.4) // 100) * 100}円", "狙い": "一撃必殺・押さえ"})
+            
+            st.dataframe(pd.DataFrame(tickets), use_container_width=True, hide_index=True)
+            
+            st.session_state["last_predict_horse"] = top_horses[0]["馬名"]
+            st.session_state["last_predict_course"] = sel_course
+
+# ==========================================
+# 📊 5. 的中率・回収率データログシミュレーター
+# ==========================================
+st.divider()
+st.header("📊 的中率・回収率データログシミュレーター")
+
+with st.expander("📝 当日レースの結果入力を記録する"):
+    log_cols = st.columns(4)
+    with log_cols[0]:
+        res_course = st.text_input("レース名/コース:", value=st.session_state.get("last_predict_course", ""))
+    with log_cols[1]:
+        res_jiku = st.text_input("軸馬名:", value=st.session_state.get("last_predict_horse", ""))
+    with log_cols[2]:
+        is_hit = st.selectbox("軸馬の着順結果:", ["3着以内（的中）", "4着以下（不的中）"])
+    with log_cols[3]:
+        return_amt = st.number_input("実際の総払戻金 (円):", min_value=0, value=0, step=100)
+        
+    invest_amt = st.number_input("実際の総投資額 (円):", min_value=100, value=int(total_budget), step=100)
+
+    if st.button("💾 この結果をシミュレーションログに公式記録する"):
+        hit_flag = 1 if "3着以内" in is_hit else 0
+        st.session_state["history_log"].append({
+            "コース": res_course, "軸馬": res_jiku, "的中": hit_flag, "投資": invest_amt, "払戻": return_amt
+        })
+        st.toast("実績データを蓄積しました！")
+
+if st.session_state["history_log"]:
+    log_df = pd.DataFrame(st.session_state["history_log"])
+    total_races = len(log_df)
+    hits = log_df["的中"].sum()
+    hit_rate = (hits / total_races) * 100 if total_races > 0 else 0
+    total_invest = log_df["投資"].sum()
+    total_return = log_df["払戻"].sum()
+    recovery_rate = (total_return / total_invest) * 100 if total_invest > 0 else 0
+    
+    st.write("### 📉 現在の回収率・的中率スタッツ")
+    stat_cols = st.columns(4)
+    stat_cols[0].metric("総シミュレーションレース数", f"{total_races} 戦")
+    stat_cols[1].metric("軸馬複勝的中率", f"{hit_rate:.1f} %")
+    stat_cols[2].metric("累計投資総額", f"{total_invest:,} 円")
+    stat_cols[3].metric("📊 総合回収率 (回収バロメータ)", f"{recovery_rate:.1f} %")
+    
+    st.write("▼ 直近の記録ログデータ一覧")
+    st.dataframe(log_df, use_container_width=True)
+else:
+    st.info("まだ記録されたシミュレーションログはありません。結果を入力するとデータが蓄積されます。")
