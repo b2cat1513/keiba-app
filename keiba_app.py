@@ -34,7 +34,7 @@ JOCKEY_MASTER = {
     "菅原明良": {"base": 1.15, "factors": {"長距離": 0.10, "差し": 0.05, "東京芝1600": 0.10, "新潟直線1000": 0.15}, "note": "G1制覇を経て大舞台の信頼度UP。穴を明ける長距離差し"},
     "佐々木大輔": {"base": 1.15, "factors": {"芝内枠": 0.15, "ローカル芝": 0.15, "中山芝1200": 0.10}, "note": "若手屈指の立ち回り。内枠＆北海道・ローカル開催の鬼"},
     "丹内祐次": {"base": 1.10, "factors": {"ローカル芝": 0.15, "ローカルダート": 0.15}, "note": "ローカルの帝王。人気薄激走多数"},
-    "田辺裕信": {"base": 1.10, "factors": {"長距離戦": 0.15, "逃げ": 0.10, "東京ダ1400": 0.10}, "note": "人気薄の大胆な逃げや、ポツン差しなどノリに勝る奇策注意"},
+    "田辺裕信": {"base": 1.10, "factors": {"長距離戦": 0.15, "逃げ": 0.10, "東京ダ1400": 0.10}, "note": "人気薄の大大胆な逃げや、ポツン差しなどノリに勝る奇策注意"},
     "横山和生": {"base": 1.15, "factors": {"東京芝2400": 0.10, "中山芝2500": 0.10, "ダート重賞": 0.15}, "note": "長距離の逃げ・先行や、ダート重賞での信頼度高"},
     "津村明秀": {"base": 1.10, "factors": {"新潟直線1000": 0.15, "東京芝1600": 0.10, "京都芝1600": 0.10}, "note": "新潟直線◎。マイルG1での立ち回り・勝負強さも完全に本格化"},
     "三浦皇成": {"base": 1.05, "factors": {"1番人気": 0.15, "重賞": -0.15, "東京ダ1600": 0.10}, "note": "平場・条件戦の1番人気は堅実。重賞ではやや割引"},
@@ -122,8 +122,8 @@ def determine_final_aptitude(sire_name, has_past_record):
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニー予想AI版ver2.20", layout="wide")
-st.title("🏆 ジェニー予想AI版ver2.20")
+st.set_page_config(page_title="ジェニー予想AI版ver2.30", layout="wide")
+st.title("🏆 ジェニー予想AI版ver2.30 (データマイニング完全連動)")
 
 if "history_log" not in st.session_state:
     st.session_state["history_log"] = []
@@ -142,10 +142,11 @@ with env_cols[1]:
 with env_cols[2]:
     total_budget = st.number_input("💰 このレースの想定軍資金 (円):", min_value=100, max_value=100000, value=5000, step=100)
 
-auto_track, auto_dist, good_blood_list = "選択なし", "選択なし", []
+auto_track, auto_dist, good_blood_list, course_note = "選択なし", "選択なし", [], ""
 if sel_course != "(未選択)":
     c_info = COURSE_MASTER[sel_course]
-    st.info(f"**【{sel_course} の特徴・有力血統】**\n\n{c_info['note']}")
+    course_note = c_info["note"]
+    st.info(f"**【{sel_course} の特徴・有力血統】**\n\n{course_note}")
     auto_track, auto_dist, good_blood_list = c_info["track"], c_info["dist"], c_info["good_lineage"]
 
 st.divider()
@@ -155,9 +156,10 @@ st.divider()
 # ==========================================
 st.write("### 📝 出馬表データ入力")
 
-c_widths = [0.6, 1.4, 0.6, 0.6, 0.8, 1.3, 0.8, 1.3, 1.0, 0.8, 0.8, 0.8, 0.8, 1.0, 1.0, 0.8, 0.8, 0.9]
+# 枠変更・距離履歴を反映しやすくするため、列構成を最適化
+c_widths = [0.6, 1.4, 0.6, 0.6, 0.8, 1.3, 0.6, 1.3, 1.0, 0.8, 0.8, 0.8, 0.8, 1.0, 1.0, 0.8, 0.8, 0.9]
 cols = st.columns(c_widths)
-headers = ["馬番", "馬名", "人気", "指数", "前3F", "父馬", "道悪実績", "騎手選択", "手入力用", "馬場", "脚質", "枠順", "距離", "プラス①", "プラス②", "マイナス①", "マイナス②", "最終スコア"]
+headers = ["馬番", "馬名", "人気", "指数", "前3F", "父馬", "道悪", "騎手選択", "手入力用", "馬場", "脚質", "枠有利", "前走距離", "プラス①", "プラス②", "マイナス①", "マイナス②", "最終スコア"]
 for col, h in zip(cols, headers):
     col.write(f"**{h}**")
 
@@ -181,10 +183,10 @@ for i in range(1, 19):
     jock = c[7].selectbox(f"jock_{i}", ["(未選択)"] + jock_list, index=(["(未選択)"] + jock_list).index(s_row.get("jock", "(未選択)")) if s_row.get("jock") in (["(未選択)"] + jock_list) else 0, label_visibility="collapsed")
     
     custom_jock = c[8].text_input(f"custom_jock_{i}", value=s_row.get("custom_jock", ""), label_visibility="collapsed") if jock == "その他（自由手入力）" else ""
-    if jock != "その他（自由手入力）": c[8].write("---")
+    if jock != "other": c[8].write("---")
         
-    sel_track = c[9].selectbox(f"p1_{i}", ["選択なし", "芝", "ダート"], index=["選択なし", "芝", "ダート"].index(s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")), label_visibility="collapsed")
-    sel_style = c[10].selectbox(f"p2_{i}", ["選択なし", "逃げ", "先行", "差し", "追い込み"], index=["選択なし", "逃げ", "先行", "差し", "追い込み"].index(s_row.get("sel_style", "選択なし")), label_visibility="collapsed")
+    sel_track = c[9].selectbox(f"track_{i}", ["選択なし", "芝", "ダート"], index=["選択なし", "芝", "ダート"].index(s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")), label_visibility="collapsed")
+    sel_style = c[10].selectbox(f"style_{i}", ["選択なし", "逃げ", "先行", "差し", "追い込み"], index=["選択なし", "逃げ", "先行", "差し", "追い込み"].index(s_row.get("sel_style", "選択なし")), label_visibility="collapsed")
     
     if name and sel_style in style_counts:
         style_counts[sel_style] += 1
@@ -192,8 +194,10 @@ for i in range(1, 19):
     f_opts = ["選択なし", "内枠", "外枠"]
     try: f_def_idx = 1 if int(num) <= 8 else (2 if int(num) >= 13 else 0)
     except: f_def_idx = 0
-    sel_frame = c[11].selectbox(f"p3_{i}", f_opts, index=f_opts.index(s_row.get("sel_frame", f_opts[f_def_idx])), label_visibility="collapsed")
-    sel_dist = c[12].selectbox(f"p4_{i}", ["選択なし", "短距離", "中距離", "長距離"], index=["選択なし", "短距離", "中距離", "長距離"].index(s_row.get("sel_dist", auto_dist if auto_dist in ["短距離", "中距離", "長距離"] else "選択なし")), label_visibility="collapsed")
+    sel_frame = c[11].selectbox(f"frame_{i}", f_opts, index=f_opts.index(s_row.get("sel_frame", f_opts[f_def_idx])), label_visibility="collapsed")
+    
+    # 前走からの距離変動を入力（コースマイニング用）
+    sel_dist_change = c[12].selectbox(f"dist_change_{i}", ["同距離", "距離短縮", "距離延長"], index=["同距離", "距離短縮", "距離延長"].index(s_row.get("sel_dist_change", "同距離")), label_visibility="collapsed")
     
     plus_opts, minus_opts = ["選択なし"], ["選択なし"]
     if jock in JOCKEY_MASTER:
@@ -210,11 +214,11 @@ for i in range(1, 19):
     current_inputs["rows"][str(i)] = {
         "num": num, "name": name, "pop": pop, "idx": idx, "l3f": l3f, "sire": sire, "heavy_record": has_heavy_record,
         "jock": jock, "custom_jock": custom_jock, "sel_track": sel_track, "sel_style": sel_style, 
-        "sel_frame": sel_frame, "sel_dist": sel_dist, "sel_plus1": sel_plus1, "sel_plus2": sel_plus2, 
+        "sel_frame": sel_frame, "sel_dist_change": sel_dist_change, "sel_plus1": sel_plus1, "sel_plus2": sel_plus2, 
         "sel_minus1": sel_minus1, "sel_minus2": sel_minus2
     }
     
-    row_tmp_data.append((num, name, pop, idx, l3f, sire, has_heavy_record, jock, custom_jock, sel_track, sel_style, sel_frame, sel_dist, sel_plus1, sel_plus2, sel_minus1, sel_minus2, c[17]))
+    row_tmp_data.append((num, name, pop, idx, l3f, sire, has_heavy_record, jock, custom_jock, sel_track, sel_style, sel_frame, sel_dist_change, sel_plus1, sel_plus2, sel_minus1, sel_minus2, c[17]))
 
 # ==========================================
 # 🏁 4. 展開（ペース）AI自動予測
@@ -238,7 +242,7 @@ st.info(f"**現在の登録馬から算出された展開:** {pace_status} (逃�
 # スコア計算
 calculated_results = []
 for item in row_tmp_data:
-    num, name, pop, idx, l3f, sire, has_heavy_record, jock, custom_jock, sel_track, sel_style, sel_frame, sel_dist, sel_plus1, sel_plus2, sel_minus1, sel_minus2, score_cell = item
+    num, name, pop, idx, l3f, sire, has_heavy_record, jock, custom_jock, sel_track, sel_style, sel_frame, sel_dist_change, sel_plus1, sel_plus2, sel_minus1, sel_minus2, score_cell = item
     
     score = 0.0
     final_apt = "C"
@@ -246,7 +250,7 @@ for item in row_tmp_data:
     if jock != "(未選択)" and name != "":
         j_data = JOCKEY_MASTER.get(jock, JOCKEY_MASTER["その他（自由手入力）"])
         jockey_modifier = 0.0
-        chosen_conditions = [sel_track, sel_style, sel_frame, sel_dist, sel_plus1, sel_plus2, sel_minus1, sel_minus2, sel_course]
+        chosen_conditions = [sel_track, sel_style, sel_frame, sel_dist_change, sel_plus1, sel_plus2, sel_minus1, sel_minus2, sel_course]
         for cond in chosen_conditions:
             if cond in j_data["factors"]:
                 jockey_modifier += j_data["factors"][cond]
@@ -257,28 +261,51 @@ for item in row_tmp_data:
         final_jockey_rate = j_data["base"] + max(min(jockey_modifier, 0.20), -0.20)
         mitigated_jockey_rate = 1.0 + (final_jockey_rate - 1.0) * 0.70
         
-        # 🧬 【コースマスター連動】血統自動判定＆曖昧ネスト照合ロジック
+        # ベーススコアの算出
         horse_base_score = idx
-        detected_lineages = auto_detect_lineage(sire)
         
-        lineage_matched = False
-        for target in good_blood_list:
-            # パターン①: コース側のキーワードが父馬名に直接含まれるか (例: ロードカナロア)
-            if target in sire or (sire and sire in target):
-                lineage_matched = True
-            # パターン②: 自動判定された大系統名がコース側の指定と一致するか (例: ディープインパクト系)
-            for detected in detected_lineages:
-                if target in detected or detected in target:
-                    lineage_matched = True
-            
-        if lineage_matched:
-            horse_base_score += 5.0  # ★特注血統ボーナス加算
-            
-        # 🏃 【コースマスター連動】有利脚質の完全自動判定
+        # 🪐 ----------------【コース事典テキストマイニング自動連動】----------------
         if sel_course != "(未選択)":
+            # ① 大系統血統ボーナス
+            detected_lineages = auto_detect_lineage(sire)
+            lineage_matched = False
+            for target in good_blood_list:
+                if target in sire or (sire and sire in target):
+                    lineage_matched = True
+                for detected in detected_lineages:
+                    if target in detected or detected in target:
+                        lineage_matched = True
+            if lineage_matched:
+                horse_base_score += 5.0
+            
+            # ② ピンポイント単体系種牡馬ボーナス（ノートに直書きされている場合）
+            if sire and (sire in course_note):
+                horse_base_score += 3.0
+                
+            # ③ 有利脚質の完全自動判定
             fav_style = COURSE_MASTER[sel_course].get("fav_style", "")
             if sel_style in fav_style and sel_style != "選択なし":
-                horse_base_score += 3.0  # ★適合脚質ボーナス加算
+                horse_base_score += 3.0
+                
+            # ④ 枠順有利のテキスト検知＆連動
+            if "内枠有利" in course_note or "1枠有利" in course_note:
+                if sel_frame == "内枠": horse_base_score += 2.0
+            if "外枠有利" in course_note:
+                if sel_frame == "外枠": horse_base_score += 2.0
+                
+            # ⑤ 前走の距離変更ボーナス連動
+            if "距離短縮" in course_note and sel_dist_change == "距離短縮":
+                horse_base_score += 3.0
+            if "同距離" in course_note and sel_dist_change == "同距離":
+                horse_base_score += 3.0
+            if "距離延長" in course_note and sel_dist_change == "距離延長":
+                horse_base_score += 3.0
+                
+            # ⑥ 舞台適性（上級・重賞ノート判定）
+            if any(w in course_note for w in ["重賞", "上級条件", "G1", "ジャパンカップ", "オークス", "秋華賞", "有馬記念"]):
+                if idx >= 65.0:  # 能力上位馬を上級適性ありとみなす
+                    horse_base_score += 2.0
+        # ------------------------------------------------------------------------
 
         if (sel_style in ["逃げ", "先行"]) and (l3f <= 34.5): horse_base_score += 3.0 
         
@@ -416,5 +443,3 @@ if st.session_state["history_log"]:
     
     st.write("▼ 直近の記録ログデータ一覧")
     st.dataframe(log_df, use_container_width=True)
-else:
-    st.info("まだ記録されたシミュレーションログはありません。結果を入力するとデータが蓄積されます。")
