@@ -5,7 +5,32 @@ import urllib.parse
 from streamlit.components.v1 import html
 
 # ==========================================
-# 🏇 1. ジョッキー事典マスターデータ
+# ⚙️ アプリ初期設定 & レイアウト
+# ==========================================
+st.set_page_config(page_title="ジェニー予想AI版ver2.50", layout="wide")
+st.title("🏆 ジェニー予想AI版ver2.50 (コース特化型枠順マイニング実装)")
+
+# 🌟【重要】URLパラメータから保存データを自動ロードするロジック
+if "loaded_data" not in st.session_state:
+    st.session_state["loaded_data"] = {}
+
+# StreamlitのURLクエリパラメータを取得
+query_params = st.query_params
+if "data" in query_params and not st.session_state["loaded_data"]:
+    try:
+        # URLエンコードされたJSONをデコードしてパース
+        encoded_json = query_params["data"]
+        decoded_json = urllib.parse.unquote(encoded_json)
+        st.session_state["loaded_data"] = json.loads(decoded_json)
+        st.toast("📥 過去の入力データをURLから正常にロードしました！")
+    except Exception as e:
+        st.error(f"データのロード中にエラーが発生しました: {e}")
+
+if "history_log" not in st.session_state:
+    st.session_state["history_log"] = []
+
+# ==========================================
+# 🏇 1. ジョッキー事典マスターデータ (ver2.30を完全維持)
 # ==========================================
 JOCKEY_MASTER = {
     "C.ルメール": {"base": 1.30, "factors": {"芝": 0.05, "ダート": -0.05, "差し": 0.05, "内枠": -0.05, "外枠": 0.05, "長距離": 0.05, "東京芝1600": 0.15, "東京芝2000": 0.15, "東京芝2400": 0.15, "京都芝1600": 0.15, "京都芝2400": 0.15, "中山芝2500": -0.10}, "note": "東京・京都外回り・長距離◎。中山のトリッキーなコースは僅かに割引"},
@@ -34,7 +59,7 @@ JOCKEY_MASTER = {
     "菅原明良": {"base": 1.15, "factors": {"長距離": 0.10, "差し": 0.05, "東京芝1600": 0.10, "新潟直線1000": 0.15}, "note": "G1制覇を経て大舞台の信頼度UP。穴を明ける長距離差し"},
     "佐々木大輔": {"base": 1.15, "factors": {"芝内枠": 0.15, "ローカル芝": 0.15, "中山芝1200": 0.10}, "note": "若手屈指の立ち回り。内枠＆北海道・ローカル開催の鬼"},
     "丹内祐次": {"base": 1.10, "factors": {"ローカル芝": 0.15, "ローカルダート": 0.15}, "note": "ローカルの帝王。人気薄激走多数"},
-    "田辺裕信": {"base": 1.10, "factors": {"長距離戦": 0.15, "逃げ": 0.10, "東京ダ1400": 0.10}, "note": "人気薄の大大胆な逃げや、ポツン差しなどノリに勝る奇策注意"},
+    "田辺裕信": {"base": 1.10, "factors": {"長距離戦": 0.15, "逃げ": 0.10, "東京ダ1400": 0.10}, "note": "人気薄の大胆な逃げや、ポツン差しなどノリに勝る奇策注意"},
     "横山和生": {"base": 1.15, "factors": {"東京芝2400": 0.10, "中山芝2500": 0.10, "ダート重賞": 0.15}, "note": "長距離の逃げ・先行や、ダート重賞での信頼度高"},
     "津村明秀": {"base": 1.10, "factors": {"新潟直線1000": 0.15, "東京芝1600": 0.10, "京都芝1600": 0.10}, "note": "新潟直線◎。マイルG1での立ち回り・勝負強さも完全に本格化"},
     "三浦皇成": {"base": 1.05, "factors": {"1番人気": 0.15, "重賞": -0.15, "東京ダ1600": 0.10}, "note": "平場・条件戦の1番人気は堅実。重賞ではやや割引"},
@@ -54,11 +79,11 @@ JOCKEY_MASTER = {
 }
 
 # ==========================================
-# 🗺️ 2. コース事典マスターデータ
+# 🗺️ 2. コース事典マスターデータ (ver2.30を完全維持)
 # ==========================================
 COURSE_MASTER = {
     "東京芝1600m": {"note": "2月内枠、2月以外外枠。同距離＆距離短縮馬、重賞は差し・追い込み有利。ロードカナロア/エピファネイア/モーリス/キズナ/ハーツクライ。", "track": "芝", "dist": "中距離", "good_lineage": ["ディープインパクト系", "ハーツクライ系", "ロードカナロア"], "fav_style": "差し"},
-    "東京芝2000m": {"note": "1枠有利。前走同距離＆距離短縮が好走。エピファネイア/モーリス牡馬/キズナ/ハーツクライ/ロードカナロア。", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "モーリス", "キズナ", "ハーツクライ系"], "fav_style": "先行・差し"},
+    "東京芝2000m": {"note": "1枠有利. 前走同距離＆距離短縮が好走。エピファネイア/モーリス牡馬/キズナ/ハーツクライ/ロードカナロア。", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "モーリス", "キズナ", "ハーツクライ系"], "fav_style": "先行・差し"},
     "東京芝2400m": {"note": "オークスは差し・追い込み。ジャパンカップはダービー・オークス3着以内の3歳馬有利。インをロスなく回れる内〜中枠有利。", "track": "芝", "dist": "長距離", "good_lineage": ["キタサンブラック", "ドゥラメンテ", "ディープインパクト系"], "fav_style": "差し"},
     "東京ダート1600m": {"note": "外枠有利。前走同距離＆距離短縮馬。ヘニーヒューズ/ドレフォン(逃げ先行有利)。マイル以上のスタミナとパワー必須。", "track": "ダート", "dist": "中距離", "good_lineage": ["ヘニーヒューズ", "ドレフォン", "シニスターミニスター"], "fav_style": "先行"},
     "中山芝1200m": {"note": "ファインニードル産駒○、アメリカンペイトリオット産駒○。スピードの持続力と最後の急坂を耐えるパワーが必要。内枠有利。", "track": "芝", "dist": "短距離", "good_lineage": ["ファインニードル", "アメリカンペイトリオット", "ロードカナロア"], "fav_style": "逃げ"},
@@ -69,11 +94,11 @@ COURSE_MASTER = {
     "京都芝1600m(外)": {"note": "同距離＆距離短縮馬。高速馬場は上がり時計重視○。荒れ馬場は外枠有利(キズナ/エピファネイア/ロードカナロア)。", "track": "芝", "dist": "中距離", "good_lineage": ["キズナ", "エピファネイア", "ロードカナロア"], "fav_style": "差し"},
     "京都芝2000m": {"note": "上級条件は差し馬○。秋華賞は差し馬・オークス出走馬が狙い目。キズナ/キタサンブラック/エピファネイア/ドゥラメンテ。", "track": "芝", "dist": "中距離", "good_lineage": ["キズナ", "キタサンブラック", "エピファネイア", "ドゥラメンテ"], "fav_style": "差し"},
     "京都芝2200m": {"note": "馬場良好なら内枠○。エリザベス女王杯も内枠有利。キズナ牝馬/サトノダイヤモンド/モーリス。", "track": "芝", "dist": "中距離", "good_lineage": ["キズナ", "サトノダイヤモンド", "モーリス"], "fav_style": "先行・差し"},
-    "京都芝3000m": {"note": "外枠有利。父または母父ステイゴールド系○。小柄なエピファネイア/ゴールドシップ/キタサンブラック。", "track": "芝", "dist": "長距離", "good_lineage": ["ステイゴールド系", "ゴールドシップ", "キタサンブラック"], "fav_style": "先行・差し"},
+    "京都芝3000m": {"note": "外枠有利. 父または母父ステイゴールド系○。小柄なエピファネイア/ゴールドシップ/キタサンブラック。", "track": "芝", "dist": "長距離", "good_lineage": ["ステイゴールド系", "ゴールドシップ", "キタサンブラック"], "fav_style": "先行・差し"},
     "京都芝3200m": {"note": "人気馬○。または母父ステイゴールド系。前走阪神大賞典で上がり最速の馬○。スタミナ絶対条件。", "track": "芝", "dist": "長距離", "good_lineage": ["ステイゴールド系", "メジロマックイーン"], "fav_style": "先行・差し"},
     "阪神芝1600m": {"note": "内枠有利。高速馬場は外差し、同距離＆距離短縮馬○。ロードカナロア/エピファネイア/モーリス/キズナ/ハーツクライ。", "track": "芝", "dist": "中距離", "good_lineage": ["ロードカナロア", "エピファネイア", "モーリス", "キズナ", "ハーツクライ系"], "fav_style": "差し"},
     "阪神芝2000m": {"note": "外枠の先行馬有利。大阪杯は内差し。ドゥラメンテ牝馬/ルーラーシップ/キズナ/エピファネイア/ハーツクライ。", "track": "芝", "dist": "中距離", "good_lineage": ["ドゥラメンテ", "ルーラーシップ", "キズナ", "エピファネイア", "ハーツクライ系"], "fav_style": "先行"},
-    "阪神芝2200m": {"note": "先行〜中団差し馬○。キズナ/ルーラーシップ/イスラボニータ/キタサンブラック。宝塚記念はタフな馬場適性重視。", "track": "芝", "dist": "中距離", "good_lineage": ["キズナ", "ルーラーシップ", "イスラボニータ", "キタサンブラック"], "fav_style": "先行・差し"}
+    "阪神芝2200m": {"note": "先行〜中団差し馬○。キズナ/ルーラーシップ/イスラボニータ/キタサンブラック.宝塚記念はタフな馬場適性重視。", "track": "芝", "dist": "中距離", "good_lineage": ["キズナ", "ルーラーシップ", "イスラボニータ", "キタサンブラック"], "fav_style": "先行・差し"}
 }
 
 # ==========================================
@@ -119,18 +144,7 @@ def determine_final_aptitude(sire_name, has_past_record):
         elif base_apt == "B": return "A"
     return base_apt
 
-# ==========================================
-# ⚙️ アプリ初期設定 & レイアウト
-# ==========================================
-st.set_page_config(page_title="ジェニー予想AI版ver2.30", layout="wide")
-st.title("🏆 ジェニー予想AI版ver2.30 (データマイニング完全連動)")
-
-if "history_log" not in st.session_state:
-    st.session_state["history_log"] = []
-if "loaded_data" not in st.session_state:
-    st.session_state["loaded_data"] = {}
-
-# --- 🛰️ 当当日環境設定エリア ---
+# --- 🛰️ 当日環境設定エリア ---
 st.header("🛰️ 当日のレース環境")
 env_cols = st.columns(3)
 with env_cols[0]:
@@ -156,7 +170,6 @@ st.divider()
 # ==========================================
 st.write("### 📝 出馬表データ入力")
 
-# 枠変更・距離履歴を反映しやすくするため、列構成を最適化
 c_widths = [0.6, 1.4, 0.6, 0.6, 0.8, 1.3, 0.6, 1.3, 1.0, 0.8, 0.8, 0.8, 0.8, 1.0, 1.0, 0.8, 0.8, 0.9]
 cols = st.columns(c_widths)
 headers = ["馬番", "馬名", "人気", "指数", "前3F", "父馬", "道悪", "騎手選択", "手入力用", "馬場", "脚質", "枠有利", "前走距離", "プラス①", "プラス②", "マイナス①", "マイナス②", "最終スコア"]
@@ -196,7 +209,6 @@ for i in range(1, 19):
     except: f_def_idx = 0
     sel_frame = c[11].selectbox(f"frame_{i}", f_opts, index=f_opts.index(s_row.get("sel_frame", f_opts[f_def_idx])), label_visibility="collapsed")
     
-    # 前走からの距離変動を入力（コースマイニング用）
     sel_dist_change = c[12].selectbox(f"dist_change_{i}", ["同距離", "距離短縮", "距離延長"], index=["同距離", "距離短縮", "距離延長"].index(s_row.get("sel_dist_change", "同距離")), label_visibility="collapsed")
     
     plus_opts, minus_opts = ["選択なし"], ["選択なし"]
@@ -239,7 +251,9 @@ if total_active_horses >= 3:
 
 st.info(f"**現在の登録馬から算出された展開:** {pace_status} (逃げ:{style_counts['逃げ']}頭, 先行:{style_counts['先行']}頭, 差し:{style_counts['差し']}頭, 追込:{style_counts['追い込み']}頭)")
 
-# スコア計算
+# ==========================================
+# 📊 スコア計算
+# ==========================================
 calculated_results = []
 for item in row_tmp_data:
     num, name, pop, idx, l3f, sire, has_heavy_record, jock, custom_jock, sel_track, sel_style, sel_frame, sel_dist_change, sel_plus1, sel_plus2, sel_minus1, sel_minus2, score_cell = item
@@ -264,9 +278,48 @@ for item in row_tmp_data:
         # ベーススコアの算出
         horse_base_score = idx
         
+        # 🪐 ----------------【馬番・枠順データマイニング一律ロジック】----------------
+        if str(num).strip() == "7":
+            horse_base_score += 2.0
+        elif str(num).strip() in ["9", "13"]:
+            horse_base_score += 1.0
+        try:
+            if int(num) % 2 != 0 and str(num).strip() not in ["7", "9", "13"]:
+                horse_base_score += 0.5
+        except ValueError:
+            pass
+        try:
+            if int(num) >= 15:
+                horse_base_score -= 1.5
+        except ValueError:
+            pass
+            
+        # 🪐 ----------------【新搭載：コース特化型・枠順データマイニング】----------------
+        try:
+            horse_num_int = int(num)
+            if sel_course == "東京芝1600m":
+                if horse_num_int in [1, 2]:
+                    horse_base_score -= 2.0
+                elif 5 <= horse_num_int <= 12:
+                    horse_base_score += 2.0
+                elif 13 <= horse_num_int <= 17:
+                    horse_base_score += 2.5
+                    
+            elif sel_course and "京都芝" in sel_course:
+                if horse_num_int >= 10:
+                    horse_base_score += 2.0
+                    
+            elif sel_course and "ダート" in sel_course:
+                if 1 <= horse_num_int <= 9:
+                    horse_base_score += 2.0
+                elif horse_num_int >= 14:
+                    horse_base_score -= 2.0
+        except ValueError:
+            pass
+        # ------------------------------------------------------------------------
+
         # 🪐 ----------------【コース事典テキストマイニング自動連動】----------------
         if sel_course != "(未選択)":
-            # ① 大系統血統ボーナス
             detected_lineages = auto_detect_lineage(sire)
             lineage_matched = False
             for target in good_blood_list:
@@ -278,22 +331,18 @@ for item in row_tmp_data:
             if lineage_matched:
                 horse_base_score += 5.0
             
-            # ② ピンポイント単体系種牡馬ボーナス（ノートに直書きされている場合）
             if sire and (sire in course_note):
                 horse_base_score += 3.0
                 
-            # ③ 有利脚質の完全自動判定
             fav_style = COURSE_MASTER[sel_course].get("fav_style", "")
             if sel_style in fav_style and sel_style != "選択なし":
                 horse_base_score += 3.0
                 
-            # ④ 枠順有利のテキスト検知＆連動
             if "内枠有利" in course_note or "1枠有利" in course_note:
                 if sel_frame == "内枠": horse_base_score += 2.0
             if "外枠有利" in course_note:
                 if sel_frame == "外枠": horse_base_score += 2.0
                 
-            # ⑤ 前走の距離変更ボーナス連動
             if "距離短縮" in course_note and sel_dist_change == "距離短縮":
                 horse_base_score += 3.0
             if "同距離" in course_note and sel_dist_change == "同距離":
@@ -301,9 +350,8 @@ for item in row_tmp_data:
             if "距離延長" in course_note and sel_dist_change == "距離延長":
                 horse_base_score += 3.0
                 
-            # ⑥ 舞台適性（上級・重賞ノート判定）
             if any(w in course_note for w in ["重賞", "上級条件", "G1", "ジャパンカップ", "オークス", "秋華賞", "有馬記念"]):
-                if idx >= 65.0:  # 能力上位馬を上級適性ありとみなす
+                if idx >= 65.0:
                     horse_base_score += 2.0
         # ------------------------------------------------------------------------
 
@@ -311,11 +359,9 @@ for item in row_tmp_data:
         
         score = (horse_base_score * mitigated_jockey_rate) - (pop * 0.7)
         
-        # 🏁 展開補正
         if sel_style in pace_bonus:
             score += pace_bonus[sel_style]
         
-        # 🌧️ 道悪適性
         final_apt = determine_final_aptitude(sire, has_heavy_record)
         if track_condition == "稍重":
             if final_apt == "A": score += 2.0
