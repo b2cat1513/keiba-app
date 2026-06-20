@@ -62,7 +62,7 @@ JOCKEY_MASTER = {
     "田辺裕信": {"base": 1.10, "factors": {"長距離戦": 0.15, "逃げ": 0.10, "東京ダ1400": 0.10}, "note": "人気薄の大胆な逃げや、ポツン差しなどノリに勝る奇策注意"},
     "横山和生": {"base": 1.15, "factors": {"東京芝2400": 0.10, "中山芝2500": 0.10, "ダート重賞": 0.15}, "note": "長距離の逃げ・先行や、ダート重賞での信頼度高"},
     "津村明秀": {"base": 1.10, "factors": {"新潟直線1000": 0.15, "東京芝1600": 0.10, "京都芝1600": 0.10}, "note": "新潟直線◎。マイルG1での立ち回り・勝負強さも完全に本格化"},
-    "三浦皇成": {"base": 1.05, "factors": {"1番人気": 0.15, "重賞": -0.15, "東京ダ1600": 0.10}, "note": "平場・条件戦の1番人気は堅実。重賞ではやや割引"},
+    "三浦皇成": {"base": 1.05, "factors": {"1番人気": 0.15, "重賞": -0.15, "東京ダ1600": 0.10}, "note": "平場・条件戦の1番人気は堅実. 重賞ではやや割引"},
     "大野拓哉": {"base": 1.05, "factors": {"東京ダ1600": 0.15, "追い込み": 0.15, "中山芝1200": 0.10}, "note": "東京ダートや外枠の追い込み穴馬で強烈な差しを見せる"},
     "石川裕紀人": {"base": 1.10, "factors": {"芝1枠": 0.15, "積極策": 0.10, "東京芝2000": 0.10}, "note": "大舞台での思い切った先行策・イン突きの魅力あり"},
     "北村宏司": {"base": 1.05, "factors": {"東京芝1600": 0.10, "内枠": 0.10, "東京芝2400": 0.10}, "note": "ベテランの安定感。東京の芝コースや内枠での立ち回り○"},
@@ -378,17 +378,38 @@ for item in row_tmp_data:
         "馬番": num, "馬名": name, "最終スコア": score, "人気": pop, "父馬": sire, "重道悪適性": final_apt, "騎手": display_jock, "戦略メモ": j_data.get("note", "") if jock != "(未選択)" else ""
     })
 
-# 保存・復元
+# ==========================================
+# 📥 セーブ＆データ保存エリア（改良・手動バックアップ型）
+# ==========================================
 st.divider()
-save_cols = st.columns(2)
+st.write("### 💾 現在の入力状態をセーブする")
+
+# 現在の最新の入力データをシリアライズ
+json_str = json.dumps(current_inputs, ensure_ascii=False)
+encoded_json = urllib.parse.quote(json_str)
+
+# 完全にローカル/Web両対応した絶対URLの組み立て
+base_url = "http://localhost:8501" 
+generated_url = f"{base_url}/?data={encoded_json}"
+
+save_cols = st.columns([1, 2])
 with save_cols[0]:
-    if st.button("📥 入力内容を自動保存URLに変換"):
-        json_str = json.dumps(current_inputs, ensure_ascii=False)
-        encoded_json = urllib.parse.quote(json_str)
+    st.write("① 以下のボタンから自動保存コピーを試みる：")
+    if st.button("📋 自動保存URLをクリップボードにコピー"):
         html(f"""<script>
             const url = window.parent.location.origin + window.parent.location.pathname + "?data={encoded_json}";
-            navigator.clipboard.writeText(url).then(function() {{ alert('📥 自動保存URLをコピーしました！'); }});
+            navigator.clipboard.writeText(url).then(function() {{
+                alert('📥 自動保存URLをコピーしました！ブラウザのブックマークに保存するか、メモ帳に貼り付けてください。');
+            }}).catch(function(err) {{
+                alert('ブラウザのセキュリティ制限により自動コピーが失敗しました。右側のテキストボックスから直接コピーしてください。');
+            }});
             </script>""", height=0)
+        st.toast("📋 コピー処理を実行しました（失敗する場合は右側を使用してください）")
+
+with save_cols[1]:
+    st.write("② 上記ボタンが機能しない場合（確実な手動コピー用）：")
+    # 画面上にURLを直接表示させ、トリプルクリック等で完全に手動コピーできる安全網
+    st.text_input("➔ このURLをすべて選択してコピーし、次回ブラウザで開いてください：", value=generated_url, key="copy_url_box")
 
 # ==========================================
 # 🏆 ランキング生成 & 買い目自動生成
