@@ -7,18 +7,16 @@ from streamlit.components.v1 import html
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニー予想AI版ver2.50", layout="wide")
-st.title("🏆 ジェニー予想AI版ver2.50 (コース特化型枠順マイニング実装)")
+st.set_page_config(page_title="ジェニー予想AI版ver2.65", layout="wide")
+st.title("🏆 ジェニー予想AI版ver2.65 (コース特化枠順マイニング統合版)")
 
-# 🌟【重要】URLパラメータから保存データを自動ロードするロジック
+# 🌟 URLパラメータからの自動ロードロジック
 if "loaded_data" not in st.session_state:
     st.session_state["loaded_data"] = {}
 
-# StreamlitのURLクエリパラメータを取得
 query_params = st.query_params
 if "data" in query_params and not st.session_state["loaded_data"]:
     try:
-        # URLエンコードされたJSONをデコードしてパース
         encoded_json = query_params["data"]
         decoded_json = urllib.parse.unquote(encoded_json)
         st.session_state["loaded_data"] = json.loads(decoded_json)
@@ -30,7 +28,32 @@ if "history_log" not in st.session_state:
     st.session_state["history_log"] = []
 
 # ==========================================
-# 🏇 1. ジョッキー事典マスターデータ (ver2.30を完全維持)
+# 🧩 サイドバー：手動テキスト貼り付けロード（安全網）
+# ==========================================
+with st.sidebar:
+    st.header("⚙️ システム復元メニュー")
+    with st.expander("🔄 バックアップデータから直接復元", expanded=True):
+        st.write("URLが途中で切れてロードできない場合は、以下に保存したURLまたはデータテキストを貼り付けてください。")
+        paste_data = st.text_area("セーブデータ文字列を入力:", height=150, placeholder="http://localhost:8501/?data=...")
+        if st.button("🚀 データを強制復元", use_container_width=True):
+            if paste_data:
+                try:
+                    if "?data=" in paste_data:
+                        raw_json = paste_data.split("?data=")[-1]
+                    else:
+                        raw_json = paste_data
+                    
+                    decoded = urllib.parse.unquote(raw_json)
+                    st.session_state["loaded_data"] = json.loads(decoded)
+                    st.success("📥 データをテキストから正常に復元しました！")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"復元に失敗しました。データが正しいか確認してください:\n{e}")
+            else:
+                st.warning("テキストが入力されていません。")
+
+# ==========================================
+# 🏇 1. ジョッキー事典マスターデータ
 # ==========================================
 JOCKEY_MASTER = {
     "C.ルメール": {"base": 1.30, "factors": {"芝": 0.05, "ダート": -0.05, "差し": 0.05, "内枠": -0.05, "外枠": 0.05, "長距離": 0.05, "東京芝1600": 0.15, "東京芝2000": 0.15, "東京芝2400": 0.15, "京都芝1600": 0.15, "京都芝2400": 0.15, "中山芝2500": -0.10}, "note": "東京・京都外回り・長距離◎。中山のトリッキーなコースは僅かに割引"},
@@ -67,7 +90,7 @@ JOCKEY_MASTER = {
     "石川裕紀人": {"base": 1.10, "factors": {"芝1枠": 0.15, "積極策": 0.10, "東京芝2000": 0.10}, "note": "大舞台での思い切った先行策・イン突きの魅力あり"},
     "北村宏司": {"base": 1.05, "factors": {"東京芝1600": 0.10, "内枠": 0.10, "東京芝2400": 0.10}, "note": "ベテランの安定感。東京の芝コースや内枠での立ち回り○"},
     "石橋脩": {"base": 1.05, "factors": {"先行": 0.10, "中山芝1600": 0.10}, "note": "ベテランの先行押し切り。中山などタフなコースで注意"},
-    "柴田善臣": {"base": 1.00, "factors": {"人気薄": 0.10}, "note": "現役最年長レジェンド。時折見せる絶妙な差し込み注意"},
+    "柴田善臣": {"base": 1.00, "factors": {"人気薄": 0.10}, "note": "現役最年長レジェンド。時旧見せる絶妙な差し込み注意"},
     "J.モレイラ": {"base": 1.30, "factors": {"中長距離": 0.15, "ダート": 0.10, "東京芝2400": 0.15, "阪神芝1600": 0.10}, "note": "マジックマン。短期免許で来日時は勝率・連対率が異次元"},
     "D.レーン": {"base": 1.30, "factors": {"重賞": 0.15, "芝": 0.10, "東京芝2400": 0.10, "東京芝1600": 0.15}, "note": "日本の馬場適性が非常に高く、G1大舞台での信頼度絶大"},
     "R.キング": {"base": 1.25, "factors": {"先行": 0.15, "内枠": 0.10, "東京芝1600": 0.10}, "note": "抜群のスタートセンスと好位キープ力で前残り連発"},
@@ -79,7 +102,7 @@ JOCKEY_MASTER = {
 }
 
 # ==========================================
-# 🗺️ 2. コース事典マスターデータ (ver2.30を完全維持)
+# 🗺️ 2. コース事典マスターデータ
 # ==========================================
 COURSE_MASTER = {
     "東京芝1600m": {"note": "2月内枠、2月以外外枠。同距離＆距離短縮馬、重賞は差し・追い込み有利。ロードカナロア/エピファネイア/モーリス/キズナ/ハーツクライ。", "track": "芝", "dist": "中距離", "good_lineage": ["ディープインパクト系", "ハーツクライ系", "ロードカナロア"], "fav_style": "差し"},
@@ -88,7 +111,7 @@ COURSE_MASTER = {
     "東京ダート1600m": {"note": "外枠有利。前走同距離＆距離短縮馬。ヘニーヒューズ/ドレフォン(逃げ先行有利)。マイル以上のスタミナとパワー必須。", "track": "ダート", "dist": "中距離", "good_lineage": ["ヘニーヒューズ", "ドレフォン", "シニスターミニスター"], "fav_style": "先行"},
     "中山芝1200m": {"note": "ファインニードル産駒○、アメリカンペイトリオット産駒○。スピードの持続力と最後の急坂を耐えるパワーが必要。内枠有利。", "track": "芝", "dist": "短距離", "good_lineage": ["ファインニードル", "アメリカンペイトリオット", "ロードカナロア"], "fav_style": "逃げ"},
     "中山芝2000m": {"note": "皐月賞はマイル〜1800m重賞実績馬○。荒れ馬場は外差し○。エピファネイア/キズナ/ドゥラメンテ/モーリス/ロードカナロア。", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "キズナ", "ドゥラメンテ", "モーリス"], "fav_style": "先行"},
-    "中山芝2500m": {"note": "高速馬場の有馬記念は東京中距離G1実績馬○。高速馬場は内枠、荒れ馬場は外枠有利。エピファネイア/キズナ/ゴールドシップ。", "track": "芝", "dist": "長距離", "good_lineage": ["エピファネイア", "キズナ", "ゴールドシップ"], "fav_style": "先行"},
+    "中山芝2500m": {"note": "高速馬場の有馬記念は東京中距離G1実績馬○。高速馬場は内枠、荒れ馬場は外枠有利.エピファネイア/キズナ/ゴールドシップ。", "track": "芝", "dist": "長距離", "good_lineage": ["エピファネイア", "キズナ", "ゴールドシップ"], "fav_style": "先行"},
     "中京芝1200m": {"note": "内枠、距離短縮馬の内枠、内枠の逃げ先行馬○。ロードカナロア/ビッグアーサー/ミッキーアイル/ダイワメジャー。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ビッグアーサー", "ミッキーアイル", "ダイワメジャー"], "fav_style": "逃げ先行"},
     "中京ダート1800m": {"note": "内をロスなく立ち回れる逃げ先行馬○。時計がかかると外差し○。チャンピオンズCなど内枠有利。", "track": "ダート", "dist": "中距離", "good_lineage": ["シニスターミニスター", "ホッコータルマエ"], "fav_style": "逃げ先行"},
     "京都芝1600m(外)": {"note": "同距離＆距離短縮馬。高速馬場は上がり時計重視○。荒れ馬場は外枠有利(キズナ/エピファネイア/ロードカナロア)。", "track": "芝", "dist": "中距離", "good_lineage": ["キズナ", "エピファネイア", "ロードカナロア"], "fav_style": "差し"},
@@ -275,10 +298,9 @@ for item in row_tmp_data:
         final_jockey_rate = j_data["base"] + max(min(jockey_modifier, 0.20), -0.20)
         mitigated_jockey_rate = 1.0 + (final_jockey_rate - 1.0) * 0.70
         
-        # ベーススコアの算出
         horse_base_score = idx
         
-        # 🪐 ----------------【馬番・枠順データマイニング一律ロジック】----------------
+        # 🪐 【馬番・枠順データマイニング一律ロジック】
         if str(num).strip() == "7":
             horse_base_score += 2.0
         elif str(num).strip() in ["9", "13"]:
@@ -294,31 +316,33 @@ for item in row_tmp_data:
         except ValueError:
             pass
             
-        # 🪐 ----------------【新搭載：コース特化型・枠順データマイニング】----------------
+        # 🪐 【新機能：コース特化型・枠順データマイニングロジック】
         try:
             horse_num_int = int(num)
+            # ① 東京芝1600m（真ん中〜外枠圧倒）
             if sel_course == "東京芝1600m":
-                if horse_num_int in [1, 2]:
-                    horse_base_score -= 2.0
-                elif 5 <= horse_num_int <= 12:
+                if 5 <= horse_num_int <= 12:
                     horse_base_score += 2.0
                 elif 13 <= horse_num_int <= 17:
                     horse_base_score += 2.5
+                elif 1 <= horse_num_int <= 2:
+                    horse_base_score -= 2.0
                     
+            # ② 京都芝（外枠の激走・2桁馬番）
             elif sel_course and "京都芝" in sel_course:
                 if horse_num_int >= 10:
                     horse_base_score += 2.0
                     
-            elif sel_course and "ダート" in sel_course:
+            # ③ ダート戦（中京ダ1800m・東京ダ1600m）
+            elif sel_course in ["中京ダート1800m", "東京ダート1600m"]:
                 if 1 <= horse_num_int <= 9:
                     horse_base_score += 2.0
                 elif horse_num_int >= 14:
                     horse_base_score -= 2.0
         except ValueError:
             pass
-        # ------------------------------------------------------------------------
 
-        # 🪐 ----------------【コース事典テキストマイニング自動連動】----------------
+        # 🪐 コース事典テキストマイニング自動連動
         if sel_course != "(未選択)":
             detected_lineages = auto_detect_lineage(sire)
             lineage_matched = False
@@ -353,7 +377,6 @@ for item in row_tmp_data:
             if any(w in course_note for w in ["重賞", "上級条件", "G1", "ジャパンカップ", "オークス", "秋華賞", "有馬記念"]):
                 if idx >= 65.0:
                     horse_base_score += 2.0
-        # ------------------------------------------------------------------------
 
         if (sel_style in ["逃げ", "先行"]) and (l3f <= 34.5): horse_base_score += 3.0 
         
@@ -379,37 +402,34 @@ for item in row_tmp_data:
     })
 
 # ==========================================
-# 📥 セーブ＆データ保存エリア（改良・手動バックアップ型）
+# 📥 セーブ＆データ保存エリア
 # ==========================================
 st.divider()
 st.write("### 💾 現在の入力状態をセーブする")
 
-# 現在の最新の入力データをシリアライズ
 json_str = json.dumps(current_inputs, ensure_ascii=False)
 encoded_json = urllib.parse.quote(json_str)
 
-# 完全にローカル/Web両対応した絶対URLの組み立て
 base_url = "http://localhost:8501" 
 generated_url = f"{base_url}/?data={encoded_json}"
 
 save_cols = st.columns([1, 2])
 with save_cols[0]:
     st.write("① 以下のボタンから自動保存コピーを試みる：")
-    if st.button("📋 自動保存URLをクリップボードにコピー"):
+    if st.button("📋 自動保存URLをクリップボードにコピー", use_container_width=True):
         html(f"""<script>
             const url = window.parent.location.origin + window.parent.location.pathname + "?data={encoded_json}";
             navigator.clipboard.writeText(url).then(function() {{
                 alert('📥 自動保存URLをコピーしました！ブラウザのブックマークに保存するか、メモ帳に貼り付けてください。');
             }}).catch(function(err) {{
-                alert('ブラウザのセキュリティ制限により自動コピーが失敗しました。右側のテキストボックスから直接コピーしてください。');
+                alert('ブラウザのセキュリティ制限により自動コピーが失敗しました。右側のテキストエリアから手動でコピーしてください。');
             }});
             </script>""", height=0)
-        st.toast("📋 コピー処理を実行しました（失敗する場合は右側を使用してください）")
+        st.toast("📋 コピー処理を実行しました")
 
 with save_cols[1]:
-    st.write("② 上記ボタンが機能しない場合（確実な手動コピー用）：")
-    # 画面上にURLを直接表示させ、トリプルクリック等で完全に手動コピーできる安全網
-    st.text_input("➔ このURLをすべて選択してコピーし、次回ブラウザで開いてください：", value=generated_url, key="copy_url_box")
+    st.write("② ボタンが動かない場合・見切れ対策（手動コピー用）：")
+    st.text_area("➔ 以下の文字列をすべて選択してコピーし、バックアップ用として保存するか、次回起動時に左側のサイドバーに貼り付けてください：", value=generated_url, height=120, key="copy_url_box")
 
 # ==========================================
 # 🏆 ランキング生成 & 買い目自動生成
@@ -431,10 +451,10 @@ if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primar
         top_horses = res_df.head(5).to_dict(orient="records")
         
         if len(top_horses) >= 3:
-            h_maru = top_horses[0]["馬番"]  # ◎
-            h_fuku = top_horses[1]["馬番"]  # ○
-            h_ana = top_horses[2]["馬番"]   # ▲
-            h_sa = [h["馬番"] for h in top_horses[3:5]] # △, ⭐︎
+            h_maru = top_horses[0]["馬番"]
+            h_fuku = top_horses[1]["馬番"]
+            h_ana = top_horses[2]["馬番"]
+            h_sa = [h["馬番"] for h in top_horses[3:5]]
             
             pool_maruren = total_budget * 0.40
             pool_sanrenpuku = total_budget * 0.40
@@ -479,7 +499,7 @@ with st.expander("📝 当日レースの結果入力を記録する"):
     with log_cols[1]:
         res_jiku = st.text_input("軸馬名:", value=st.session_state.get("last_predict_horse", ""))
     with log_cols[2]:
-        is_hit = st.selectbox("軸馬の着順結果:", ["3着以内（的中）", "4着以下（不的中）"])
+        is_hit = st.selectbox("軸馬の着順結果:", ["3着以内（的中）", "4着以下（不不的中）"])
     with log_cols[3]:
         return_amt = st.number_input("実際の総払戻金 (円):", min_value=0, value=0, step=100)
         
