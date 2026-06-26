@@ -2,15 +2,42 @@ import streamlit as st
 import pandas as pd
 import json
 import urllib.parse
+import re
 from streamlit.components.v1 import html
 
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニー予想AI版ver1.01", layout="wide")
-st.title("🏆 ジェニー予想AI版ver1.01 (データ復元強化版)")
+st.set_page_config(page_title="ジェニーAI予想ver1.01", layout="wide")
+st.title("🏆 ジェニーAI予想ver1.01 (強制復元ロジック強化版・斤量馬体重＆レース格完全統合)")
 
-# 🌟 URLパラメータからの自動ロードロジック
+# 🛠️ ver1.01 強化機能：破損したJSONセーブデータを極力修復する関数
+def try_repair_and_load_json(json_str):
+    """URL切れなどで壊れたJSON文字列を検知し、最低限パース可能な状態に強制復元を試みる"""
+    json_str = json_str.strip()
+    
+    # 閉じられていないクォーテーションやカッコの数を簡易補正
+    # 文字列の途中で切れた場合、最後のキーや値を極力閉じる
+    if not json_str.endswith("}"):
+        # 開きカッコと閉じカッコの数をカウント
+        open_braces = json_str.count("{")
+        close_braces = json_str.count("}")
+        open_brackets = json_str.count("[")
+        close_brackets = json_str.count("]")
+        
+        # 途中で文字列が閉じられていない場合の補正
+        if json_str.count('"') % 2 != 0:
+            json_str += '"'
+            
+        # 不足している閉じカッコを自動付与
+        if open_brackets > close_brackets:
+            json_str += "]" * (open_brackets - close_brackets)
+        if open_braces > close_braces:
+            json_str += "}" * (open_braces - close_braces)
+            
+    return json.loads(json_str)
+
+# 🌟 URLパラメータからの自動ロードロジック (ver1.01 スマート自動復元)
 if "loaded_data" not in st.session_state:
     st.session_state["loaded_data"] = {}
 
@@ -19,65 +46,41 @@ if "data" in query_params and not st.session_state["loaded_data"]:
     try:
         encoded_json = query_params["data"]
         decoded_json = urllib.parse.unquote(encoded_json)
-        st.session_state["loaded_data"] = json.loads(decoded_json)
-        st.toast("📥 過去の入力データをURLから正常にロードしました！")
+        # 壊れたJSONの自動修復を試みる
+        st.session_state["loaded_data"] = try_repair_and_load_json(decoded_json)
+        st.toast("📥 過去の入力データをURLから正常に自動復元（ロード）しました！")
     except Exception as e:
-        st.error(f"データのロード中にエラーが発生しました: {e}")
+        st.error(f"⚠️ URLからの自動ロード中にエラーが発生しました（データが深刻に破損している可能性があります）: {e}")
 
 if "history_log" not in st.session_state:
     st.session_state["history_log"] = []
 
 # ==========================================
-# 🧩 サイドバー：手動テキスト貼り付けロード（安全網）- ver1.01改良版
+# 🧩 サイドバー：手動テキスト貼り付けロード（ver1.01 強制復元強化）
 # ==========================================
 with st.sidebar:
     st.header("⚙️ システム復元メニュー")
     with st.expander("🔄 バックアップデータから直接復元", expanded=True):
-        st.write("URLが途中で切れてロードできない場合は、以下に保存したURLまたはデータテキストを貼り付けてください。")
-        paste_data = st.text_area("セーブデータ文字列を入力:", height=150, placeholder="http://localhost:8501/?data=...")
+        st.write("URLが途中で切れてロードできない、または別PCのデータを移行したい場合は、以下に保存したURLまたはデータテキストを貼り付けてください。")
+        paste_data = st.text_area("セーブデータ文字列を入力（破損URLも可）:", height=150, placeholder="http://localhost:8501/?data=...")
         if st.button("🚀 データを強制復元", use_container_width=True):
             if paste_data:
                 try:
-                    # URLからデータ部分（JSON文字列）を抽出
+                    # URL丸ごとの場合はデータ部分だけを抽出
                     if "?data=" in paste_data:
                         raw_json = paste_data.split("?data=")[-1]
                     else:
                         raw_json = paste_data
                     
+                    # デコード処理
                     decoded = urllib.parse.unquote(raw_json)
-                    backup_data = json.loads(decoded)
                     
-                    # loaded_dataの更新
-                    st.session_state["loaded_data"] = backup_data
-                    
-                    # ① レース環境の値を直接セッションに注入
-                    if "course" in backup_data:
-                        st.session_state["loaded_data"]["course"] = backup_data["course"]
-                    if "track_condition" in backup_data:
-                        st.session_state["loaded_data"]["track_condition"] = backup_data["track_condition"]
-                        
-                    # ② 出馬表の各入力コンポーネント（Key）へダイレクトにデータ注入
-                    if "rows" in backup_data:
-                        for row_idx, row_val in backup_data["rows"].items():
-                            st.session_state[f"num_{row_idx}"] = row_val.get("num", str(row_idx))
-                            st.session_state[f"name_{row_idx}"] = row_val.get("name", "")
-                            st.session_state[f"pop_{row_idx}"] = int(row_val.get("pop", 10))
-                            st.session_state[f"idx_{row_idx}"] = float(row_val.get("idx", 0.0))
-                            st.session_state[f"l3f_{row_idx}"] = float(row_val.get("l3f", 35.0))
-                            st.session_state[f"sire_{row_idx}"] = row_val.get("sire", "")
-                            st.session_state[f"rec_{row_idx}"] = row_val.get("heavy_record", False)
-                            st.session_state[f"jock_{row_idx}"] = row_val.get("jock", "(未選択)")
-                            if "custom_jock" in row_val:
-                                st.session_state[f"custom_jock_{row_idx}"] = row_val.get("custom_jock", "")
-                            st.session_state[f"track_{row_idx}"] = row_val.get("sel_track", "選択なし")
-                            st.session_state[f"style_{row_idx}"] = row_val.get("sel_style", "選択なし")
-                            st.session_state[f"frame_{row_idx}"] = row_val.get("sel_frame", "選択なし")
-                            st.session_state[f"dist_change_{row_idx}"] = row_val.get("sel_dist_change", "同距離")
-                    
-                    st.success("📥 データをシステム内部に強制同期しました！")
-                    st.rerun() # 画面をリフレッシュして確実に反映させる
+                    # 構文破損チェック＆自動修復パース
+                    st.session_state["loaded_data"] = try_repair_and_load_json(decoded)
+                    st.success("📥 データをテキストから強制復元しました！アプリを再描画します。")
+                    st.rerun()
                 except Exception as e:
-                    st.error(f"復元に失敗しました。データが正しいか確認してください:\n{e}")
+                    st.error(f"❌ 強制復元に失敗しました。データ構成を確認してください:\n{e}")
             else:
                 st.warning("テキストが入力されていません。")
 
@@ -131,10 +134,9 @@ JOCKEY_MASTER = {
 }
 
 # ==========================================
-# 🗺️ 2. コース事典マスターデータ (札幌・函館全14コース追加版)
+# 🗺️ 2. コース事典マスターデータ
 # ==========================================
 COURSE_MASTER = {
-    # --- 主要17コース ---
     "東京芝1600m": {"note": "2月内枠、2月以外外枠。同距離＆距離短縮馬、重賞は差し・追い込み有利。ロードカナロア/エピファネイア/モーリス/キズナ/ハーツクライ。", "track": "芝", "dist": "中距離", "good_lineage": ["ディープインパクト系", "ハーツクライ系", "ロードカナロア"], "fav_style": "差し"},
     "東京芝2000m": {"note": "1枠有利. 前走同距離＆距離短縮が好走。エピファネイア/モーリス牡馬/キズナ/ハーツクライ/ロードカナロア。", "track": "芝", "dist": "中距離", "good_lineage": ["エピファネイア", "モーリス", "キズナ", "ハーツクライ系"], "fav_style": "先行・差し"},
     "東京芝2400m": {"note": "オークスは差し・追い込み。ジャパンカップはダービー・オークス3着以内の3歳馬有利。インをロスなく回れる内〜中枠有利。", "track": "芝", "dist": "長距離", "good_lineage": ["キタサンブラック", "ドゥラメンテ", "ディープインパクト系"], "fav_style": "差し"},
@@ -155,7 +157,7 @@ COURSE_MASTER = {
     
     # --- 札幌競馬場 ---
     "札幌芝1200m": {"note": "Aコースは逃げ・先行馬有利。Cコースは外枠有利。距離短縮馬有利。ロードカナロア/ファインニードル/タワーオブロンドン/ミッキーアイル牝馬特注。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ファインニードル", "タワーオブロンドン", "ミッキーアイル"], "fav_style": "逃げ・先行"},
-    "札幌芝1500m": {"note": "Aコースは内枠有利、先行馬有利。Cコースは外枠有利。前走東京芝1400m組○。モーリス/エピファネイア/キズナ牝馬特注。", "track": "芝", "dist": "短距離", "good_lineage": ["モーリス", "エピファネイア", "キズナ"], "fav_style": "先行"},
+    "札幌芝1500m": {"note": "Aコースは内枠有利、先行馬有利. Cコースは外枠有利。前走東京芝1400m組○。モーリス/エピファネイア/キズナ牝馬特注。", "track": "芝", "dist": "短距離", "good_lineage": ["モーリス", "エピファネイア", "キズナ"], "fav_style": "先行"},
     "札幌芝1800m": {"note": "逃げ・先行馬有利、差し捲りも可能。Cコースは外枠有利. ドゥラメンテ/ハービンジャー/ロードカナロア/スワーヴリチャード/リオンディーズ/キタサンブラック/ゴールドシップ/母父ハーツクライ特注。", "track": "芝", "dist": "中距離", "good_lineage": ["ドゥラメンテ", "ハービンジャー", "ロードカナロア", "スワーヴリチャード", "リオンディーズ", "キタサンブラック", "ゴールドシップ"], "fav_style": "逃げ・先行"},
     "札幌芝2000m": {"note": "逃げ・先行馬有利、差し捲り馬も活躍。前走函館芝2000mの2,3着馬○。ゴールドシップ/オルフェーヴル/ドゥラメンテ/キズナ/モーリス/ハービンジャー/ジャスタウェイ/母父ハーツクライ特注。", "track": "芝", "dist": "中距離", "good_lineage": ["ゴールドシップ", "オルフェーヴル", "ドゥラメンテ", "キズナ", "モーリス", "ハービンジャー", "ジャスタウェイ"], "fav_style": "逃げ・先行"},
     "札幌芝2600m": {"note": "内枠有利、先行馬有利。前走函館芝2600mで上がり最速または前走東京芝2400mで2～5着馬特注。ドゥラメンテ/キズナ/オルフェーヴル/サトノクラウン/エピファネイア480kg未満/レイデオロ牡セン特注。", "track": "芝", "dist": "長距離", "good_lineage": ["ドゥラメンテ", "キズナ", "オルフェーヴル", "サトノクラウン", "エピファネイア", "レイデオロ"], "fav_style": "先行"},
@@ -217,15 +219,17 @@ def determine_final_aptitude(sire_name, has_past_record):
 
 # --- 🛰️ 当日環境設定エリア ---
 st.header("🛰️ 当日のレース環境")
-env_cols = st.columns(3)
+env_cols = st.columns(4)
 with env_cols[0]:
-    # セッションから直接読み込みに使えるようKeyを割り当て
     saved_course = st.session_state["loaded_data"].get("course", "(未選択)")
-    sel_course = st.selectbox("🗺️ レースコースを選択:", ["(未選択)"] + list(COURSE_MASTER.keys()), index=(["(未選択)"] + list(COURSE_MASTER.keys())).index(saved_course) if saved_course in COURSE_MASTER else 0, key="course")
+    sel_course = st.selectbox("🗺️ レースコースを選択:", ["(未選択)"] + list(COURSE_MASTER.keys()), index=(["(未選択)"] + list(COURSE_MASTER.keys())).index(saved_course) if saved_course in COURSE_MASTER else 0)
 with env_cols[1]:
     saved_condition = st.session_state["loaded_data"].get("track_condition", "良")
-    track_condition = st.selectbox("🌧️ 馬場状態:", ["良", "稍重", "重・不良"], index=["良", "稍重", "重・不良"].index(saved_condition), key="track_condition")
+    track_condition = st.selectbox("🌧️ 馬場状態:", ["良", "稍重", "重・不良"], index=["良", "稍重", "重・不良"].index(saved_condition))
 with env_cols[2]:
+    saved_race_class = st.session_state["loaded_data"].get("race_class", "3勝クラス以下")
+    race_class = st.selectbox("🏆 レース格（クラス）:", ["G1", "G2/G3", "オープン/L", "3勝クラス以下"], index=["G1", "G2/G3", "オープン/L", "3勝クラス以下"].index(saved_race_class))
+with env_cols[3]:
     total_budget = st.number_input("💰 このレースの想定軍資金 (円):", min_value=100, max_value=100000, value=5000, step=100)
 
 auto_track, auto_dist, good_blood_list, course_note = "選択なし", "選択なし", [], ""
@@ -242,13 +246,13 @@ st.divider()
 # ==========================================
 st.write("### 📝 出馬表データ入力")
 
-c_widths = [0.6, 1.4, 0.6, 0.6, 0.8, 1.3, 0.6, 1.3, 1.0, 0.8, 0.8, 0.8, 0.8, 1.0, 1.0, 0.8, 0.8, 0.9]
+c_widths = [0.6, 1.4, 0.6, 0.6, 0.6, 0.7, 0.6, 1.3, 0.6, 1.3, 1.0, 0.8, 0.8, 0.8, 0.8, 1.0, 1.0, 0.8, 0.8, 0.9]
 cols = st.columns(c_widths)
-headers = ["馬番", "馬名", "人気", "指数", "前3F", "父馬", "道悪", "騎手選択", "手入力用", "馬場", "脚質", "枠有利", "前走距離", "プラス①", "プラス②", "マイナス①", "マイナス②", "最終スコア"]
+headers = ["馬番", "馬名", "人気", "指数", "斤量", "馬体重", "前3F", "父馬", "道悪", "騎手選択", "手入力用", "馬場", "脚質", "枠有利", "前走距離", "プラス①", "プラス②", "マイナス①", "マイナス②", "最終スコア"]
 for col, h in zip(cols, headers):
     col.write(f"**{h}**")
 
-current_inputs = {"course": sel_course, "track_condition": track_condition, "rows": {}}
+current_inputs = {"course": sel_course, "track_condition": track_condition, "race_class": race_class, "rows": {}}
 style_counts = {"逃げ": 0, "先行": 0, "差し": 0, "追い込み": 0}
 
 row_tmp_data = []
@@ -256,23 +260,26 @@ for i in range(1, 19):
     c = st.columns(c_widths)
     s_row = st.session_state["loaded_data"].get("rows", {}).get(str(i), {})
     
-    # 復元時に連動させるため各入力欄に「key」パラメータを完全指定
-    num = c[0].text_input(f"num_{i}", value=s_row.get("num", str(i)), label_visibility="collapsed", key=f"num_{i}")
-    name = c[1].text_input(f"name_{i}", value=s_row.get("name", ""), label_visibility="collapsed", key=f"name_{i}")
-    pop = c[2].number_input(f"pop_{i}", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), label_visibility="collapsed", key=f"pop_{i}")
-    idx = c[3].number_input(f"idx_{i}", value=float(s_row.get("idx", 0.0)), step=0.1, label_visibility="collapsed", key=f"idx_{i}")
-    l3f = c[4].number_input(f"l3f_{i}", value=float(s_row.get("l3f", 35.0)), step=0.1, label_visibility="collapsed", key=f"l3f_{i}")
-    sire = c[5].text_input(f"sire_{i}", value=s_row.get("sire", ""), label_visibility="collapsed", placeholder="父馬", key=f"sire_{i}")
-    has_heavy_record = c[6].checkbox(f"rec_{i}", value=s_row.get("heavy_record", False), label_visibility="collapsed", key=f"rec_{i}")
+    num = c[0].text_input(f"num_{i}", value=s_row.get("num", str(i)), label_visibility="collapsed")
+    name = c[1].text_input(f"name_{i}", value=s_row.get("name", ""), label_visibility="collapsed")
+    pop = c[2].number_input(f"pop_{i}", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), label_visibility="collapsed")
+    idx = c[3].number_input(f"idx_{i}", value=float(s_row.get("idx", 0.0)), step=0.1, label_visibility="collapsed")
+    
+    wgt = c[4].number_input(f"wgt_{i}", min_value=48.0, max_value=62.0, value=float(s_row.get("wgt", 56.0)), step=0.5, label_visibility="collapsed")
+    wgh = c[5].number_input(f"wgh_{i}", min_value=350, max_value=600, value=int(s_row.get("wgh", 480)), step=2, label_visibility="collapsed")
+    
+    l3f = c[6].number_input(f"l3f_{i}", value=float(s_row.get("l3f", 35.0)), step=0.1, label_visibility="collapsed")
+    sire = c[7].text_input(f"sire_{i}", value=s_row.get("sire", ""), label_visibility="collapsed", placeholder="父馬")
+    has_heavy_record = c[8].checkbox(f"rec_{i}", value=s_row.get("heavy_record", False), label_visibility="collapsed")
     
     jock_list = sorted([k for k in JOCKEY_MASTER.keys() if k != "その他（自由手入力）"]) + ["その他（自由手入力）"]
-    jock = c[7].selectbox(f"jock_{i}", ["(未選択)"] + jock_list, index=(["(未選択)"] + jock_list).index(s_row.get("jock", "(未選択)")) if s_row.get("jock") in (["(未選択)"] + jock_list) else 0, label_visibility="collapsed", key=f"jock_{i}")
+    jock = c[9].selectbox(f"jock_{i}", ["(未選択)"] + jock_list, index=(["(未選択)"] + jock_list).index(s_row.get("jock", "(未選択)")) if s_row.get("jock") in (["(未選択)"] + jock_list) else 0, label_visibility="collapsed")
     
-    custom_jock = c[8].text_input(f"custom_jock_{i}", value=s_row.get("custom_jock", ""), label_visibility="collapsed", key=f"custom_jock_{i}") if jock == "その他（自由手入力）" else ""
-    if jock != "その他（自由手入力）": c[8].write("---")
+    custom_jock = c[10].text_input(f"custom_jock_{i}", value=s_row.get("custom_jock", ""), label_visibility="collapsed") if jock == "その他（自由手入力）" else ""
+    if jock != "other": c[10].write("---")
         
-    sel_track = c[9].selectbox(f"track_{i}", ["選択なし", "芝", "ダート"], index=["選択なし", "芝", "ダート"].index(s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")), label_visibility="collapsed", key=f"track_{i}")
-    sel_style = c[10].selectbox(f"style_{i}", ["選択なし", "逃げ", "先行", "差し", "追い込み"], index=["選択なし", "逃げ", "先行", "差し", "追い込み"].index(s_row.get("sel_style", "選択なし")), label_visibility="collapsed", key=f"style_{i}")
+    sel_track = c[11].selectbox(f"track_{i}", ["選択なし", "芝", "ダート"], index=["選択なし", "芝", "ダート"].index(s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")), label_visibility="collapsed")
+    sel_style = c[12].selectbox(f"style_{i}", ["選択なし", "逃げ", "先行", "差し", "追い込み"], index=["選択なし", "逃げ", "先行", "差し", "追い込み"].index(s_row.get("sel_style", "選択なし")), label_visibility="collapsed")
     
     if name and sel_style in style_counts:
         style_counts[sel_style] += 1
@@ -280,9 +287,9 @@ for i in range(1, 19):
     f_opts = ["選択なし", "内枠", "外枠"]
     try: f_def_idx = 1 if int(num) <= 8 else (2 if int(num) >= 13 else 0)
     except: f_def_idx = 0
-    sel_frame = c[11].selectbox(f"frame_{i}", f_opts, index=f_opts.index(s_row.get("sel_frame", f_opts[f_def_idx])), label_visibility="collapsed", key=f"frame_{i}")
+    sel_frame = c[13].selectbox(f"frame_{i}", f_opts, index=f_opts.index(s_row.get("sel_frame", f_opts[f_def_idx])), label_visibility="collapsed")
     
-    sel_dist_change = c[12].selectbox(f"dist_change_{i}", ["同距離", "距離短縮", "距離延長"], index=["同距離", "距離短縮", "距離延長"].index(s_row.get("sel_dist_change", "同距離")), label_visibility="collapsed", key=f"dist_change_{i}")
+    sel_dist_change = c[14].selectbox(f"dist_change_{i}", ["同距離", "距離短縮", "距離延長"], index=["同距離", "距離短縮", "距離延長"].index(s_row.get("sel_dist_change", "同距離")), label_visibility="collapsed")
     
     plus_opts, minus_opts = ["選択なし"], ["選択なし"]
     if jock in JOCKEY_MASTER:
@@ -291,19 +298,19 @@ for i in range(1, 19):
                 if v > 0: plus_opts.append(k)
                 elif v < 0: minus_opts.append(k)
                 
-    sel_plus1 = c[13].selectbox(f"p5_1_{i}", plus_opts, index=plus_opts.index(s_row.get("sel_plus1")) if s_row.get("sel_plus1") in plus_opts else 0, label_visibility="collapsed", key=f"p5_1_{i}")
-    sel_plus2 = c[14].selectbox(f"p5_2_{i}", plus_opts, index=plus_opts.index(s_row.get("sel_plus2")) if s_row.get("sel_plus2") in plus_opts else 0, label_visibility="collapsed", key=f"p5_2_{i}")
-    sel_minus1 = c[15].selectbox(f"p6_1_{i}", minus_opts, index=minus_opts.index(s_row.get("sel_minus1")) if s_row.get("sel_minus1") in minus_opts else 0, label_visibility="collapsed", key=f"p6_1_{i}")
-    sel_minus2 = c[16].selectbox(f"p6_2_{i}", minus_opts, index=minus_opts.index(s_row.get("sel_minus2")) if s_row.get("sel_minus2") in minus_opts else 0, label_visibility="collapsed", key=f"p6_2_{i}")
+    sel_plus1 = c[15].selectbox(f"p5_1_{i}", plus_opts, index=plus_opts.index(s_row.get("sel_plus1")) if s_row.get("sel_plus1") in plus_opts else 0, label_visibility="collapsed")
+    sel_plus2 = c[16].selectbox(f"p5_2_{i}", plus_opts, index=plus_opts.index(s_row.get("sel_plus2")) if s_row.get("sel_plus2") in plus_opts else 0, label_visibility="collapsed")
+    sel_minus1 = c[17].selectbox(f"p6_1_{i}", minus_opts, index=minus_opts.index(s_row.get("sel_minus1")) if s_row.get("sel_minus1") in minus_opts else 0, label_visibility="collapsed")
+    sel_minus2 = c[18].selectbox(f"p6_2_{i}", minus_opts, index=minus_opts.index(s_row.get("sel_minus2")) if s_row.get("sel_minus2") in minus_opts else 0, label_visibility="collapsed")
     
     current_inputs["rows"][str(i)] = {
-        "num": num, "name": name, "pop": pop, "idx": idx, "l3f": l3f, "sire": sire, "heavy_record": has_heavy_record,
+        "num": num, "name": name, "pop": pop, "idx": idx, "wgt": wgt, "wgh": wgh, "l3f": l3f, "sire": sire, "heavy_record": has_heavy_record,
         "jock": jock, "custom_jock": custom_jock, "sel_track": sel_track, "sel_style": sel_style, 
         "sel_frame": sel_frame, "sel_dist_change": sel_dist_change, "sel_plus1": sel_plus1, "sel_plus2": sel_plus2, 
         "sel_minus1": sel_minus1, "sel_minus2": sel_minus2
     }
     
-    row_tmp_data.append((num, name, pop, idx, l3f, sire, has_heavy_record, jock, custom_jock, sel_track, sel_style, sel_frame, sel_dist_change, sel_plus1, sel_plus2, sel_minus1, sel_minus2, c[17]))
+    row_tmp_data.append((num, name, pop, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, custom_jock, sel_track, sel_style, sel_frame, sel_dist_change, sel_plus1, sel_plus2, sel_minus1, sel_minus2, c[19]))
 
 # ==========================================
 # 🏁 4. 展開（ペース）AI自動予測
@@ -329,7 +336,7 @@ st.info(f"**現在の登録馬から算出された展開:** {pace_status} (逃�
 # ==========================================
 calculated_results = []
 for item in row_tmp_data:
-    num, name, pop, idx, l3f, sire, has_heavy_record, jock, custom_jock, sel_track, sel_style, sel_frame, sel_dist_change, sel_plus1, sel_plus2, sel_minus1, sel_minus2, score_cell = item
+    num, name, pop, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, custom_jock, sel_track, sel_style, sel_frame, sel_dist_change, sel_plus1, sel_plus2, sel_minus1, sel_minus2, score_cell = item
     
     score = 0.0
     final_apt = "C"
@@ -354,6 +361,25 @@ for item in row_tmp_data:
         
         horse_base_score = idx
         
+        weight_diff = 56.0 - wgt
+        horse_base_score += weight_diff * 1.5
+        
+        if wgh > 0:
+            burden_rate = wgt / wgh
+            if burden_rate > 0.125:
+                if auto_dist == "長距離" or track_condition in ["稍重", "重・不良"]:
+                    horse_base_score -= 3.0
+                else:
+                    horse_base_score -= 1.0
+            elif burden_rate < 0.112:
+                horse_base_score += 1.5
+                
+        is_upper_class_race = race_class in ["G1", "G2/G3", "オープン/L"]
+        if is_upper_class_race and wgt >= 57.5:
+            horse_base_score += 2.5
+        elif race_class == "3勝クラス以下" and wgt <= 51.0:
+            horse_base_score += 1.0
+        
         if str(num).strip() == "7":
             horse_base_score += 2.0
         elif str(num).strip() in ["9", "13"]:
@@ -370,26 +396,24 @@ for item in row_tmp_data:
             pass
             
         try:
-            horse_num_int = int(num)
             if sel_course == "東京芝1600m":
-                if 5 <= horse_num_int <= 12:
+                if 5 <= int(num) <= 12:
                     horse_base_score += 2.0
-                elif 13 <= horse_num_int <= 17:
+                elif 13 <= int(num) <= 17:
                     horse_base_score += 2.5
-                elif 1 <= horse_num_int <= 2:
+                elif 1 <= int(num) <= 2:
                     horse_base_score -= 2.0
             elif sel_course and "京都芝" in sel_course:
-                if horse_num_int >= 10:
+                if int(num) >= 10:
                     horse_base_score += 2.0
             elif sel_course in ["中京ダート1800m", "東京ダート1600m"]:
-                if 1 <= horse_num_int <= 9:
+                if 1 <= int(num) <= 9:
                     horse_base_score += 2.0
-                elif horse_num_int >= 14:
+                elif int(num) >= 14:
                     horse_base_score -= 2.0
         except ValueError:
             pass
 
-        is_upper_class_race = False
         if sel_course != "(未選択)":
             detected_lineages = auto_detect_lineage(sire)
             lineage_matched = False
@@ -421,8 +445,7 @@ for item in row_tmp_data:
             if "距離延長" in course_note and sel_dist_change == "距離延長":
                 horse_base_score += 3.0
                 
-            if any(w in course_note for w in ["重賞", "上級条件", "G1", "ジャパンカップ", "オークス", "秋華賞", "有馬記念"]):
-                is_upper_class_race = True
+            if is_upper_class_race:
                 if idx >= 65.0:
                     horse_base_score += 2.0
 
@@ -453,7 +476,7 @@ for item in row_tmp_data:
     score_cell.write(f"**{score:.2f}**")
     display_jock = custom_jock if jock == "その他（自由手入力）" else (jock if jock != "(未選択)" else "")
     calculated_results.append({
-        "馬番": num, "馬名": name, "最終スコア": score, "人気": pop, "父馬": sire, "重道悪適性": final_apt, "騎手": display_jock, "戦略メモ": j_data.get("note", "") if jock != "(未選択)" else ""
+        "馬番": num, "馬名": name, "最終スコア": score, "人気": pop, "斤量": wgt, "馬体重": wgh, "父馬": sire, "重道悪適性": final_apt, "騎手": display_jock, "戦略メモ": j_data.get("note", "") if jock != "(未選択)" else ""
     })
 
 # ==========================================
@@ -500,7 +523,7 @@ if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primar
         res_df["印"] = [symbols[idx] if idx < len(symbols) else " " for idx in range(len(res_df))]
         
         st.header(f"🎯 本命馬: {res_df.iloc[0]['印']} {res_df.iloc[0]['馬名']} ({res_df.iloc[0]['騎手']})")
-        st.dataframe(res_df[["印", "馬番", "馬名", "人気", "父馬", "最終スコア", "騎手", "重道悪適性"]], use_container_width=True, hide_index=True)
+        st.dataframe(res_df[["印", "馬番", "馬名", "人気", "斤量", "馬体重", "父馬", "最終スコア", "騎手", "重道悪適性"]], use_container_width=True, hide_index=True)
         
         st.subheader("💰 AI最適化推奨買い目 ＆ 資金配分シミュレーター")
         top_horses = res_df.head(5).to_dict(orient="records")
@@ -538,7 +561,7 @@ if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primar
             
             st.dataframe(pd.DataFrame(tickets), use_container_width=True, hide_index=True)
             
-            st.session_state["last_predict_horse"] = top_horses[0]["馬名"]
+            st.session_state["last_predict_horse"] = top_horses[0]["馬name" if "馬name" in top_horses[0] else "馬名"]
             st.session_state["last_predict_course"] = sel_course
 
 # ==========================================
@@ -554,7 +577,7 @@ with st.expander("📝 当日レースの結果入力を記録する"):
     with log_cols[1]:
         res_jiku = st.text_input("軸馬名:", value=st.session_state.get("last_predict_horse", ""))
     with log_cols[2]:
-        is_hit = st.selectbox("軸馬の着順結果:", ["3着以内（的中）", "4着以下（不不集中）"])
+        is_hit = st.selectbox("軸馬の着順結果:", ["3着以内（的中）", "4着以下（不不的中）"])
     with log_cols[3]:
         return_amt = st.number_input("実際の総払戻金 (円):", min_value=0, value=0, step=100)
         
