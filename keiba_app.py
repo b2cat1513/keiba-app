@@ -2,87 +2,110 @@ import streamlit as st
 import pandas as pd
 import json
 import urllib.parse
-import re
+import base64
 from streamlit.components.v1 import html
 
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.01", layout="wide")
-st.title("🏆 ジェニーAI予想ver1.01 (強制復元ロジック強化版・斤量馬体重＆レース格完全統合)")
+st.set_page_config(page_title="ジェニーAI予想ver1.03", layout="wide")
+st.title("🏆 ジェニーAI予想ver1.03 (スマホ特化・斤量馬体重＆レース格ロジック完全統合版)")
 
-# 🛠️ ver1.01 強化機能：破損したJSONセーブデータを極力修復する関数
-def try_repair_and_load_json(json_str):
-    """URL切れなどで壊れたJSON文字列を検知し、最低限パース可能な状態に強制復元を試みる"""
-    json_str = json_str.strip()
+# 🛠️ スマホ向け：データを極限まで縮小・暗号化風に圧縮する関数
+def encode_for_mobile(data_dict):
+    """JSONデータをスマホで扱いやすい短い英数字(Base64)に変換"""
+    try:
+        json_str = json.dumps(data_dict, ensure_ascii=False)
+        b_data = json_str.encode('utf-8')
+        base64_str = base64.b64encode(b_data).decode('utf-8')
+        return base64_str
+    except Exception:
+        return ""
+
+def decode_for_mobile(encoded_str):
+    """圧縮された文字列を元のデータ(辞書型)に復元（破損補正・従来形式との互換付き）"""
+    if not encoded_str: return {}
+    encoded_str = encoded_str.strip()
     
-    # 閉じられていないクォーテーションやカッコの数を簡易補正
-    # 文字列の途中で切れた場合、最後のキーや値を極力閉じる
-    if not json_str.endswith("}"):
-        # 開きカッコと閉じカッコの数をカウント
-        open_braces = json_str.count("{")
-        close_braces = json_str.count("}")
-        open_brackets = json_str.count("[")
-        close_brackets = json_str.count("]")
+    # URL丸ごと貼り付けられた場合の救済
+    if "data=" in encoded_str:
+        encoded_str = encoded_str.split("data=")[-1].split("&")[0]
         
-        # 途中で文字列が閉じられていない場合の補正
-        if json_str.count('"') % 2 != 0:
-            json_str += '"'
-            
-        # 不足している閉じカッコを自動付与
-        if open_brackets > close_brackets:
-            json_str += "]" * (open_brackets - close_brackets)
-        if open_braces > close_braces:
-            json_str += "}" * (open_braces - close_braces)
-            
-    return json.loads(json_str)
+    # スマホのコピペミスで末尾のパディング（=）が消えた場合の自動補正
+    missing_padding = len(encoded_str) % 4
+    if missing_padding:
+        encoded_str += '=' * (4 - missing_padding)
+        
+    try:
+        b_data = base64.b64decode(encoded_str)
+        json_str = b_data.decode('utf-8')
+        return json.loads(json_str)
+    except Exception:
+        # 従来のURLエンコード形式（ver1.00仕様）だった場合の互換性ケア
+        try:
+            decoded_url = urllib.parse.unquote(encoded_str)
+            if not decoded_url.endswith("}"):
+                if decoded_url.count('"') % 2 != 0: decoded_url += '"'
+                if decoded_url.count('{') > decoded_url.count('}'): decoded_url += "}"
+            return json.loads(decoded_url)
+        except Exception as e:
+            st.error(f"❌ データの解析に失敗しました。コピーが不完全な可能性があります: {e}")
+            return {}
 
-# 🌟 URLパラメータからの自動ロードロジック (ver1.01 スマート自動復元)
+# 🌟 URLパラメータからの自動ロードロジック
 if "loaded_data" not in st.session_state:
     st.session_state["loaded_data"] = {}
 
 query_params = st.query_params
 if "data" in query_params and not st.session_state["loaded_data"]:
-    try:
-        encoded_json = query_params["data"]
-        decoded_json = urllib.parse.unquote(encoded_json)
-        # 壊れたJSONの自動修復を試みる
-        st.session_state["loaded_data"] = try_repair_and_load_json(decoded_json)
-        st.toast("📥 過去の入力データをURLから正常に自動復元（ロード）しました！")
-    except Exception as e:
-        st.error(f"⚠️ URLからの自動ロード中にエラーが発生しました（データが深刻に破損している可能性があります）: {e}")
+    st.session_state["loaded_data"] = decode_for_mobile(query_params["data"])
+    if st.session_state["loaded_data"]:
+        st.toast("📥 過去の入力データをURLから正常にロードしました！")
 
 if "history_log" not in st.session_state:
     st.session_state["history_log"] = []
 
 # ==========================================
-# 🧩 サイドバー：手動テキスト貼り付けロード（ver1.01 強制復元強化）
+# 🧩 サイドバー：スマホ専用かんたんロード（安全網）
 # ==========================================
 with st.sidebar:
     st.header("⚙️ システム復元メニュー")
-    with st.expander("🔄 バックアップデータから直接復元", expanded=True):
-        st.write("URLが途中で切れてロードできない、または別PCのデータを移行したい場合は、以下に保存したURLまたはデータテキストを貼り付けてください。")
-        paste_data = st.text_area("セーブデータ文字列を入力（破損URLも可）:", height=150, placeholder="http://localhost:8501/?data=...")
-        if st.button("🚀 データを強制復元", use_container_width=True):
-            if paste_data:
-                try:
-                    # URL丸ごとの場合はデータ部分だけを抽出
-                    if "?data=" in paste_data:
-                        raw_json = paste_data.split("?data=")[-1]
-                    else:
-                        raw_json = paste_data
-                    
-                    # デコード処理
-                    decoded = urllib.parse.unquote(raw_json)
-                    
-                    # 構文破損チェック＆自動修復パース
-                    st.session_state["loaded_data"] = try_repair_and_load_json(decoded)
-                    st.success("📥 データをテキストから強制復元しました！アプリを再描画します。")
+    with st.expander("🔄 スマホ専用ワンタップ復元", expanded=True):
+        st.write("保存したセーブデータコード（またはURL）をスマホのクリップボードに**コピーした状態**で、下のボタンを押してください。")
+        
+        # スマホの長押し貼り付けをスキップするJavaScriptボタン
+        html("""
+        <script>
+        function doLoad() {
+            navigator.clipboard.readText().then(text => {
+                const inputs = window.parent.document.getElementsByTagName('input');
+                for (let i = 0; i < inputs.length; i++) {
+                    if (inputs[i].getAttribute('aria-label') === 'hidden_mobile_paste') {
+                        inputs[i].value = text;
+                        inputs[i].dispatchEvent(new Event('input', { bubbles: true }));
+                        break;
+                    }
+                }
+            }).catch(err => {
+                alert('ブラウザのセキュリティ設定により自動取得が制限されました。下の手動欄をお使いください。');
+            });
+        }
+        </script>
+        """, height=0)
+        
+        # 隠しテキスト入力（JSからのデータ受け取り用）
+        hidden_paste = st.text_input("hidden_mobile_paste", label_visibility="collapsed", key="mobile_bridge", placeholder="手動貼り付け用スペース（予備）")
+        
+        if st.button("📋 クリップボードから1発ロード", type="primary", use_container_width=True):
+            if hidden_paste:
+                parsed_data = decode_for_mobile(hidden_paste)
+                if parsed_data:
+                    st.session_state["loaded_data"] = parsed_data
+                    st.success("📥 データを正常に復元しました！")
                     st.rerun()
-                except Exception as e:
-                    st.error(f"❌ 強制復元に失敗しました。データ構成を確認してください:\n{e}")
             else:
-                st.warning("テキストが入力されていません。")
+                html("<script>doLoad();</script>", height=0)
+                st.info("再度ボタンを押すと、クリップボードから読み込まれたデータが反映されます。")
 
 # ==========================================
 # 🏇 1. ジョッキー事典マスターデータ
@@ -158,7 +181,7 @@ COURSE_MASTER = {
     # --- 札幌競馬場 ---
     "札幌芝1200m": {"note": "Aコースは逃げ・先行馬有利。Cコースは外枠有利。距離短縮馬有利。ロードカナロア/ファインニードル/タワーオブロンドン/ミッキーアイル牝馬特注。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ファインニードル", "タワーオブロンドン", "ミッキーアイル"], "fav_style": "逃げ・先行"},
     "札幌芝1500m": {"note": "Aコースは内枠有利、先行馬有利. Cコースは外枠有利。前走東京芝1400m組○。モーリス/エピファネイア/キズナ牝馬特注。", "track": "芝", "dist": "短距離", "good_lineage": ["モーリス", "エピファネイア", "キズナ"], "fav_style": "先行"},
-    "札幌芝1800m": {"note": "逃げ・先行馬有利、差し捲りも可能。Cコースは外枠有利. ドゥラメンテ/ハービンジャー/ロードカナロア/スワーヴリチャード/リオンディーズ/キタサンブラック/ゴールドシップ/母父ハーツクライ特注。", "track": "芝", "dist": "中距離", "good_lineage": ["ドゥラメンテ", "ハービンジャー", "ロードカナロア", "スワーヴリチャード", "リオンディーズ", "キタサンブラック", "ゴールドシップ"], "fav_style": "逃げ・先行"},
+    "札幌芝1800m": {"note": "逃げ・先行馬有利、差し捲りも可能。Cコースは外枠有利。ドゥラメンテ/ハービンジャー/ロードカナロア/スワーヴリチャード/リオンディーズ/キタサンブラック/ゴールドシップ/母父ハーツクライ特注。", "track": "芝", "dist": "中距離", "good_lineage": ["ドゥラメンテ", "ハービンジャー", "ロードカナロア", "スワーヴリチャード", "リオンディーズ", "キタサンブラック", "ゴールドシップ"], "fav_style": "逃げ・先行"},
     "札幌芝2000m": {"note": "逃げ・先行馬有利、差し捲り馬も活躍。前走函館芝2000mの2,3着馬○。ゴールドシップ/オルフェーヴル/ドゥラメンテ/キズナ/モーリス/ハービンジャー/ジャスタウェイ/母父ハーツクライ特注。", "track": "芝", "dist": "中距離", "good_lineage": ["ゴールドシップ", "オルフェーヴル", "ドゥラメンテ", "キズナ", "モーリス", "ハービンジャー", "ジャスタウェイ"], "fav_style": "逃げ・先行"},
     "札幌芝2600m": {"note": "内枠有利、先行馬有利。前走函館芝2600mで上がり最速または前走東京芝2400mで2～5着馬特注。ドゥラメンテ/キズナ/オルフェーヴル/サトノクラウン/エピファネイア480kg未満/レイデオロ牡セン特注。", "track": "芝", "dist": "長距離", "good_lineage": ["ドゥラメンテ", "キズナ", "オルフェーヴル", "サトノクラウン", "エピファネイア", "レイデオロ"], "fav_style": "先行"},
     "札幌ダート1000m": {"note": "逃げ・先行馬有利、外枠有利。シニスターミニスター/ヘニーヒューズ/アジアエクスプレス/リオンディーズ/ロードカナロア/マジェスティックウォリアー4〜8枠特注。", "track": "ダート", "dist": "短距離", "good_lineage": ["シニスターミニスター", "ヘニーヒューズ", "アジアエクスプレス", "リオンディーズ", "ロードカナロア", "マジェスティックウォリアー"], "fav_style": "逃げ・先行"},
@@ -166,7 +189,7 @@ COURSE_MASTER = {
     "札幌ダート2400m": {"note": "外枠有利、逃げ・先行馬有利。前走函館ダート1700m組特注。", "track": "ダート", "dist": "長距離", "good_lineage": [], "fav_style": "逃げ・先行"},
 
     # --- 函館競馬場 ---
-    "函館芝1200m": {"note": "下級条件は逃げ・先行有利。高速馬場は内枠有利。距離短縮馬有利。ロードカナロア/モーリス/ビッグアーサー/キンシャサノキセキ/ミッキーアイル牝/キタサンブラック牝特注。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "モーリス", "ビッグアーサー", "キンシャサノキセキ", "ミッキーアイル", "キタサンブラック"], "fav_style": "逃げ・先行"},
+    "函館芝1200m": {"note": "下級条件は逃げ・先行有利。高速馬場は内枠有利。距離短縮馬有利. ロードカナロア/モーリス/ビッグアーサー/キンシャサノキセキ/ミッキーアイル牝/キタサンブラック牝特注。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "モーリス", "ビッグアーサー", "キンシャサノキセキ", "ミッキーアイル", "キタサンブラック"], "fav_style": "逃げ・先行"},
     "函館芝1800m": {"note": "逃げ・先行馬有利、内枠有利。前走同等距離(1600~2000)特注。キズナ/キタサンブラック/ダノンバラード/サトノダイヤモンド/ハービンジャー(逃げ先行)/ロードカナロア特注。", "track": "芝", "dist": "中距離", "good_lineage": ["キズナ", "キタサンブラック", "ダノンバラード", "サトノダイヤモンド", "ハービンジャー", "ロードカナロア"], "fav_style": "逃げ・先行"},
     "函館芝2000m": {"note": "下級条件は逃げ・先行有利、上級条件は先行・差し有利。同距離・距離短縮馬有利。ハービンジャー/キズナ/キタサンブラック/ダノンバラード/エピファネイア特注。", "track": "芝", "dist": "中距離", "good_lineage": ["ハービンジャー", "キズナ", "キタサンブラック", "ダノンバラード", "エピファネイア"], "fav_style": "先行・差し"},
     "函館ダート1000m": {"note": "逃げ・先行馬有利、内枠有利、距離短縮ローテ特注。ヘニーヒューズ/シニスターミニスター/サウスヴィグラス/アジアエクスプレス/ドレフォン/キンシャサノキセキ牝馬特注。", "track": "ダート", "dist": "短距離", "good_lineage": ["ヘニーヒューズ", "シニスターミニスター", "サウスヴィグラス", "アジアエクスプレス", "ドレフォン", "キンシャサノキセキ"], "fav_style": "逃げ・先行"},
@@ -276,7 +299,7 @@ for i in range(1, 19):
     jock = c[9].selectbox(f"jock_{i}", ["(未選択)"] + jock_list, index=(["(未選択)"] + jock_list).index(s_row.get("jock", "(未選択)")) if s_row.get("jock") in (["(未選択)"] + jock_list) else 0, label_visibility="collapsed")
     
     custom_jock = c[10].text_input(f"custom_jock_{i}", value=s_row.get("custom_jock", ""), label_visibility="collapsed") if jock == "その他（自由手入力）" else ""
-    if jock != "other": c[10].write("---")
+    if jock != "その他（自由手入力）": c[10].write("---")
         
     sel_track = c[11].selectbox(f"track_{i}", ["選択なし", "芝", "ダート"], index=["選択なし", "芝", "ダート"].index(s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")), label_visibility="collapsed")
     sel_style = c[12].selectbox(f"style_{i}", ["選択なし", "逃げ", "先行", "差し", "追い込み"], index=["選択なし", "逃げ", "先行", "差し", "追い込み"].index(s_row.get("sel_style", "選択なし")), label_visibility="collapsed")
@@ -396,20 +419,21 @@ for item in row_tmp_data:
             pass
             
         try:
+            horse_num_int = int(num)
             if sel_course == "東京芝1600m":
-                if 5 <= int(num) <= 12:
+                if 5 <= horse_num_int <= 12:
                     horse_base_score += 2.0
-                elif 13 <= int(num) <= 17:
+                elif 13 <= horse_num_int <= 17:
                     horse_base_score += 2.5
-                elif 1 <= int(num) <= 2:
+                elif 1 <= horse_num_int <= 2:
                     horse_base_score -= 2.0
             elif sel_course and "京都芝" in sel_course:
-                if int(num) >= 10:
+                if horse_num_int >= 10:
                     horse_base_score += 2.0
             elif sel_course in ["中京ダート1800m", "東京ダート1600m"]:
-                if 1 <= int(num) <= 9:
+                if 1 <= horse_num_int <= 9:
                     horse_base_score += 2.0
-                elif int(num) >= 14:
+                elif horse_num_int >= 14:
                     horse_base_score -= 2.0
         except ValueError:
             pass
@@ -480,34 +504,35 @@ for item in row_tmp_data:
     })
 
 # ==========================================
-# 📥 セーブ＆データ保存エリア
+# 💾 スマホ専用セーブデータ生成エリア
 # ==========================================
 st.divider()
-st.write("### 💾 現在の入力状態をセーブする")
+st.write("### 💾 スマホ用セーブデータ生成")
 
-json_str = json.dumps(current_inputs, ensure_ascii=False)
-encoded_json = urllib.parse.quote(json_str)
+# 短いBase64コードを生成
+mobile_code = encode_for_mobile(current_inputs)
+local_origin = "http://localhost:8501" 
+generated_url = f"{local_origin}/?data={mobile_code}"
 
-base_url = "http://localhost:8501" 
-generated_url = f"{base_url}/?data={encoded_json}"
-
-save_cols = st.columns([1, 2])
+save_cols = st.columns(2)
 with save_cols[0]:
-    st.write("① 以下のボタンから自動保存コピーを試みる：")
-    if st.button("📋 自動保存URLをクリップボードにコピー", use_container_width=True):
+    st.write("▼ 【推奨】コードだけをコピー（メモ帳用）")
+    if st.button("📋 セーブコードをコピー", use_container_width=True):
         html(f"""<script>
-            const url = window.parent.location.origin + window.parent.location.pathname + "?data={encoded_json}";
-            navigator.clipboard.writeText(url).then(function() {{
-                alert('📥 自動保存URLをコピーしました！ブラウザのブックマークに保存するか、メモ帳に貼り付けてください。');
-            }}).catch(function(err) {{
-                alert('ブラウザのセキュリティ制限により自動コピーが失敗しました。右側のテキストエリアから手動でコピーしてください。');
+            navigator.clipboard.writeText('{mobile_code}').then(function() {{
+                alert('📥 短いセーブコードをコピーしました！スマホのメモ帳等に貼り付けて保存してください。');
             }});
             </script>""", height=0)
-        st.toast("📋 コピー処理を実行しました")
+    st.caption(f"コードプレビュー: `{mobile_code[:20]}...`")
 
 with save_cols[1]:
-    st.write("② ボタンが動かない場合・見切れ対策（手動コピー用）：")
-    st.text_area("➔ 以下の文字列をすべて選択してコピーし、バックアップ用として保存するか、次回起動時に左側のサイドバーに貼り付けてください：", value=generated_url, height=120, key="copy_url_box")
+    st.write("▼ URLごとコピー（ブラウザお気に入り用）")
+    if st.button("🔗 復元URLをコピー", use_container_width=True):
+        html(f"""<script>
+            navigator.clipboard.writeText('{generated_url}').then(function() {{
+                alert('🔗 復元URLをコピーしました！');
+            }});
+            </script>""", height=0)
 
 # ==========================================
 # 🏆 ランキング生成 & 買い目自動生成
@@ -561,7 +586,7 @@ if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primar
             
             st.dataframe(pd.DataFrame(tickets), use_container_width=True, hide_index=True)
             
-            st.session_state["last_predict_horse"] = top_horses[0]["馬name" if "馬name" in top_horses[0] else "馬名"]
+            st.session_state["last_predict_horse"] = top_horses[0]["馬名"]
             st.session_state["last_predict_course"] = sel_course
 
 # ==========================================
@@ -577,7 +602,7 @@ with st.expander("📝 当日レースの結果入力を記録する"):
     with log_cols[1]:
         res_jiku = st.text_input("軸馬名:", value=st.session_state.get("last_predict_horse", ""))
     with log_cols[2]:
-        is_hit = st.selectbox("軸馬の着順結果:", ["3着以内（的中）", "4着以下（不不的中）"])
+        is_hit = st.selectbox("軸馬の着順結果:", ["3着以内（的中）", "4着以下（不的中）"])
     with log_cols[3]:
         return_amt = st.number_input("実際の総払戻金 (円):", min_value=0, value=0, step=100)
         
@@ -608,3 +633,4 @@ if st.session_state["history_log"]:
     
     st.write("▼ 直近の記録ログデータ一覧")
     st.dataframe(log_df, use_container_width=True)
+
