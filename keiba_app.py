@@ -56,10 +56,12 @@ def decode_for_mobile(encoded_str):
 if "loaded_data" not in st.session_state:
     st.session_state["loaded_data"] = {}
 
+# 初回起動時にURLパラメータに「data」があればロード
 query_params = st.query_params
 if "data" in query_params and not st.session_state["loaded_data"]:
-    st.session_state["loaded_data"] = decode_for_mobile(query_params["data"])
-    if st.session_state["loaded_data"]:
+    parsed = decode_for_mobile(query_params["data"])
+    if parsed:
+        st.session_state["loaded_data"] = parsed
         st.toast("📥 過去の入力データをURLから正常にロードしました！")
 
 if "history_log" not in st.session_state:
@@ -108,7 +110,7 @@ with st.sidebar:
                 st.info("再度ボタンを押すと、クリップボードから読み込まれたデータが反映されます。")
 
 # ==========================================
-# 🏇 1. ジョッキー事典マスターデータ（全72名完全網羅・2段階ロジック対応）
+# 🏇 1. ジョッキー事典マスターデータ
 # ==========================================
 JOCKEY_MASTER = {
     "C.ルメール": {
@@ -307,7 +309,6 @@ JOCKEY_MASTER = {
         "factors": {"芝": -0.05, "先行": -0.05, "差し": -0.05, "外枠": 0.05, "短距離": -0.05, "大舞台＆重賞": 0.15, "追い込み": 0.15, "東京芝2000": 0.10},
         "note": "大舞台の豪快マクリ。芝8枠◎、急坂コース◎、芝2200◯、中山重賞◯"
     },
-    # --- 下段：特徴・メモに特化した騎手群 ---
     "小沢大仁": {"base": 1.00, "factors": {"小倉芝中長距離": 0.05}, "note": "小倉芝中長距離◯"},
     "横山流人": {"base": 1.00, "factors": {}, "note": "人薄◯、注目◯"},
     "小林美駒": {"base": 1.00, "factors": {"逃げ": 0.05, "先行": 0.05, "短距離": 0.05}, "note": "乗替◯、逃げ先行◯、短距離◯"},
@@ -370,7 +371,7 @@ COURSE_MASTER = {
     "阪神芝2200m": {"note": "先行〜中団差し馬○。キズナ/ルーラーシップ/イスラボニータ/キタサンブラック.宝塚記念はタフな馬場適性重視。", "track": "芝", "dist": "中距離", "good_lineage": ["キズナ", "ルーラーシップ", "イスラボニータ", "キタサンブラック"], "fav_style": "先行・差し"},
     "札幌芝1200m": {"note": "Aコースは逃げ・先行馬有利。Cコースは外枠有利。距離短縮馬有利。ロードカナロア/ファインニードル/タワーオブロンドン/ミッキーアイル牝馬特注。", "track": "芝", "dist": "短距離", "good_lineage": ["ロードカナロア", "ファインニードル", "タワーオブロンドン", "ミッキーアイル"], "fav_style": "逃げ・先行"},
     "札幌芝1500m": {"note": "Aコースは内枠有利、先行馬有利. Cコースは外枠有利。前走東京芝1400m組○。モーリス/エピファネイア/キズナ牝馬特注。", "track": "芝", "dist": "短距離", "good_lineage": ["モーリス", "エピファネイア", "キズナ"], "fav_style": "先行"},
-    "札幌芝1800m": {"note": "逃げ・先行馬有利、差し捲りも可能。Cコースは外枠有利。ドゥラメンテ/ハービンジャー/ロードカナロア/スワーヴリチャード/リオンディーズ/キタサンブラック/ゴールドシップ/母父ハーツクライ特注。", "track": "芝", "dist": "中距離", "good_lineage": ["ドゥラメンテ", "ハービンジャー", "ロードカナロア", "スワーヴリチャード", "リオンディーズ", "キタサンブラック", "ゴールドシップ"], "fav_style": "逃げ・先行"},
+    "札幌芝1800m": {"note": "逃げ・先行馬有利、差し捲りも可能。Cコースは外枠有利.ドゥラメンテ/ハービンジャー/ロードカナロア/スワーヴリチャード/リオンディーズ/キタサンブラック/ゴールドシップ/母父ハーツクライ特注。", "track": "芝", "dist": "中距離", "good_lineage": ["ドゥラメンテ", "ハービンジャー", "ロードカナロア", "スワーヴリチャード", "リオンディーズ", "キタサンブラック", "ゴールドシップ"], "fav_style": "逃げ・先行"},
     "札幌芝2000m": {"note": "逃げ・先行馬有利、差し捲り馬も活躍。前走函館芝2000mの2,3着馬○。ゴールドシップ/オルフェーヴル/ドゥラメンテ/キズナ/モーリス/ハービンジャー/ジャスタウェイ/母父ハーツクライ特注。", "track": "芝", "dist": "中距離", "good_lineage": ["ゴールドシップ", "オルフェーヴル", "ドゥラメンテ", "キズナ", "モーリス", "ハービンジャー", "ジャスタウェイ"], "fav_style": "逃げ・先行"},
     "札幌芝2600m": {"note": "内枠有利、先行馬有利。前走函館芝2600mで上がり最速または前走東京芝2400mで2～5着馬特注。ドゥラメンテ/キズナ/オルフェーヴル/サトノクラウン/エピファネイア480kg未満/レイデオロ牡セン特注。", "track": "芝", "dist": "長距離", "good_lineage": ["ドゥラメンテ", "キズナ", "オルフェーヴル", "サトノクラウン", "エピファネイア", "レイデオロ"], "fav_style": "先行"},
     "札幌ダート1000m": {"note": "逃げ・先行馬有利、外枠有利。シニスターミニスター/ヘニーヒューズ/アジアエクスプレス/リオンディーズ/ロードカナロア/マジェスティックウォリアー4〜8枠特注。", "track": "ダート", "dist": "短距離", "good_lineage": ["シニスターミニスター", "ヘニーヒューズ", "アジアエクスプレス", "リオンディーズ", "ロードカナロア", "マジェスティックウォリアー"], "fav_style": "逃げ・先行"},
@@ -454,7 +455,6 @@ st.divider()
 # ==========================================
 st.write("### 📝 出馬表データ入力")
 
-# 横幅のレイアウト調整（手入力枠やプルダウンが潰れないための適正比率）
 c_widths = [0.6, 1.4, 0.6, 0.6, 0.6, 0.7, 0.6, 1.3, 0.6, 1.3, 1.0, 0.8, 0.8, 0.8, 0.8, 1.2, 1.2, 0.8]
 cols = st.columns(c_widths)
 headers = ["馬番", "馬名", "人気", "指数", "斤量", "馬体重", "前3F", "父馬", "道悪", "騎手選択", "手入力メモ", "馬場", "脚質", "枠有利", "前走距離", "特記メモ補正①", "特記メモ補正②", "最終スコア"]
@@ -484,7 +484,6 @@ for i in range(1, 19):
     jock_list = sorted([k for k in JOCKEY_MASTER.keys() if k != "その他（自由手入力）"]) + ["その他（自由手入力）"]
     jock = c[9].selectbox(f"jock_{i}", ["(未選択)"] + jock_list, index=(["(未選択)"] + jock_list).index(s_row.get("jock", "(未選択)")) if s_row.get("jock") in (["(未選択)"] + jock_list) else 0, label_visibility="collapsed")
     
-    # 騎手ごとの「2行目特記メモ（special_factors）」オプションを動的に抽出
     special_opts = ["選択なし"]
     if jock in JOCKEY_MASTER and "special_factors" in JOCKEY_MASTER[jock]:
         special_opts += list(JOCKEY_MASTER[jock]["special_factors"].keys())
@@ -504,7 +503,6 @@ for i in range(1, 19):
     
     sel_dist_change = c[14].selectbox(f"dist_change_{i}", ["同距離", "距離短縮", "距離延長"], index=["同距離", "距離短縮", "距離延長"].index(s_row.get("sel_dist_change", "同距離")), label_visibility="collapsed")
     
-    # 2段階条件適応用の手動特記メモ選択プルダウン（1行目の自動合致からはみ出る超特殊条件をケア）
     sel_plus1 = c[15].selectbox(f"p5_1_{i}", special_opts, index=special_opts.index(s_row.get("sel_plus1")) if s_row.get("sel_plus1") in special_opts else 0, label_visibility="collapsed")
     sel_plus2 = c[16].selectbox(f"p5_2_{i}", special_opts, index=special_opts.index(s_row.get("sel_plus2")) if s_row.get("sel_plus2") in special_opts else 0, label_visibility="collapsed")
     
@@ -549,7 +547,6 @@ for item in row_tmp_data:
         j_data = JOCKEY_MASTER.get(jock, JOCKEY_MASTER["その他（自由手入力）"])
         jockey_modifier = 0.0
         
-        # 🔄 【1段階目】1行目マトリクス基本条件の自動合致システム
         chosen_conditions = [sel_track, sel_style, sel_frame, sel_dist_change, sel_course]
         for cond in chosen_conditions:
             if cond in j_data.get("factors", {}):
@@ -557,7 +554,6 @@ for item in row_tmp_data:
             elif cond and cond.endswith("m") and cond[:-1] in j_data.get("factors", {}):
                 jockey_modifier += j_data["factors"][cond[:-1]]
                 
-        # 🔄 【2段階目】2行目特記メモの手動プルダウン選択補正
         if "special_factors" in j_data:
             if sel_plus1 in j_data["special_factors"]:
                 jockey_modifier += j_data["special_factors"][sel_plus1]
@@ -574,11 +570,9 @@ for item in row_tmp_data:
         
         horse_base_score = idx
         
-        # 斤量補正
         weight_diff = 56.0 - wgt
         horse_base_score += weight_diff * 1.5
         
-        # 馬体重負担率補正
         if wgh > 0:
             burden_rate = wgt / wgh
             if burden_rate > 0.125:
@@ -589,14 +583,12 @@ for item in row_tmp_data:
             elif burden_rate < 0.112:
                 horse_base_score += 1.5
                 
-        # レース格による斤量価値
         is_upper_class_race = race_class in ["G1", "G2/G3", "オープン/L"]
         if is_upper_class_race and wgt >= 57.5:
             horse_base_score += 2.5
         elif race_class == "3勝クラス以下" and wgt <= 51.0:
             horse_base_score += 1.0
         
-        # 特注ラッキーゲート馬番
         if str(num).strip() == "7":
             horse_base_score += 2.0
         elif str(num).strip() in ["9", "13"]:
@@ -612,7 +604,6 @@ for item in row_tmp_data:
         except ValueError:
             pass
             
-        # コース特異的馬番枠補正
         try:
             horse_num_int = int(num)
             if sel_course == "東京芝1600m":
@@ -633,7 +624,6 @@ for item in row_tmp_data:
         except ValueError:
             pass
 
-        # コース事典との連動補正
         if sel_course != "(未選択)":
             detected_lineages = auto_detect_lineage(sire)
             lineage_matched = False
@@ -675,14 +665,11 @@ for item in row_tmp_data:
         if pop >= 10:
             pop_penalty_factor = 0.95
             
-        # 最終基本合成
         score = (horse_base_score * mitigated_jockey_rate) - (pop * pop_penalty_factor)
         
-        # 展開ペース補正
         if sel_style in pace_bonus:
             score += pace_bonus[sel_style]
         
-        # 道悪馬場適性
         final_apt = determine_final_aptitude(sire, has_heavy_record)
         if track_condition == "稍重":
             if final_apt == "A": score += 2.0
@@ -699,34 +686,80 @@ for item in row_tmp_data:
     })
 
 # ==========================================
-# 💾 スマホ専用セーブデータ生成エリア
+# 💾 スマホ専用セーブデータ生成エリア（強化版）
 # ==========================================
 st.divider()
 st.write("### 💾 スマホ用セーブデータ生成")
 
-# 短いBase64コードを生成
 mobile_code = encode_for_mobile(current_inputs)
-local_origin = "http://localhost:8501" 
-generated_url = f"{local_origin}/?data={mobile_code}"
 
 save_cols = st.columns(2)
 with save_cols[0]:
     st.write("▼ 【推奨】コードだけをコピー（メモ帳用）")
+    # 高度なクリップボード貼り付け用安全スクリプト
     if st.button("📋 セーブコードをコピー", use_container_width=True):
         html(f"""<script>
-            navigator.clipboard.writeText('{mobile_code}').then(function() {{
-                alert('📥 短いセーブコードをコピーしました！スマホのメモ帳等に貼り付けて保存してください。');
-            }});
+            function copyText() {{
+                const text = '{mobile_code}';
+                if (navigator.clipboard && navigator.clipboard.writeText) {{
+                    navigator.clipboard.writeText(text).then(() => {{
+                        alert('📥 短いセーブコードをコピーしました！スマホのメモ帳等に貼り付けて保存してください。');
+                    }}).catch(err => {{ fallbackCopy(text); }});
+                }} else {{
+                    fallbackCopy(text);
+                }}
+            }}
+            function fallbackCopy(text) {{
+                const textArea = document.createElement("textarea");
+                textArea.value = text;
+                textArea.style.position = "fixed";
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                try {{
+                    document.execCommand('copy');
+                    alert('📥 短いセーブコードをコピーしました！(安全モード)');
+                }} catch (err) {{
+                    alert('コピーに失敗しました。お手数ですがコード欄から手動で選択コピーしてください。');
+                }}
+                document.body.removeChild(textArea);
+            }}
+            copyText();
             </script>""", height=0)
     st.caption(f"コードプレビュー: `{mobile_code[:20]}...`")
 
 with save_cols[1]:
     st.write("▼ URLごとコピー（ブラウザお気に入り用）")
     if st.button("🔗 復元URLをコピー", use_container_width=True):
+        # 現在実行されている環境（localhostやクラウド等）のドメインをJS側で自動判別して結合
         html(f"""<script>
-            navigator.clipboard.writeText('{generated_url}').then(function() {{
-                alert('🔗 復元URLをコピーしました！');
-            }});
+            function copyUrl() {{
+                const code = '{mobile_code}';
+                const generatedUrl = window.location.origin + window.location.pathname + '?data=' + code;
+                if (navigator.clipboard && navigator.clipboard.writeText) {{
+                    navigator.clipboard.writeText(generatedUrl).then(() => {{
+                        alert('🔗 復元URLをコピーしました！お気に入り等に登録してください。');
+                    }}).catch(err => {{ fallbackCopyUrl(generatedUrl); }});
+                }} else {{
+                    fallbackCopyUrl(generatedUrl);
+                }}
+            }}
+            function fallbackCopyUrl(text) {{
+                const textArea = document.createElement("textarea");
+                textArea.value = text;
+                textArea.style.position = "fixed";
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                try {{
+                    document.execCommand('copy');
+                    alert('🔗 復元URLをコピーしました！(安全モード)');
+                }} catch (err) {{
+                    alert('コピーに失敗しました。お手数ですがURL欄を手動でコピーしてください。');
+                }}
+                document.body.removeChild(textArea);
+            }}
+            copyUrl();
             </script>""", height=0)
 
 # ==========================================
@@ -797,7 +830,7 @@ with st.expander("📝 当日レースの結果入力を記録する"):
     with log_cols[1]:
         res_jiku = st.text_input("軸馬名:", value=st.session_state.get("last_predict_horse", ""))
     with log_cols[2]:
-        is_hit = st.selectbox("軸馬の着順結果:", ["3着以内（的中）", "4着以下（不不的中）"])
+        is_hit = st.selectbox("軸馬の着順結果:", ["3着以内（的中）", "4着以下（不不不的中）"])
     with log_cols[3]:
         return_amt = st.number_input("実際の総払戻金 (円):", min_value=0, value=0, step=100)
         
@@ -828,3 +861,4 @@ if st.session_state["history_log"]:
     
     st.write("▼ 直近の記録ログデータ一覧")
     st.dataframe(log_df, use_container_width=True)
+
