@@ -1,154 +1,68 @@
 import streamlit as st
 import pandas as pd
 import json
-import urllib.parse
 import base64
-from streamlit.components.v1 import html
 
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.04", layout="wide")
-st.title("🏆 ジェニーAI予想ver1.04 (URLセーブ＆ロード完全復元版)")
+st.set_page_config(page_title="ジェニーAI予想ver1.05", layout="wide")
+st.title("🏆 ジェニーAI予想ver1.05")
 
-# 🛠️ スマホ向け：データを英数字(Base64)に変換する関数
-def encode_for_mobile(data_dict):
-    """JSONデータをスマホで扱いやすい短い英数字(Base64)に変換"""
-    try:
-        json_str = json.dumps(data_dict, ensure_ascii=False)
-        b_data = json_str.encode('utf-8')
-        base64_str = base64.b64encode(b_data).decode('utf-8')
-        return base64_str
-    except Exception:
-        return ""
+# ------------------------------------------
+# 🔒 新・シンプルスマホセーブ／ロードシステム
+# ------------------------------------------
+st.markdown("### 📱 スマホ専用 セーブ ＆ ロード")
 
-def decode_for_mobile(encoded_str):
-    """圧縮された文字列を元のデータ(辞書型)に復元（破損補正・従来形式との互換付き）"""
-    if not encoded_str: return {}
-    encoded_str = encoded_str.strip()
-    
-    # URL丸ごと貼り付けられた場合の救済
-    if "data=" in encoded_str:
-        encoded_str = encoded_str.split("data=")[-1].split("&")[0]
-        
-    # スマホのコピペミスで末尾のパディング（=）が消えた場合の自動補正
-    missing_padding = len(encoded_str) % 4
-    if missing_padding:
-        encoded_str += '=' * (4 - missing_padding)
-        
-    try:
-        b_data = base64.b64decode(encoded_str)
-        json_str = b_data.decode('utf-8')
-        return json.loads(json_str)
-    except Exception:
-        # 従来のURLエンコード形式（ver1.00仕様）だった場合の互換性ケア
-        try:
-            decoded_url = urllib.parse.unquote(encoded_str)
-            if not decoded_url.endswith("}"):
-                if decoded_url.count('"') % 2 != 0: decoded_url += '"'
-                if decoded_url.count('{') > decoded_url.count('}'): decoded_url += "}"
-            return json.loads(decoded_url)
-        except Exception as e:
-            st.error(f"❌ データの解析に失敗しました。コピーが不完全な可能性があります: {e}")
-            return {}
-
-# ==========================================
-# 🌟 【重要】最上部でのURL自動ロード処理
-# ==========================================
+# セッション状態の初期化
 if "loaded_data" not in st.session_state:
     st.session_state["loaded_data"] = {}
 
-# アプリ起動時にURLパラメータ(?data=...)を最優先で検知
-query_params = st.query_params
-if "data" in query_params and not st.session_state["loaded_data"]:
-    st.session_state["loaded_data"] = decode_for_mobile(query_params["data"])
-    if st.session_state["loaded_data"]:
-        st.toast("📥 URLから過去の入力データを正常に読み込みました！")
+# 1. 📥 【ロード機能】貼り付けエリア
+load_code = st.text_area("🌟 ロード：保存した「セーブコード」をここに貼り付けてください", value="", placeholder="ここにコードをペースト")
+if st.button("📥 データをロードする", type="primary", use_container_width=True):
+    if load_code.strip():
+        try:
+            # スマホのコピペミスで末尾の「=」が消えた場合の自動補正
+            encoded_str = load_code.strip()
+            missing_padding = len(encoded_str) % 4
+            if missing_padding:
+                encoded_str += '=' * (4 - missing_padding)
+                
+            b_data = base64.b64decode(encoded_str)
+            decoded_json = b_data.decode('utf-8')
+            parsed_data = json.loads(decoded_json)
+            
+            if parsed_data:
+                st.session_state["loaded_data"] = parsed_data
+                st.success("🎉 データの読み込みに成功しました！下の入力欄に反映されています。")
+                st.rerun()
+        except Exception as e:
+            st.error(f"❌ データの復元に失敗しました。コピーが不完全な可能性があります。: {e}")
+    else:
+        st.warning("⚠️ ロードするコードが入力されていません。")
 
-if "history_log" not in st.session_state:
-    st.session_state["history_log"] = []
-
-
-# ==========================================
-# 💾 どこでもセーブ！「URLコピー専用」管理パネルを新設
-# ==========================================
-st.markdown("### 🔗 このアプリの状態を丸ごとセーブする")
-
-# 現在画面に入力されている各種セッション状態をデータ化
-current_state = {}
-for key, value in st.session_state.items():
-    # 内部管理用のデータや履歴ログを除外して、入力パラメータのみを抽出
-    if key not in ["loaded_data", "history_log", "mobile_bridge"] and not key.startswith("FormSubmitter"):
-        current_state[key] = value
-
-# Base64データを生成
-save_code = encode_for_mobile(current_state)
-
-# 完全に共有可能な「セーブURL」を構築
-# Streamlitの共有用URL（クエリなしのベースURL）を生成
-try:
-    base_url = st.nav_to if hasattr(st, "nav_to") else ""
-    # ブラウザ上のホストURLをJS等なしで暫定構成（設定されていない場合は相対クエリ）
-    share_url = f"?data={save_code}"
-except:
-    share_url = f"?data={save_code}"
-
-# 画面上にURLコピー用のインターフェースをすっきり設置
-save_cols = st.columns([4, 1])
-with save_cols[0]:
-    # スマホで長押し選択しなくてもトリプルタップや1発でコピーできるようにテキストエリア化
-    st.text_input("📋 コピー用セーブURL（末尾までコピーして保存・シェアしてください）", value=share_url, key="share_url_display")
-with save_cols[1]:
-    st.write("") # 位置微調整
-    st.write("") 
-    if st.button("🔗 URLを更新", help="入力を変えた後はこのボタンを押してURLを最新にしてください。"):
-        st.rerun()
-
-st.info("💡 上記の `?data=...` から始まる文字列を、お使いのアプリURL（例: `https://xxxx.streamlit.app/`）の末尾にそのままくっつけてアクセスすれば、いつでも今の状態から再開できます。")
 st.markdown("---")
 
+# 2. 💾 【セーブ機能】現在の入力をコード化して表示
+# 画面上の現在の入力値を集計（管理用キー以外）
+current_state = {}
+for key, value in st.session_state.items():
+    if key not in ["loaded_data", "history_log"] and not key.startswith("FormSubmitter"):
+        current_state[key] = value
 
-# ==========================================
-# 🧩 サイドバー：スマホ専用かんたんロード（安全網）
-# ==========================================
-with st.sidebar:
-    st.header("⚙️ システム復元メニュー")
-    with st.expander("🔄 スマホ専用ワンタップ復元", expanded=True):
-        st.write("保存したセーブデータコード（またはURL）をスマホのクリップボードに**コピーした状態**で、下のボタンを押してください。")
-        
-        # スマホの長押し貼り付けをスキップするJavaScriptボタン
-        html("""
-        <script>
-        function doLoad() {
-            navigator.clipboard.readText().then(text => {
-                const inputs = window.parent.document.getElementsByTagName('input');
-                for (let i = 0; i < inputs.length; i++) {
-                    if (inputs[i].getAttribute('aria-label') === 'hidden_mobile_paste') {
-                        inputs[i].value = text;
-                        inputs[i].dispatchEvent(new Event('input', { bubbles: true }));
-                        break;
-                    }
-                }
-            }).catch(err => {
-                alert('ブラウザのセキュリティ設定により自動取得が制限されました。下の手動欄をお使いください。');
-            });
-        }
-        </script>
-        """, height=0)
-        
-        # 隠しテキスト入力（JSからのデータ受け取り用）
-        hidden_paste = st.text_input("hidden_mobile_paste", label_visibility="collapsed", key="mobile_bridge", placeholder="手動貼り付け用スペース（予備）")
-        
-        if st.button("📋 クリップボードから1発ロード", type="primary", use_container_width=True):
-            if hidden_paste:
-                parsed_data = decode_for_mobile(hidden_paste)
-                if parsed_data:
-                    st.session_state["loaded_data"] = parsed_data
-                    st.success("📥 データを正常に復元しました！")
-                    st.rerun()
-            else:
-                html("<script>doLoad();</script>", height=0)
-                st.info("再度ボタンを押すと、クリップボードから読み込まれたデータが反映されます。")
+# Base64でスマホ用の一連の英数字コードに変換
+try:
+    json_str = json.dumps(current_state, ensure_ascii=False)
+    save_code = base64.b64encode(json_str.encode('utf-8')).decode('utf-8')
+except Exception:
+    save_code = ""
+
+# セーブコードの表示（スマホでトリプルタップ等で全選択しやすいようにテキストエリアにしています）
+st.text_area("💾 セーブ：現在の状態のコード（これを丸ごとコピーしてメモ帳等に保存してください）", value=save_code, height=100)
+st.caption("💡 入力内容を変更した後は、一度画面の下にある「予想する」などのボタンを押すか、画面を更新すると上のセーブコードが最新に切り替わります。")
+
+st.markdown("---")
 
 # ==========================================
 # 🏇 1. ジョッキー事典マスターデータ（全72名完全網羅・2段階ロジック対応）
