@@ -50,25 +50,7 @@ if st.button("📥 データをロードする", type="primary", use_container_w
 
 st.markdown("---")
 
-# 2. 💾 【セーブ機能】現在の入力をコード化して表示
-current_state = {}
-for key, value in st.session_state.items():
-    # システム管理用のキーを除外して集計
-    if key not in ["loaded_data", "history_log"] and not key.startswith("FormSubmitter"):
-        current_state[key] = value
 
-# Base64で暗号風の英数字コードに変換
-try:
-    json_str = json.dumps(current_state, ensure_ascii=False)
-    save_code = base64.b64encode(json_str.encode('utf-8')).decode('utf-8')
-except Exception:
-    save_code = ""
-
-# セーブコードの表示
-st.text_area("💾 セーブ：現在の状態のコード（これを丸ごとコピーしてメモ帳等に保存してください）", value=save_code, height=100)
-st.caption("💡 入力内容を変更した後は、一度画面の下にある「予想する」などのボタンを押すか、画面を更新すると上のセーブコードが最新に切り替わります。")
-
-st.markdown("---")
 # ==========================================
 # 🏇 1. ジョッキー事典マスターデータ（全72名完全網羅・2段階ロジック対応）
 # ==========================================
@@ -748,4 +730,22 @@ if st.session_state["history_log"]:
     
     st.write("▼ 直近の記録ログデータ一覧")
     st.dataframe(log_df, use_container_width=True)
+    st.markdown("---")
+st.markdown("### 💾 スマホ用セーブデータ生成")
 
+# 全ての入力パーツが実行された後なので、漏れなく全ての入力値を集計できます
+current_state = {}
+for key, value in st.session_state.items():
+    if key not in ["loaded_data", "history_log"] and not key.startswith("FormSubmitter"):
+        current_state[key] = value
+
+# Base64で長い文字列コードに変換
+try:
+    json_str = json.dumps(current_state, ensure_ascii=False)
+    save_code = base64.b64encode(json_str.encode('utf-8')).decode('utf-8')
+except Exception:
+    save_code = ""
+
+# 画面の一番下にセーブコードを表示
+st.text_area("📋 現在の状態のセーブコード（これを丸ごとコピーして保存してください）", value=save_code, height=150)
+st.caption("💡 入力内容を変更した後は、一度「予想する」ボタンを押すか、画面を更新するとこのコードが最新に切り替わります。")
