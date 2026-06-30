@@ -8,10 +8,10 @@ from streamlit.components.v1 import html
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.03", layout="wide")
-st.title("🏆 ジェニーAI予想ver1.03 (スマホ特化・斤量馬体重＆レース格ロジック完全統合版)")
+st.set_page_config(page_title="ジェニーAI予想ver1.04", layout="wide")
+st.title("🏆 ジェニーAI予想ver1.04 (URLセーブ＆ロード完全復元版)")
 
-# 🛠️ スマホ向け：データを極限まで縮小・Base64圧縮する関数
+# 🛠️ スマホ向け：データを英数字(Base64)に変換する関数
 def encode_for_mobile(data_dict):
     """JSONデータをスマホで扱いやすい短い英数字(Base64)に変換"""
     try:
@@ -52,20 +52,61 @@ def decode_for_mobile(encoded_str):
             st.error(f"❌ データの解析に失敗しました。コピーが不完全な可能性があります: {e}")
             return {}
 
-# 🌟 URLパラメータからの自動ロードロジック
+# ==========================================
+# 🌟 【重要】最上部でのURL自動ロード処理
+# ==========================================
 if "loaded_data" not in st.session_state:
     st.session_state["loaded_data"] = {}
 
-# 初回起動時にURLパラメータに「data」があればロード
+# アプリ起動時にURLパラメータ(?data=...)を最優先で検知
 query_params = st.query_params
 if "data" in query_params and not st.session_state["loaded_data"]:
-    parsed = decode_for_mobile(query_params["data"])
-    if parsed:
-        st.session_state["loaded_data"] = parsed
-        st.toast("📥 過去の入力データをURLから正常にロードしました！")
+    st.session_state["loaded_data"] = decode_for_mobile(query_params["data"])
+    if st.session_state["loaded_data"]:
+        st.toast("📥 URLから過去の入力データを正常に読み込みました！")
 
 if "history_log" not in st.session_state:
     st.session_state["history_log"] = []
+
+
+# ==========================================
+# 💾 どこでもセーブ！「URLコピー専用」管理パネルを新設
+# ==========================================
+st.markdown("### 🔗 このアプリの状態を丸ごとセーブする")
+
+# 現在画面に入力されている各種セッション状態をデータ化
+current_state = {}
+for key, value in st.session_state.items():
+    # 内部管理用のデータや履歴ログを除外して、入力パラメータのみを抽出
+    if key not in ["loaded_data", "history_log", "mobile_bridge"] and not key.startswith("FormSubmitter"):
+        current_state[key] = value
+
+# Base64データを生成
+save_code = encode_for_mobile(current_state)
+
+# 完全に共有可能な「セーブURL」を構築
+# Streamlitの共有用URL（クエリなしのベースURL）を生成
+try:
+    base_url = st.nav_to if hasattr(st, "nav_to") else ""
+    # ブラウザ上のホストURLをJS等なしで暫定構成（設定されていない場合は相対クエリ）
+    share_url = f"?data={save_code}"
+except:
+    share_url = f"?data={save_code}"
+
+# 画面上にURLコピー用のインターフェースをすっきり設置
+save_cols = st.columns([4, 1])
+with save_cols[0]:
+    # スマホで長押し選択しなくてもトリプルタップや1発でコピーできるようにテキストエリア化
+    st.text_input("📋 コピー用セーブURL（末尾までコピーして保存・シェアしてください）", value=share_url, key="share_url_display")
+with save_cols[1]:
+    st.write("") # 位置微調整
+    st.write("") 
+    if st.button("🔗 URLを更新", help="入力を変えた後はこのボタンを押してURLを最新にしてください。"):
+        st.rerun()
+
+st.info("💡 上記の `?data=...` から始まる文字列を、お使いのアプリURL（例: `https://xxxx.streamlit.app/`）の末尾にそのままくっつけてアクセスすれば、いつでも今の状態から再開できます。")
+st.markdown("---")
+
 
 # ==========================================
 # 🧩 サイドバー：スマホ専用かんたんロード（安全網）
@@ -110,7 +151,7 @@ with st.sidebar:
                 st.info("再度ボタンを押すと、クリップボードから読み込まれたデータが反映されます。")
 
 # ==========================================
-# 🏇 1. ジョッキー事典マスターデータ
+# 🏇 1. ジョッキー事典マスターデータ（全72名完全網羅・2段階ロジック対応）
 # ==========================================
 JOCKEY_MASTER = {
     "C.ルメール": {
@@ -182,7 +223,7 @@ JOCKEY_MASTER = {
     "佐々木大輔": {
         "base": 1.15,
         "factors": {"芝": 0.05, "ダート": 0.05, "先行": 0.05, "内枠": 0.05, "短距離": 0.05, "長距離": -0.05, "ローカル芝": 0.15, "中山芝1200": 0.10},
-        "note": "北海道・ローカル開催の鬼。芝内枠◯、短距離◯、ダート◯"
+        "note": "北海道・ローカル開催の鬼. 芝内枠◯、短距離◯、ダート◯"
     },
     "吉村誠之助": {
         "base": 1.00,
@@ -309,6 +350,7 @@ JOCKEY_MASTER = {
         "factors": {"芝": -0.05, "先行": -0.05, "差し": -0.05, "外枠": 0.05, "短距離": -0.05, "大舞台＆重賞": 0.15, "追い込み": 0.15, "東京芝2000": 0.10},
         "note": "大舞台の豪快マクリ。芝8枠◎、急坂コース◎、芝2200◯、中山重賞◯"
     },
+    # --- 下段：特徴・メモに特化した騎手群 ---
     "小沢大仁": {"base": 1.00, "factors": {"小倉芝中長距離": 0.05}, "note": "小倉芝中長距離◯"},
     "横山流人": {"base": 1.00, "factors": {}, "note": "人薄◯、注目◯"},
     "小林美駒": {"base": 1.00, "factors": {"逃げ": 0.05, "先行": 0.05, "短距離": 0.05}, "note": "乗替◯、逃げ先行◯、短距離◯"},
