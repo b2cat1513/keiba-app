@@ -10,13 +10,19 @@ st.set_page_config(page_title="ジェニーAI予想ver1.05", layout="wide")
 st.title("🏆 ジェニーAI予想ver1.05")
 
 # ------------------------------------------
-# 🔒 新・シンプルスマホセーブ／ロードシステム
+# 🔒 システム初期化（エラー完全防止）
 # ------------------------------------------
-st.markdown("### 📱 スマホ専用 セーブ ＆ ロード")
-
-# セッション状態の初期化
 if "loaded_data" not in st.session_state:
     st.session_state["loaded_data"] = {}
+
+# 下部のシミュレーターでエラー（KeyError）が出ないように確実に初期化
+if "history_log" not in st.session_state:
+    st.session_state["history_log"] = []
+
+# ------------------------------------------
+# 📱 スマホ専用 セーブ ＆ ロード
+# ------------------------------------------
+st.markdown("### 📱 スマホ専用 セーブ ＆ ロード")
 
 # 1. 📥 【ロード機能】貼り付けエリア
 load_code = st.text_area("🌟 ロード：保存した「セーブコード」をここに貼り付けてください", value="", placeholder="ここにコードをペースト")
@@ -45,25 +51,24 @@ if st.button("📥 データをロードする", type="primary", use_container_w
 st.markdown("---")
 
 # 2. 💾 【セーブ機能】現在の入力をコード化して表示
-# 画面上の現在の入力値を集計（管理用キー以外）
 current_state = {}
 for key, value in st.session_state.items():
+    # システム管理用のキーを除外して集計
     if key not in ["loaded_data", "history_log"] and not key.startswith("FormSubmitter"):
         current_state[key] = value
 
-# Base64でスマホ用の一連の英数字コードに変換
+# Base64で暗号風の英数字コードに変換
 try:
     json_str = json.dumps(current_state, ensure_ascii=False)
     save_code = base64.b64encode(json_str.encode('utf-8')).decode('utf-8')
 except Exception:
     save_code = ""
 
-# セーブコードの表示（スマホでトリプルタップ等で全選択しやすいようにテキストエリアにしています）
+# セーブコードの表示
 st.text_area("💾 セーブ：現在の状態のコード（これを丸ごとコピーしてメモ帳等に保存してください）", value=save_code, height=100)
 st.caption("💡 入力内容を変更した後は、一度画面の下にある「予想する」などのボタンを押すか、画面を更新すると上のセーブコードが最新に切り替わります。")
 
 st.markdown("---")
-
 # ==========================================
 # 🏇 1. ジョッキー事典マスターデータ（全72名完全網羅・2段階ロジック対応）
 # ==========================================
