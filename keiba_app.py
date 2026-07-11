@@ -418,7 +418,7 @@ COURSE_MASTER = {
         "good_lineage": ["エピファネイア", "ハービンジャー", "モーリス", "キタサンブラック", "ドゥラメンテ", "ルーラーシップ", "キズナ"]
     },
     "中山芝2500m": {
-        "note": "有馬記念コース。高速馬場は内枠有利、荒れ馬場は外枠有利。東京中距離G1実績馬◯。エピファネイア/キズナ/ドゥラメンテ/ゴールドシップ/ジャスタウェイ。", 
+        "note": "有馬記念コース。高速馬場は内枠有利、荒れ馬場は外枠有利。東京中距離G1実績馬◯. エピファネイア/キズナ/ドゥラメンテ/ゴールドシップ/ジャスタウェイ。", 
         "track": "芝", "dist": "長距離", "fav_style": "先行",
         "good_lineage": ["エピファネイア", "キズナ", "ドゥラメンテ", "ゴールドシップ", "ジャスタウェイ"]
     },
@@ -815,6 +815,13 @@ def parse_netkeiba_multi_line(raw_text):
 
     return sorted(cleaned_horses, key=lambda x: x["gate"])
 
+def safe_int_convert(value, default=0):
+    """馬番等の安全な数値変換関数"""
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
 # --- 🛰️ 当日環境設定エリア ---
 st.header("🛰️ 当日のレース環境")
 env_cols = st.columns(4)
@@ -853,7 +860,6 @@ if st.button("🚀 データを解析して一括展開", use_container_width=Tr
     if copied_text:
         parsed_result = parse_netkeiba_multi_line(copied_text)
         if parsed_result:
-            # 既存の構造体を維持しつつ、セッション状態を上書き
             if "rows" not in st.session_state["loaded_data"]:
                 st.session_state["loaded_data"]["rows"] = {}
                 
@@ -866,10 +872,10 @@ if st.button("🚀 データを解析して一括展開", use_container_width=Tr
                     "wgh": int(horse["weight"]),
                     "jock": horse["jockey"] if horse["jockey"] in JOCKEY_MASTER else "その他（自由手入力）",
                     "sel_frame": horse["frame"],
-                    "pop": 10,  # 初期値
-                    "idx": 0.0, # 初期値
-                    "l3f": 35.0, # 初期値
-                    "sire": "", # ユーザー追記想定
+                    "pop": 10,
+                    "idx": 0.0,
+                    "l3f": 35.0,
+                    "sire": "",
                     "heavy_record": False,
                     "custom_note": f"{horse['sex_age']} 体重増減:{horse['change']}",
                     "sel_track": auto_track if auto_track in ["芝", "ダート"] else "選択なし",
@@ -934,10 +940,10 @@ for i in range(1, 19):
         style_counts[sel_style] += 1
         
     f_opts = ["選択なし", "内枠", "外枠"]
-    try: f_def_idx = 1 if int(num) <= 8 else (2 if int(num) >= 13 else 0)
-    except: f_def_idx = 0
-    sel_frame = c[13].selectbox(f"frame_{i}", f_opts, index=f_opts.index(s_row.get("sel_frame", f_opts[f_def_idx])), label_visibility="collapsed")
+    num_int = safe_int_convert(num, i)
+    f_def_idx = 1 if num_int <= 8 else (2 if num_int >= 13 else 0)
     
+    sel_frame = c[13].selectbox(f"frame_{i}", f_opts, index=f_opts.index(s_row.get("sel_frame", f_opts[f_def_idx])), label_visibility="collapsed")
     sel_dist_change = c[14].selectbox(f"dist_change_{i}", ["同距離", "距離短縮", "距離延長"], index=["同距離", "距離短縮", "距離延長"].index(s_row.get("sel_dist_change", "同距離")), label_visibility="collapsed")
     
     sel_plus1 = c[15].selectbox(f"p5_1_{i}", special_opts, index=special_opts.index(s_row.get("sel_plus1")) if s_row.get("sel_plus1") in special_opts else 0, label_visibility="collapsed")
@@ -980,7 +986,8 @@ for item in row_tmp_data:
     score = 0.0
     final_apt = "C"
     
-    if jock != "(未選択)" and name != "":
+    # ⚠️ 馬名が入力されている場合のみスコア算出を行う（バグ・空行混入防止）
+    if name.strip() != "" and jock != "(未選択)":
         j_data = JOCKEY_MASTER.get(jock, JOCKEY_MASTER["その他（自由手入力）"])
         jockey_modifier = 0.0
         
@@ -1038,37 +1045,29 @@ for item in row_tmp_data:
             horse_base_score += 2.0
         elif str(num).strip() in ["9", "13"]:
             horse_base_score += 1.0
-        try:
-            if int(num) % 2 != 0 and str(num).strip() not in ["7", "9", "13"]:
-                horse_base_score += 0.5
-        except ValueError:
-            pass
-        try:
-            if int(num) >= 15:
-                horse_base_score -= 1.5
-        except ValueError:
-            pass
+            
+        horse_num_int = safe_int_convert(num, 0)
+        if horse_num_int % 2 != 0 and str(num).strip() not in ["7", "9", "13"]:
+            horse_base_score += 0.5
+        if horse_num_int >= 15:
+            horse_base_score -= 1.5
             
         # コース特異的馬番枠補正
-        try:
-            horse_num_int = int(num)
-            if sel_course == "東京芝1600m":
-                if 5 <= horse_num_int <= 12:
-                    horse_base_score += 2.0
-                elif 13 <= horse_num_int <= 17:
-                    horse_base_score += 2.5
-                elif 1 <= horse_num_int <= 2:
-                    horse_base_score -= 2.0
-            elif sel_course and "京都芝" in sel_course:
-                if horse_num_int >= 10:
-                    horse_base_score += 2.0
-            elif sel_course in ["中京ダート1800m", "東京ダート1600m"]:
-                if 1 <= horse_num_int <= 9:
-                    horse_base_score += 2.0
-                elif horse_num_int >= 14:
-                    horse_base_score -= 2.0
-        except ValueError:
-            pass
+        if sel_course == "東京芝1600m":
+            if 5 <= horse_num_int <= 12:
+                horse_base_score += 2.0
+            elif 13 <= horse_num_int <= 17:
+                horse_base_score += 2.5
+            elif 1 <= horse_num_int <= 2:
+                horse_base_score -= 2.0
+        elif sel_course and "京都芝" in sel_course:
+            if horse_num_int >= 10:
+                horse_base_score += 2.0
+        elif sel_course in ["中京ダート1800m", "東京ダート1600m"]:
+            if 1 <= horse_num_int <= 9:
+                horse_base_score += 2.0
+            elif horse_num_int >= 14:
+                horse_base_score -= 2.0
 
         # コース事典との連動補正
         if sel_course != "(未選択)":
@@ -1127,10 +1126,13 @@ for item in row_tmp_data:
             elif final_apt == "C": score -= 4.0
             elif final_apt == "D": score -= 10.0
             
-    score_cell.write(f"**{score:.2f}**")
-    calculated_results.append({
-        "馬番": num, "馬名": name, "最終スコア": score, "人気": pop, "斤量": wgt, "馬体重": wgh, "父馬": sire, "重道悪適性": final_apt, "騎手": jock, "戦略メモ": j_data.get("note", "") if jock != "(未選択)" else ""
-    })
+    if name.strip() != "":
+        score_cell.write(f"**{score:.2f}**")
+        calculated_results.append({
+            "馬番": num, "馬名": name, "最終スコア": score, "人気": pop, "斤量": wgt, "馬体重": wgh, "父馬": sire, "重道悪適性": final_apt, "騎手": jock, "戦略メモ": j_data.get("note", "") if jock != "(未選択)" else ""
+        })
+    else:
+        score_cell.write("")
 
 # ==========================================
 # 💾 スマホ専用セーブデータ生成エリア
@@ -1178,56 +1180,59 @@ with save_cols[1]:
 # 🏆 ランキング生成 & 買い目自動生成
 # ==========================================
 if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primary", use_container_width=True):
-    res_df = pd.DataFrame(calculated_results)
-    res_df = res_df[res_df["馬名"] != ""].sort_values(by="最終スコア", ascending=False)
-    
-    if not res_df.empty:
-        st.balloons()
+    if calculated_results:
+        res_df = pd.DataFrame(calculated_results)
+        res_df = res_df[res_df["馬名"] != ""].sort_values(by="最終スコア", ascending=False)
         
-        symbols = ["◎", "○", "▲", "△", "⭐︎"]
-        res_df["印"] = [symbols[idx] if idx < len(symbols) else " " for idx in range(len(res_df))]
-        
-        st.header(f"🎯 本命馬: {res_df.iloc[0]['印']} {res_df.iloc[0]['馬名']} ({res_df.iloc[0]['騎手']})")
-        st.dataframe(res_df[["印", "馬番", "馬名", "人気", "斤量", "馬体重", "父馬", "最終スコア", "騎手", "重道悪適性"]], use_container_width=True, hide_index=True)
-        
-        st.subheader("💰 AI最適化推奨買い目 ＆ 資金配分シミュレーター")
-        top_horses = res_df.head(5).to_dict(orient="records")
-        
-        if len(top_horses) >= 3:
-            h_maru = top_horses[0]["馬番"]
-            h_fuku = top_horses[1]["馬番"]
-            h_ana = top_horses[2]["馬番"]
-            h_sa = [h["馬番"] for h in top_horses[3:5]]
+        if not res_df.empty:
+            st.balloons()
             
-            pool_maruren = total_budget * 0.40
-            pool_sanrenpuku = total_budget * 0.40
-            pool_sanrentan = total_budget * 0.20
+            symbols = ["◎", "○", "▲", "△", "⭐︎"]
+            res_df["印"] = [symbols[idx] if idx < len(symbols) else " " for idx in range(len(res_df))]
             
-            tickets = []
-            maruren_targets = [h_fuku, h_ana] + h_sa
-            weights = [0.4, 0.3, 0.15, 0.15]
-            for target, w in zip(maruren_targets, weights):
-                amt = max(100, int((pool_maruren * w) // 100) * 100)
-                tickets.append({"券種": "馬連", "買い目": f"{h_maru} ➔ {target}", "推奨投資額": f"{amt}円", "狙い": "軸堅実プラン"})
+            st.header(f"🎯 本命馬: {res_df.iloc[0]['印']} {res_df.iloc[0]['馬名']} ({res_df.iloc[0]['騎手']})")
+            st.dataframe(res_df[["印", "馬番", "馬名", "人気", "斤量", "馬体重", "父馬", "最終スコア", "騎手", "重道悪適性"]], use_container_width=True, hide_index=True)
+            
+            st.subheader("💰 AI最適化推奨買い目 ＆ 資金配分シミュレーター")
+            top_horses = res_df.head(5).to_dict(orient="records")
+            
+            if len(top_horses) >= 3:
+                h_maru = top_horses[0]["馬番"]
+                h_fuku = top_horses[1]["馬番"]
+                h_ana = top_horses[2]["馬番"]
+                h_sa = [h["馬番"] for h in top_horses[3:5]]
                 
-            sanren_combos = [
-                f"{h_maru} - {h_fuku} - {h_ana}",
-                f"{h_maru} - {h_fuku} - {h_sa[0]}",
-                f"{h_maru} - {h_fuku} - {h_sa[1]}",
-                f"{h_maru} - {h_ana} - {h_sa[0]}",
-                f"{h_maru} - {h_ana} - {h_sa[1]}",
-            ]
-            each_sanren = max(100, int((pool_sanrenpuku / len(sanren_combos)) // 100) * 100)
-            for combo in sanren_combos:
-                tickets.append({"券種": "3連複", "買い目": combo, "推奨投資額": f"{each_sanren}円", "狙い": "高回収リターン"})
+                pool_maruren = total_budget * 0.40
+                pool_sanrenpuku = total_budget * 0.40
+                pool_sanrentan = total_budget * 0.20
                 
-            tickets.append({"券種": "3連単", "買い目": f"{h_maru} ➔ {h_fuku} ➔ {h_ana}", "推奨投資額": f"{int((pool_sanrentan * 0.6) // 100) * 100}円", "狙い": "一撃必殺・本線"})
-            tickets.append({"券種": "3連単", "買い目": f"{h_maru} ➔ {h_fuku} ➔ {h_sa[0]}", "推奨投資額": f"{int((pool_sanrentan * 0.4) // 100) * 100}円", "狙い": "一撃必殺・押さえ"})
-            
-            st.dataframe(pd.DataFrame(tickets), use_container_width=True, hide_index=True)
-            
-            st.session_state["last_predict_horse"] = top_horses[0]["馬名"]
-            st.session_state["last_predict_course"] = sel_course
+                tickets = []
+                maruren_targets = [h_fuku, h_ana] + h_sa
+                weights = [0.4, 0.3, 0.15, 0.15]
+                for target, w in zip(maruren_targets, weights):
+                    amt = max(100, int((pool_maruren * w) // 100) * 100)
+                    tickets.append({"券種": "馬連", "買い目": f"{h_maru} ➔ {target}", "推奨投資額": f"{amt}円", "狙い": "軸堅実プラン"})
+                    
+                sanren_combos = [
+                    f"{h_maru} - {h_fuku} - {h_ana}",
+                    f"{h_maru} - {h_fuku} - {h_sa[0]}",
+                    f"{h_maru} - {h_fuku} - {h_sa[1]}",
+                    f"{h_maru} - {h_ana} - {h_sa[0]}",
+                    f"{h_maru} - {h_ana} - {h_sa[1]}",
+                ]
+                each_sanren = max(100, int((pool_sanrenpuku / len(sanren_combos)) // 100) * 100)
+                for combo in sanren_combos:
+                    tickets.append({"券種": "3連複", "買い目": combo, "推奨投資額": f"{each_sanren}円", "狙い": "高回収リターン"})
+                    
+                tickets.append({"券種": "3連単", "買い目": f"{h_maru} ➔ {h_fuku} ➔ {h_ana}", "推奨投資額": f"{int((pool_sanrentan * 0.6) // 100) * 100}円", "狙い": "一撃必殺・本線"})
+                tickets.append({"券種": "3連単", "買い目": f"{h_maru} ➔ {h_fuku} ➔ {h_sa[0]}", "推奨投資額": f"{int((pool_sanrentan * 0.4) // 100) * 100}円", "狙い": "一撃必殺・押さえ"})
+                
+                st.dataframe(pd.DataFrame(tickets), use_container_width=True, hide_index=True)
+                
+                st.session_state["last_predict_horse"] = top_horses[0]["馬名"]
+                st.session_state["last_predict_course"] = sel_course
+    else:
+        st.error("出馬表データが入力されていません。")
 
 # ==========================================
 # 📊 5. 的中率・回収率データログシミュレーター
@@ -1242,7 +1247,7 @@ with st.expander("📝 当日レースの結果入力を記録する"):
     with log_cols[1]:
         res_jiku = st.text_input("軸馬名:", value=st.session_state.get("last_predict_horse", ""))
     with log_cols[2]:
-        is_hit = st.selectbox("軸馬の着順結果:", ["3着以内（的中）", "4着以下（不不的中）"])
+        is_hit = st.selectbox("軸馬の着順結果:", ["3着以内（的中）", "4着以下（不不不的中）"])
     with log_cols[3]:
         return_amt = st.number_input("実際の総払戻金 (円):", min_value=0, value=0, step=100)
         
