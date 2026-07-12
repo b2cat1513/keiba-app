@@ -182,7 +182,7 @@ JOCKEY_MASTER = {
         "factors": {"芝": 0.05, "ダート": 0.05, "先行": 0.05, "差し": 0.05, "内枠": -0.05, "外枠": -0.05, "短距離": 0.05, "短距離重賞": 0.15, "荒れ馬場": 0.15, "京都芝1200": 0.15, "阪神芝1600": 0.10},
         "note": "思い切りの良さが魅力。短距離重賞◯、芝の荒れ馬場◯、斉藤崇厩舎◯"
     },
-    "菅原明良": {
+    "管原明良": {
         "base": 1.15,
         "factors": {"芝": 0.05, "ダート": -0.05, "先行": 0.05, "差し": 0.05, "内枠": 0.05, "短距離": -0.05, "長距離": 0.05, "東京芝1600": 0.10, "新潟直線1000": 0.15},
         "note": "信頼度急上昇の若手。中長距離戦◯、上級条件の差し馬◯、関西遠征◎"
@@ -550,7 +550,7 @@ COURSE_MASTER = {
         "good_lineage": ["ゴールドシップ", "オルフェーヴル", "ドゥラメンテ", "キズナ", "モーリス", "ハービンジャー", "ジャスタウェイ", "ハーツクライ"]
     },
     "札幌芝2600m": {
-        "note": "内枠有利、先行馬◯。前走函館2600ｍの上がり3ハロン最速馬◯、前走東京芝2400ｍで2～5着の馬◯。ドゥラメンテ/キズナ/エピファネイア/レイデオロ/オルフェーヴル/サトノクラウン。", 
+        "note": "内枠有利、先行馬◯. 前走函館2600ｍの上がり3ハロン最速馬◯、前走東京芝2400ｍで2～5着の馬◯。ドゥラメンテ/キズナ/エピファネイア/レイデオロ/オルフェーヴル/サトノクラウン。", 
         "track": "芝", "dist": "長距離", "fav_style": "先行",
         "good_lineage": ["ドゥラメンテ", "キズナ", "エピファネイア", "レイデオロ", "オルフェーヴル", "サトノクラウン"]
     },
@@ -740,6 +740,16 @@ SIRE_TRACK_APTITUDE = {
     "ドゥラメンテ": "B", "エピファネイア": "B", "モーリス": "B", "ルーラーシップ": "B", "キングカメハメハ": "B", "キタサンブラック": "B",
     "ロードカナロア": "C", "ハーツクライ": "C", "ディープインパクト": "D"
 }
+
+def determine_final_aptitude(sire, has_heavy_record):
+    """【新規追加】重道悪適性を判定する関数"""
+    if has_heavy_record:
+        return "A"
+    detected = auto_detect_lineage(sire)
+    if detected and detected[0] in SIRE_TRACK_APTITUDE:
+        return SIRE_TRACK_APTITUDE[detected[0]]
+    return "C"
+
 def parse_netkeiba_multi_line(raw_text):
     """
     Netkeibaスマホ版の複数行にまたがる出馬表テキストを、
@@ -754,11 +764,9 @@ def parse_netkeiba_multi_line(raw_text):
         if not line:
             continue
             
-        # 【修正箇所】「名、 丸山」などの読点やスペースのノイズを事前に除去・整形
-        line = re.sub(r'[、,・·]+', ' ', line) # 読点や中黒をスペースに置換
-        line = re.sub(r'\s+', ' ', line)       # 連続するスペースを1つに統合
+        line = re.sub(r'[、,・·]+', ' ', line) 
+        line = re.sub(r'\s+', ' ', line)       
             
-        # 【修正箇所】性別判定に「社」なども含め、読点除去後の「名 丸山」に対応できるよう正規表現を最適化
         base_match = re.search(r'([ァ-ヴーa-zA-Z0-9\s\.\-]+)\s+([牡牝セ社専地外]\d+).*?\s+([\u4e00-\u9fa5ァ-ヴーa-zA-Z\s\.・]+)\s+(\d{2}(?:\.\d+)?)', line)
         
         if base_match:
@@ -816,56 +824,6 @@ def safe_int_convert(value, default=0):
         return default
 
 
-# --- Streamlit UI表示・処理エリア ---
-
-st.subheader("📋 Netkeibaスマホ版 出馬表コピペエリア")
-copied_text = st.text_area(
-    "Netkeibaの出馬表テキスト（馬名、オッズ、馬番などが複数行にまたがっていてもOK）を丸ごと貼り付けてください", 
-    height=150,
-    placeholder="ランフォーヴァウ 牝4 名 石川 54.0\n20.3 11人気\n1"
-)
-
-if st.button("🚀 データを解析して一括展開", use_container_width=True):
-    if copied_text:
-        parsed_result = parse_netkeiba_multi_line(copied_text)
-        if parsed_result:
-            if "rows" not in st.session_state["loaded_data"]:
-                st.session_state["loaded_data"]["rows"] = {}
-                
-            for idx, horse in enumerate(parsed_result):
-                # 【修正箇所】固定の連番ではなく、解析された実際の馬番 (horse["gate"]) をキーに指定
-                # これにより、1番の馬が飛ばされたり、2番の馬で上書きされるのを完全に防ぎます
-                row_key = str(horse["gate"])
-                
-                st.session_state["loaded_data"]["rows"][row_key] = {
-                    "num": str(horse["gate"]),
-                    "name": horse["name"],
-                    "wgt": float(horse["jockey_weight"]),
-                    "wgh": int(horse["weight"]),
-                    "jock": horse["jockey"] if horse["jockey"] in JOCKEY_MASTER else "その他（自由手入力）",
-                    "sel_frame": horse["frame"],
-                    "pop": 10,
-                    "idx": 0.0,
-                    "l3f": 35.0,
-                    "sire": "",
-                    "heavy_record": False,
-                    "custom_note": f"{horse['sex_age']} 体重増減:{horse['change']}",
-                    "sel_track": auto_track if auto_track in ["芝", "ダート"] else "選択なし",
-                    "sel_style": "選択なし",
-                    "sel_dist_change": "同距離",
-                    "sel_plus1": "選択なし",
-                    "sel_plus2": "選択なし"
-                }
-            st.success(f"🎯 解析成功！ 全 {len(parsed_result)} 頭のデータを抽出して出馬表に展開しました。ページを再構成します。")
-            st.rerun()
-        else:
-            st.error("馬データが見つかりませんでした。コピペした文章を確認してください。")
-    else:
-        st.warning("テキストエリアが空欄です。")
-
-st.divider()
-
-
 # --- 🛰️ 当日環境設定エリア ---
 st.header("🛰️ 当日のレース環境")
 env_cols = st.columns(4)
@@ -908,7 +866,7 @@ if st.button("🚀 データを解析して一括展開", use_container_width=Tr
                 st.session_state["loaded_data"]["rows"] = {}
                 
             for idx, horse in enumerate(parsed_result):
-                row_key = str(idx + 1)
+                row_key = str(horse["gate"])
                 st.session_state["loaded_data"]["rows"][row_key] = {
                     "num": str(horse["gate"]),
                     "name": horse["name"],
@@ -942,11 +900,12 @@ st.divider()
 # ==========================================
 st.write("### 📝 出馬表データ入力")
 
-c_widths = [0.6, 1.4, 0.6, 0.6, 0.6, 0.7, 0.6, 1.3, 0.6, 1.3, 1.0, 0.8, 0.8, 0.8, 0.8, 1.2, 1.2, 0.8]
+c_widths = [0.6, 1.4, 0.6, 0.6, 0.6, 0.7, 0.6, 1.3, 0.6, 1.3, 1.0, 0.8, 0.8, 0.8, 0.8, 0.1, 0.1, 0.8]
 cols = st.columns(c_widths)
-headers = ["馬番", "馬名", "人気", "指数", "斤量", "馬体重", "前3F", "父馬", "道悪", "騎手選択", "手入力メモ", "馬場", "脚質", "枠有利", "前走距離", "特記メモ補正①", "特記メモ補正②", "最終スコア"]
+headers = ["馬番", "馬名", "人気", "指数", "斤量", "馬体重", "前3F", "父馬", "道悪", "騎手選択", "手入力メモ", "馬場", "脚質", "枠有利", "前走距離", "", "", "最終スコア"]
 for col, h in zip(cols, headers):
-    col.write(f"**{h}**")
+    if h:
+        col.write(f"**{h}**")
 
 current_inputs = {"course": sel_course, "track_condition": track_condition, "race_class": race_class, "rows": {}}
 style_counts = {"逃げ": 0, "先行": 0, "差し": 0, "追い込み": 0}
@@ -990,8 +949,8 @@ for i in range(1, 19):
     sel_frame = c[13].selectbox(f"frame_{i}", f_opts, index=f_opts.index(s_row.get("sel_frame", f_opts[f_def_idx])), label_visibility="collapsed")
     sel_dist_change = c[14].selectbox(f"dist_change_{i}", ["同距離", "距離短縮", "距離延長"], index=["同距離", "距離短縮", "距離延長"].index(s_row.get("sel_dist_change", "同距離")), label_visibility="collapsed")
     
-    sel_plus1 = c[15].selectbox(f"p5_1_{i}", special_opts, index=special_opts.index(s_row.get("sel_plus1")) if s_row.get("sel_plus1") in special_opts else 0, label_visibility="collapsed")
-    sel_plus2 = c[16].selectbox(f"p5_2_{i}", special_opts, index=special_opts.index(s_row.get("sel_plus2")) if s_row.get("sel_plus2") in special_opts else 0, label_visibility="collapsed")
+    sel_plus1 = s_row.get("sel_plus1", "選択なし")
+    sel_plus2 = s_row.get("sel_plus2", "選択なし")
     
     current_inputs["rows"][str(i)] = {
         "num": num, "name": name, "pop": pop, "idx": idx, "wgt": wgt, "wgh": wgh, "l3f": l3f, "sire": sire, "heavy_record": has_heavy_record,
@@ -1030,7 +989,6 @@ for item in row_tmp_data:
     score = 0.0
     final_apt = "C"
     
-    # ⚠️ 馬名が入力されている場合のみスコア算出を行う（バグ・空行混入防止）
     if name.strip() != "" and jock != "(未選択)":
         j_data = JOCKEY_MASTER.get(jock, JOCKEY_MASTER["その他（自由手入力）"])
         jockey_modifier = 0.0
@@ -1073,7 +1031,6 @@ for item in row_tmp_data:
             elif burden_rate < 0.112:
                 horse_base_score += 1.5
                 
-                # 短距離・マイル以下のダート戦における大型馬のパワー加点
                 if sel_track == "ダート" and auto_dist in ["短距離", "中距離"]:
                     horse_base_score += 2.0
                 
@@ -1313,12 +1270,4 @@ if st.session_state["history_log"]:
     total_return = log_df["払戻"].sum()
     recovery_rate = (total_return / total_invest) * 100 if total_invest > 0 else 0
     
-    st.write("### 📉 現在の回収率・的中率スタッツ")
-    stat_cols = st.columns(4)
-    stat_cols[0].metric("総シミュレーションレース数", f"{total_races} 戦")
-    stat_cols[1].metric("軸馬複勝的中率", f"{hit_rate:.1f} %")
-    stat_cols[2].metric("累計投資総額", f"{total_invest:,} 円")
-    stat_cols[3].metric("📊 総合回収率 (回収バロメータ)", f"{recovery_rate:.1f} %")
-    
-    st.write("▼ 直近の記録ログデータ一覧")
-    st.dataframe(log_df, use_container_width=True)
+    st.write(f"📊 通算成績: {total_races}戦 {hits}的中 / 的中率 {hit_rate:.1f}% / 回収率 {recovery_rate:.1f}%")
