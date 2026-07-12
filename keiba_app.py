@@ -740,22 +740,10 @@ SIRE_TRACK_APTITUDE = {
     "ドゥラメンテ": "B", "エピファネイア": "B", "モーリス": "B", "ルーラーシップ": "B", "キングカメハメハ": "B", "キタサンブラック": "B",
     "ロードカナロア": "C", "ハーツクライ": "C", "ディープインパクト": "D"
 }
-
-def determine_final_aptitude(sire_name, has_past_record):
-    base_apt = "C"
-    for sire, apt in SIRE_TRACK_APTITUDE.items():
-        if sire in sire_name:
-            base_apt = apt
-            break
-    if has_past_record:
-        if base_apt in ["C", "D"]: return "B"
-        elif base_apt == "B": return "A"
-    return base_apt
-
 def parse_netkeiba_multi_line(raw_text):
     """
     Netkeibaスマホ版の複数行にまたがる出馬表テキストを、
-    1頭ずつのブロックとして完璧に回収する高精度パース関数
+    1頭ずつのブロックとして完璧に回収する高精度パース関数（記号ノイズ対策版）
     """
     cleaned_horses = []
     current_horse = None
@@ -766,15 +754,20 @@ def parse_netkeiba_multi_line(raw_text):
         if not line:
             continue
             
-        base_match = re.search(r'([ァ-ヴーa-zA-Z0-9]+)\s+([牡牝セ]\d+).*?([\u4e00-\u9fa5ァ-ヴーa-zA-Z]+)\s+(\d{2}(?:\.\d+)?)', line)
+        # 【修正箇所】「名、 丸山」などの読点やスペースのノイズを事前に除去・整形
+        line = re.sub(r'[、,・·]+', ' ', line) # 読点や中黒をスペースに置換
+        line = re.sub(r'\s+', ' ', line)       # 連続するスペースを1つに統合
+            
+        # 【修正箇所】性別判定に「社」なども含め、読点除去後の「名 丸山」に対応できるよう正規表現を最適化
+        base_match = re.search(r'([ァ-ヴーa-zA-Z0-9\s\.\-]+)\s+([牡牝セ社専地外]\d+).*?\s+([\u4e00-\u9fa5ァ-ヴーa-zA-Z\s\.・]+)\s+(\d{2}(?:\.\d+)?)', line)
         
         if base_match:
             if current_horse:
                 cleaned_horses.append(current_horse)
                 
-            horse_name = base_match.group(1)
-            sex_age = base_match.group(2)
-            jockey_name = base_match.group(3)
+            horse_name = base_match.group(1).strip()
+            sex_age = base_match.group(2).strip()
+            jockey_name = base_match.group(3).strip()
             jockey_weight = float(base_match.group(4))
             
             current_horse = {
@@ -821,6 +814,57 @@ def safe_int_convert(value, default=0):
         return int(value)
     except (ValueError, TypeError):
         return default
+
+
+# --- Streamlit UI表示・処理エリア ---
+
+st.subheader("📋 Netkeibaスマホ版 出馬表コピペエリア")
+copied_text = st.text_area(
+    "Netkeibaの出馬表テキスト（馬名、オッズ、馬番などが複数行にまたがっていてもOK）を丸ごと貼り付けてください", 
+    height=150,
+    placeholder="ランフォーヴァウ 牝4 名 石川 54.0\n20.3 11人気\n1"
+)
+
+if st.button("🚀 データを解析して一括展開", use_container_width=True):
+    if copied_text:
+        parsed_result = parse_netkeiba_multi_line(copied_text)
+        if parsed_result:
+            if "rows" not in st.session_state["loaded_data"]:
+                st.session_state["loaded_data"]["rows"] = {}
+                
+            for idx, horse in enumerate(parsed_result):
+                # 【修正箇所】固定の連番ではなく、解析された実際の馬番 (horse["gate"]) をキーに指定
+                # これにより、1番の馬が飛ばされたり、2番の馬で上書きされるのを完全に防ぎます
+                row_key = str(horse["gate"])
+                
+                st.session_state["loaded_data"]["rows"][row_key] = {
+                    "num": str(horse["gate"]),
+                    "name": horse["name"],
+                    "wgt": float(horse["jockey_weight"]),
+                    "wgh": int(horse["weight"]),
+                    "jock": horse["jockey"] if horse["jockey"] in JOCKEY_MASTER else "その他（自由手入力）",
+                    "sel_frame": horse["frame"],
+                    "pop": 10,
+                    "idx": 0.0,
+                    "l3f": 35.0,
+                    "sire": "",
+                    "heavy_record": False,
+                    "custom_note": f"{horse['sex_age']} 体重増減:{horse['change']}",
+                    "sel_track": auto_track if auto_track in ["芝", "ダート"] else "選択なし",
+                    "sel_style": "選択なし",
+                    "sel_dist_change": "同距離",
+                    "sel_plus1": "選択なし",
+                    "sel_plus2": "選択なし"
+                }
+            st.success(f"🎯 解析成功！ 全 {len(parsed_result)} 頭のデータを抽出して出馬表に展開しました。ページを再構成します。")
+            st.rerun()
+        else:
+            st.error("馬データが見つかりませんでした。コピペした文章を確認してください。")
+    else:
+        st.warning("テキストエリアが空欄です。")
+
+st.divider()
+
 
 # --- 🛰️ 当日環境設定エリア ---
 st.header("🛰️ 当日のレース環境")
