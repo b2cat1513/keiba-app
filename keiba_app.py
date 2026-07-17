@@ -849,7 +849,7 @@ if sel_course != "(未選択)":
 st.divider()
 
 # ==========================================
-# 📋 Netkeiba一括自動入力エリア
+# Netkeiba一括自動入力エリア
 # ==========================================
 st.subheader("📋 Netkeibaスマホ版 出馬表コピペエリア")
 copied_text = st.text_area(
@@ -892,6 +892,117 @@ if st.button("🚀 データを解析して一括展開", use_container_width=Tr
             st.error("馬データが見つかりませんでした。コピペした文章を確認してください。")
     else:
         st.warning("テキストエリアが空欄です。")
+
+# ==========================================
+# 📋 ウマニティ一括自動入力エリア（ここを追加しました）
+# ==========================================
+st.subheader("📋 ウマニティスマホ版 出馬表コピペエリア")
+umanity_copied_text = st.text_area(
+    "ウマニティの出馬表テキスト（スマホ画面を全選択コピーした状態のもの）を丸ごと貼り付けてください", 
+    height=150,
+    placeholder="ゼンダンハヤブサ 牡4 栗...\n酒井学 52.0 中4週\n90.4\n1"
+)
+
+if st.button("🚀 ウマニティデータを解析して一括展開", use_container_width=True):
+    if umanity_copied_text:
+        # ウマニティ用のテキスト解析
+        import re
+        lines = [line.strip() for line in umanity_copied_text.strip().split("\n") if line.strip()]
+        parsed_result = []
+        
+        i = 0
+        while i < len(lines):
+            gate_match = re.match(r'^(\d{1,2})$', lines[i])
+            if not gate_match:
+                i += 1
+                continue
+                
+            gate_num = int(gate_match.group(1))
+            name, sex_age, jockey = "", "", "その他（自由手入力）"
+            weight, u_idx, pop = 56.0, 0.0, 10
+            
+            search_idx = i + 1
+            found_info, found_jock, found_idx = False, False, False
+            
+            while search_idx < len(lines) and search_idx < i + 8:
+                current_line = lines[search_idx]
+                if re.match(r'^(\d{1,2})$', current_line):
+                    break
+                    
+                if not found_info:
+                    info_match = re.search(r'(\S+)\s+([牡牝セ]\d+)\s+\S+\s+\S+\s+(\S+倍|\-\-倍)\s*(\d*)', current_line)
+                    if info_match:
+                        name = info_match.group(1)
+                        sex_age = info_match.group(2)
+                        if info_match.group(4):
+                            pop = int(info_match.group(4))
+                        found_info = True
+                        search_idx += 1
+                        continue
+                
+                if not found_jock:
+                    jock_match = re.search(r'(\S+)\s+(\d{2}(?:\.\d+)?)\s+(?:中\d+週|\d+ヶ月)', current_line)
+                    if jock_match:
+                        jockey = jock_match.group(1)
+                        weight = float(jock_match.group(2))
+                        found_jock = True
+                        search_idx += 1
+                        continue
+                
+                if not found_idx:
+                    idx_match = re.match(r'^(\d{2,3}(?:\.\d+)?)$', current_line)
+                    if idx_match:
+                        u_idx = float(idx_match.group(1))
+                        found_idx = True
+                        search_idx += 1
+                        continue
+                        
+                search_idx += 1
+                
+            if name:
+                parsed_result.append({
+                    "gate": gate_num,
+                    "frame": "内枠" if gate_num <= 8 else "外枠",
+                    "name": name,
+                    "sex_age": sex_age,
+                    "jockey_weight": weight,
+                    "jockey": jockey,
+                    "pop": pop,
+                    "u_idx": u_idx
+                })
+            i = search_idx
+
+        if parsed_result:
+            if "rows" not in st.session_state["loaded_data"]:
+                st.session_state["loaded_data"]["rows"] = {}
+                
+            for idx, horse in enumerate(parsed_result):
+                row_key = str(horse["gate"])
+                st.session_state["loaded_data"]["rows"][row_key] = {
+                    "num": str(horse["gate"]),
+                    "name": horse["name"],
+                    "wgt": float(horse["jockey_weight"]),
+                    "wgh": 480,  # ウマニティのテキストに体重が含まれないためデフォルト
+                    "jock": horse["jockey"] if horse["jockey"] in JOCKEY_MASTER else "その他（自由手入力）",
+                    "sel_frame": horse["frame"],
+                    "pop": horse["pop"],
+                    "idx": horse["u_idx"],  # 自動解析したU指数をここに注入
+                    "l3f": 35.0,
+                    "sire": "",
+                    "heavy_record": False,
+                    "custom_note": f"{horse['sex_age']} (ウマニティU指数:{horse['u_idx']})",
+                    "sel_track": auto_track if auto_track in ["芝", "ダート"] else "選択なし",
+                    "sel_style": "選択なし",
+                    "sel_dist_change": "同距離",
+                    "sel_plus1": "選択なし",
+                    "sel_plus2": "選択なし"
+                }
+            st.success(f"🎯 ウマニティ解析成功！ 全 {len(parsed_result)} 頭のデータとU指数を出馬表に展開しました。")
+            st.rerun()
+        else:
+            st.error("ウマニティの馬データが見つかりませんでした。コピペ内容を確認してください。")
+    else:
+        st.warning("ウマニティ用のテキストエリアが空欄です。")
 
 st.divider()
 
