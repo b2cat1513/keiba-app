@@ -10,7 +10,7 @@ from streamlit.components.v1 import html
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
 st.set_page_config(page_title="ジェニーAI予想ver1.05", layout="wide")
-st.title("🏆 ジェニーAI予想ver1.05 (事典最新データ完全同期＆血統・コース事典完全補強版)")
+st.title("🏆 ジェニーAI予想ver1.05 (血統判定厳格化＆ダート大型馬パワーロジック搭載版)")
 
 # 🛠️ スマホ向け：データを極限まで縮小・Base64圧縮する関数
 def encode_for_mobile(data_dict):
@@ -129,7 +129,7 @@ with st.sidebar:
                 st.warning("⚠️ 貼り付け欄にコードを入力するか、上の読み込みボタンをもう一度試してください。")
 
 # ==========================================
-# 🏇 1. ジョッキー事典マスターデータ (最新Excel完全反映版)
+# 🏇 1. ジョッキー事典マスターデータ
 # ==========================================
 JOCKEY_MASTER = {
     "C.ルメール": {
@@ -368,7 +368,7 @@ JOCKEY_MASTER = {
 }
 
 # ==========================================
-# ⚙️ 2. コース事典マスターデータ (最新Excel完全補強版)
+# ⚙️ 2. コース事典マスターデータ (統合・最適化版)
 # ==========================================
 COURSE_MASTER = {
     # 🌟 主要5場
@@ -702,45 +702,38 @@ COURSE_MASTER = {
 }
 
 # ==========================================
-# 🧬 3. 血統の系統自動判定マスター (最新Excel完全反映版)
+# 🧬 3. 血統の系統自動判定マスター
 # ==========================================
 BLOOD_LINEAGE_MAP = {
     "キズナ": ["キズナ"],
     "コントレイル": ["コントレイル"],
     "サトノダイヤモンド": ["サトノダイヤモンド"],
-    "ディープインパクト系": ["ディープインパクト", "リアルインパクト", "ミッキーアイル", "ワールドエース", "シルバーステート", "ダノンバラード", "トーセンラー", "エイシンヒカリ"],
+    "ディープインパクト系": ["ディープインパクト", "リアルインパクト", "ミッキーアイル", "ワールドエース"],
     "ジャスタウェイ": ["ジャスタウェイ"],
     "スワーヴリチャード": ["スワーヴリチャード"],
-    "ハーツクライ系": ["ハーツクライ", "サリオス", "シュヴァルグラン", "スワーヴリチャード", "ジャスタウェイ", "リアルスティール"],
+    "ハーツクライ系": ["ハーツクライ", "サリオス", "シュヴァルグラン"],
     "ゴールドシップ": ["ゴールドシップ"],
     "オルフェーヴル": ["オルフェーヴル"],
-    "ステイゴールド系": ["ステイゴールド", "インディチャンプ", "ウインバリアシオン", "ゴールドシップ", "オルフェーヴル"],
-    "ロードカナロア": ["ロードカナロア", "サートゥルナーリア", "ダノンスマッシュ"],
+    "ステイゴールド系": ["ステイゴールド", "インディチャンプ", "ウインバリアシオン"],
+    "ロードカナロア": ["ロードカナロア"],
     "ドゥラメンテ": ["ドゥラメンテ"],
-    "ルーラーシップ": ["ルーラーシップ", "リオンディーズ"],
-    "キングカメハメハ系": ["キングカメハメハ", "レイデオロ", "ホッコータルマエ", "ドゥラメンテ", "ルーラーシップ", "ロードカナロア"],
+    "ルーラーシップ": ["ルーラーシップ"],
+    "キングカメハメハ系": ["キングカメハメハ", "レイデオロ", "ホッコータルマエ"],
     "エピファネイア": ["エピファネイア"],
     "モーリス": ["モーリス"],
     "キタサンブラック": ["キタサンブラック"],
-    "ヘニーヒューズ": ["ヘニーヒューズ", "アジアエクスプレス"],
+    "ヘニーヒューズ": ["ヘニーヒューズ"],
     "ドレフォン": ["ドレフォン"],
-    "シニスターミニスター": ["シニスターミニスター"],
-    "ミッキーアイル": ["ミッキーアイル"],
-    "ビッグアーサー": ["ビッグアーサー"],
-    "ダイワメジャー": ["ダイワメジャー", "アドマイヤマーズ"],
-    "ハービンジャー": ["ハービンジャー"],
-    "スクリーンヒーロー": ["スクリーンヒーロー", "モーリス"]
+    "シニスターミニスター": ["シニスターミニスター"]
 }
 
 def auto_detect_lineage(sire_name):
     if not sire_name: return []
-    detected = []
     for system_name, match_list in BLOOD_LINEAGE_MAP.items():
         for target in match_list:
             if target in sire_name:
-                detected.append(system_name)
-                break
-    return list(set(detected))
+                return [system_name]
+    return []
 
 SIRE_TRACK_APTITUDE = {
     "キズナ": "A", "オルフェーヴル": "A", "ゴールドシップ": "A", "ハービンジャー": "A", "クロフネ": "A", "シニスターミニスター": "A",
@@ -758,96 +751,54 @@ def determine_final_aptitude(sire_name, has_past_record):
         if base_apt in ["C", "D"]: return "B"
         elif base_apt == "B": return "A"
     return base_apt
-def parse_umanity_multi_line(raw_text):
+
+def parse_netkeiba_multi_line(raw_text):
     """
-    ウマニティスマホ版の複数行テキストから馬名、騎手、斤量、U指数、体重などを抽出
+    netkeibaおよびウマニティの出馬表テキスト（複数行・コピペ形式）から
+    1頭ずつのデータを高精度で一括抽出・展開するパース関数
     """
     cleaned_horses = []
     lines = [line.strip() for line in raw_text.strip().split("\n") if line.strip()]
     
-    i = 0
-    gate_counter = 1
+    current_horse = None
     
-    while i < len(lines):
-        line = lines[i]
-        
-        # 1. 馬名 + 性齢 (例: "ゼンダンハヤブサ 牡4 栗..." や "サトノダイヤモンド 牡3")
-        horse_match = re.search(r'([ァ-ヴーa-zA-Z0-9]+)\s+([牡牝セ]\d+)', line)
-        if horse_match:
-            horse_name = horse_match.group(1)
-            sex_age = horse_match.group(2)
+    for i, line in enumerate(lines):
+        # --- ウマニティ標準パターン ---
+        umanity_match = re.search(r'^(\d{1,2})\s+(\d)\s+([ァ-ヴーa-zA-Z0-9]+)\s+([牡牝セ]\d+)\s*(\d{2}(?:\.\d+)?)\s*([\u4e00-\u9fa5ァ-ヴーa-zA-Z]+)', line)
+        if umanity_match:
+            if current_horse: cleaned_horses.append(current_horse)
+            gate_num = int(umanity_match.group(1))
+            horse_name = umanity_match.group(3)
+            sex_age = umanity_match.group(4)
+            jockey_weight = float(umanity_match.group(5))
+            jockey_name = umanity_match.group(6)
             
-            jockey_name = "その他（自由手入力）"
-            jockey_weight = 56.0
-            weight = 480
-            u_idx = 85.0
-            pop = 10
+            # 体重取得の試み
+            w_match = re.search(r'(\d{3})\s*\(\s*([+-]?\d+)\s*\)', line)
+            w_val = int(w_match.group(1)) if w_match else 480
+            chg_val = int(w_match.group(2)) if w_match else 0
             
-            # 次の数行をスキャンして騎手・斤量・U指数・馬体重を取得
-            j = i + 1
-            while j < min(i + 8, len(lines)):
-                sub_line = lines[j]
-                
-                # 騎手 + 斤量 (例: "酒井学 52.0 中4週", "ルメール 57.0")
-                jock_match = re.search(r'([\u4e00-\u9fa5ァ-ヴーa-zA-Z・]+)\s+(\d{2}(?:\.\d+)?)', sub_line)
-                if jock_match and not re.search(r'[牡牝セ]\d+', sub_line):
-                    # 馬名や性齢と誤判定しないためのガード
-                    if jock_match.group(1) not in ["芝", "ダート", "稍重", "重", "不良"]:
-                        jockey_name = jock_match.group(1)
-                        jockey_weight = float(jock_match.group(2))
-                
-                # U指数 (例: "90.4", "88.0" などの数値単体)
-                idx_match = re.match(r'^(\d{2,3}\.\d{1,2})$', sub_line)
-                if idx_match:
-                    u_idx = float(idx_match.group(1))
-                
-                # 人気 (例: 単独の数字 "1", "3")
-                pop_match = re.match(r'^(\d{1,2})$', sub_line)
-                if pop_match and not idx_match:
-                    possible_pop = int(pop_match.group(1))
-                    if 1 <= possible_pop <= 18:
-                        pop = possible_pop
+            # 人気取得の試み
+            pop_match = re.search(r'(\d{1,2})番人気', line)
+            pop_val = int(pop_match.group(1)) if pop_match else 10
 
-                # 馬体重 (例: "480(+2)", "502(-4)")
-                wgh_match = re.search(r'(\d{3})\s*\(\s*([+-]?\d+)\s*\)', sub_line)
-                if wgh_match:
-                    weight = int(wgh_match.group(1))
-
-                j += 1
-            
-            cleaned_horses.append({
-                "gate": gate_counter,
-                "frame": "内枠" if gate_counter <= 8 else "外枠",
+            current_horse = {
+                "gate": gate_num,
+                "frame": "内枠" if gate_num <= 8 else "外枠",
                 "name": horse_name,
                 "sex_age": sex_age,
-                "jockey": jockey_name,
                 "jockey_weight": jockey_weight,
-                "weight": weight,
-                "u_idx": u_idx,
-                "pop": pop
-            })
-            
-            gate_counter += 1
-            i = j - 1
-        i += 1
-        
-    return cleaned_horses
-def parse_netkeiba_multi_line(raw_text):
-    """
-    Netkeibaスマホ版の複数行にまたがる出馬表テキストを、
-    1頭ずつのブロックとして完璧に回収する高精度パース関数
-    """
-    cleaned_horses = []
-    current_horse = None
-    lines = raw_text.strip().split("\n")
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
+                "jockey": jockey_name,
+                "weight": w_val,
+                "change": chg_val,
+                "pop": pop_val
+            }
+            cleaned_horses.append(current_horse)
+            current_horse = None
             continue
-            
+
+        # --- netkeiba標準・複数行パターン ---
         base_match = re.search(r'([ァ-ヴーa-zA-Z0-9]+)\s+([牡牝セ]\d+).*?([\u4e00-\u9fa5ァ-ヴーa-zA-Z]+)\s+(\d{2}(?:\.\d+)?)', line)
-        
         if base_match:
             if current_horse:
                 cleaned_horses.append(current_horse)
@@ -865,11 +816,18 @@ def parse_netkeiba_multi_line(raw_text):
                 "jockey_weight": jockey_weight,
                 "jockey": jockey_name,
                 "weight": 480,
-                "change": 0
+                "change": 0,
+                "pop": 10
             }
             continue
 
         if current_horse:
+            # 人気の判定（「11人気」「11番人気」等）
+            pop_match = re.search(r'(\d{1,2})(?:人気|番人気)', line)
+            if pop_match:
+                current_horse["pop"] = int(pop_match.group(1))
+
+            # 馬番の判定
             num_match = re.match(r'^(\d{1,2})$', line)
             if num_match:
                 gate_num = int(num_match.group(1))
@@ -879,6 +837,7 @@ def parse_netkeiba_multi_line(raw_text):
                 current_horse = None
                 continue
                 
+            # 体重・増減の判定
             weight_match = re.search(r'(\d{3})\s*\(\s*([+-]?\d+)\s*\)', line)
             if weight_match:
                 current_horse["weight"] = int(weight_match.group(1))
@@ -927,13 +886,13 @@ if sel_course != "(未選択)":
 st.divider()
 
 # ==========================================
-# 📋 Netkeiba一括自動入力エリア
+# 📋 netkeiba / ウマニティ 一括自動入力エリア
 # ==========================================
-st.subheader("📋 Netkeibaスマホ版 出馬表コピペエリア")
+st.subheader("📋 netkeiba / ウマニティ 出馬表コピペエリア")
 copied_text = st.text_area(
-    "Netkeibaの出馬表テキスト（馬名、オッズ、馬番などが複数行にまたがっていてもOK）を丸ごと貼り付けてください", 
+    "netkeiba または ウマニティ の出馬表テキストを丸ごと貼り付けてください", 
     height=150,
-    placeholder="ランフォーヴァウ 牝4 名 石川 54.0\n20.3 11人気\n1"
+    placeholder="【netkeiba例】\nランフォーヴァウ 牝4 石川 54.0\n20.3 11人気\n1\n\n【ウマニティ例】\n1 1 ランフォーヴァウ 牝4 54.0 石川裕紀人 480(+2) 20.3 11番人気"
 )
 
 if st.button("🚀 データを解析して一括展開", use_container_width=True):
@@ -952,7 +911,7 @@ if st.button("🚀 データを解析して一括展開", use_container_width=Tr
                     "wgh": int(horse["weight"]),
                     "jock": horse["jockey"] if horse["jockey"] in JOCKEY_MASTER else "その他（自由手入力）",
                     "sel_frame": horse["frame"],
-                    "pop": 10,
+                    "pop": horse.get("pop", 10),
                     "idx": 0.0,
                     "l3f": 35.0,
                     "sire": "",
@@ -1327,7 +1286,7 @@ with st.expander("📝 当日レースの結果入力を記録する"):
     with log_cols[1]:
         res_jiku = st.text_input("軸馬名:", value=st.session_state.get("last_predict_horse", ""))
     with log_cols[2]:
-        is_hit = st.selectbox("軸馬の着順結果:", ["3着以内（的中）", "4着以下（不不不的中）"])
+        is_hit = st.selectbox("軸馬の着順結果:", ["3着以内（的中）", "4着以下（不的中）"])
     with log_cols[3]:
         return_amt = st.number_input("実際の総払戻金 (円):", min_value=0, value=0, step=100)
         
