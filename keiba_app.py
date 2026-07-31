@@ -1,4 +1,3 @@
-import streamlit as st
 import pandas as pd
 import json
 import urllib.parse
@@ -1254,66 +1253,20 @@ if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primar
                     
                 sanren_combos = [
                     f"{h_maru} - {h_fuku} - {h_ana}",
-                    f"{h_maru} - {h_fuku} - {h_sa[0]}",
-                    f"{h_maru} - {h_fuku} - {h_sa[1]}",
-                    f"{h_maru} - {h_ana} - {h_sa[0]}",
-                    f"{h_maru} - {h_ana} - {h_sa[1]}",
+                    f"{h_maru} - {h_fuku} - {h_sa[0] if len(h_sa) > 0 else ''}",
+                    f"{h_maru} - {h_fuku} - {h_sa[1] if len(h_sa) > 1 else ''}",
+                    f"{h_maru} - {h_ana} - {h_sa[0] if len(h_sa) > 0 else ''}",
+                    f"{h_maru} - {h_ana} - {h_sa[1] if len(h_sa) > 1 else ''}",
                 ]
                 each_sanren = max(100, int((pool_sanrenpuku / len(sanren_combos)) // 100) * 100)
                 for combo in sanren_combos:
                     tickets.append({"券種": "3連複", "買い目": combo, "推奨投資額": f"{each_sanren}円", "狙い": "高回収リターン"})
                     
-                tickets.append({"券種": "3連単", "買い目": f"{h_maru} ➔ {h_fuku} ➔ {h_ana}", "推奨投資額": f"{int((pool_sanrentan * 0.6) // 100) * 100}円", "狙い": "一撃必殺・本線"})
-                tickets.append({"券種": "3連単", "買い目": f"{h_maru} ➔ {h_fuku} ➔ {h_sa[0]}", "推奨投資額": f"{int((pool_sanrentan * 0.4) // 100) * 100}円", "狙い": "一撃必殺・押さえ"})
+                if len(h_sa) > 0:
+                    tickets.append({"券種": "3連単", "買い目": f"{h_maru} ➔ {h_fuku} ➔ {h_ana}", "推奨投資額": f"{int((pool_sanrentan * 0.6) // 100) * 100}円", "狙い": "一撃必殺・本線"})
+                    tickets.append({"券種": "3連単", "買い目": f"{h_maru} ➔ {h_fuku} ➔ {h_sa[0]}", "推奨投資額": f"{int((pool_sanrentan * 0.4) // 100) * 100}円", "狙い": "一撃必殺・押さえ"})
                 
                 st.dataframe(pd.DataFrame(tickets), use_container_width=True, hide_index=True)
                 
-                st.session_state["last_predict_horse"] = top_horses[0]["馬名"]
-                st.session_state["last_predict_course"] = sel_course
-    else:
-        st.error("出馬表データが入力されていません。")
-
-# ==========================================
-# 📊 5. 的中率・回収率データログシミュレーター
-# ==========================================
-st.divider()
-st.header("📊 的中率・回収率データログシミュレーター")
-
-with st.expander("📝 当日レースの結果入力を記録する"):
-    log_cols = st.columns(4)
-    with log_cols[0]:
-        res_course = st.text_input("レース名/コース:", value=st.session_state.get("last_predict_course", ""))
-    with log_cols[1]:
-        res_jiku = st.text_input("軸馬名:", value=st.session_state.get("last_predict_horse", ""))
-    with log_cols[2]:
-        is_hit = st.selectbox("軸馬の着順結果:", ["3着以内（的中）", "4着以下（不的中）"])
-    with log_cols[3]:
-        return_amt = st.number_input("実際の総払戻金 (円):", min_value=0, value=0, step=100)
-        
-    invest_amt = st.number_input("実際の総投資額 (円):", min_value=100, value=int(total_budget), step=100)
-
-    if st.button("💾 この結果をシミュレーションログに公式記録する"):
-        hit_flag = 1 if "3着以内" in is_hit else 0
-        st.session_state["history_log"].append({
-            "コース": res_course, "軸馬": res_jiku, "的中": hit_flag, "投資": invest_amt, "払戻": return_amt
-        })
-        st.toast("実績データを蓄積しました！")
-
-if st.session_state["history_log"]:
-    log_df = pd.DataFrame(st.session_state["history_log"])
-    total_races = len(log_df)
-    hits = log_df["的中"].sum()
-    hit_rate = (hits / total_races) * 100 if total_races > 0 else 0
-    total_invest = log_df["投資"].sum()
-    total_return = log_df["払戻"].sum()
-    recovery_rate = (total_return / total_invest) * 100 if total_invest > 0 else 0
-    
-    st.write("### 📉 現在の回収率・的中率スタッツ")
-    stat_cols = st.columns(4)
-    stat_cols[0].metric("総シミュレーションレース数", f"{total_races} 戦")
-    stat_cols[1].metric("軸馬複勝的中率", f"{hit_rate:.1f} %")
-    stat_cols[2].metric("累計投資総額", f"{total_invest:,} 円")
-    stat_cols[3].metric("📊 総合回収率 (回収バロメータ)", f"{recovery_rate:.1f} %")
-    
-    st.write("▼ 直近の記録ログデータ一覧")
-    st.dataframe(log_df, use_container_width=True)
+                # 履歴保存・結果ログ用のデータ保持
+                st.session_state["last_predict_horse"] = top_horses
