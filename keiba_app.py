@@ -755,8 +755,7 @@ def determine_final_aptitude(sire_name, has_past_record):
 def parse_netkeiba_multi_line(raw_text):
     """
     netkeibaおよびウマニティの出馬表テキスト（複数行・コピペ形式）から
-    1頭ずつのデータを高精度で一括抽出・展開するパース関数
-    ※ウマニティのU指数にも対応
+    1頭ずつのデータを高精度で一括抽出・展開するパース関数（U指数完全対応版）
     """
     cleaned_horses = []
     lines = [line.strip() for line in raw_text.strip().split("\n") if line.strip()]
@@ -764,26 +763,22 @@ def parse_netkeiba_multi_line(raw_text):
     current_horse = None
     
     for i, line in enumerate(lines):
-        # 1. ウマニティの「U指数: 95.2」「U指数 95.2」「指数: 95.2」行の判定
-        u_match = re.search(r'(?:U指数|指数)[\s:]*(\d{2,3}(?:\.\d+)?)', line, re.IGNORECASE)
-        if u_match and current_horse:
-            current_horse["u_idx"] = float(u_match.group(1))
-            continue
-
-        # 2. ウマニティ標準パターン（行内に馬番・馬名・性齢・斤量・騎手・体重・人気などがまとめられている形式）
+        # --- ウマニティ標準パターン (U指数対応版) ---
+        # 例: 1 1 ランフォーヴァウ 牝4 54.0 石川裕紀人 95.2 480(+2) 20.3 11番人気
         umanity_match = re.search(
-            r'^(?:(?:\d{1,2})\s+)?(\d{1,2})\s+([ァ-ヴーa-zA-Z0-9]+)\s+([牡牝セ]\d+)\s*(\d{2}(?:\.\d+)?)\s*([\u4e00-\u9fa5ァ-ヴーa-zA-Z]+)', 
+            r'^(\d{1,2})\s+(\d{1,2})\s+([ァ-ヴーa-zA-Z0-9α-ωＡ-Ｚ０-９]+)\s+([牡牝セ]\d+)\s+(\d{2}(?:\.\d+)?)\s+([\u4e00-\u9fa5ァ-ヴーa-zA-Z]+)(?:\s+(\d{2,3}(?:\.\d+)?))?', 
             line
         )
         if umanity_match:
-            if current_horse: 
-                cleaned_horses.append(current_horse)
+            if current_horse: cleaned_horses.append(current_horse)
+            gate_num = int(umanity_match.group(2)) # 馬番
+            horse_name = umanity_match.group(3)
+            sex_age = umanity_match.group(4)
+            jockey_weight = float(umanity_match.group(5))
+            jockey_name = umanity_match.group(6)
             
-            gate_num = int(umanity_match.group(1))
-            horse_name = umanity_match.group(2)
-            sex_age = umanity_match.group(3)
-            jockey_weight = float(umanity_match.group(4))
-            jockey_name = umanity_match.group(5)
+            # U指数（グループ7で取得できた場合）
+            u_index = float(umanity_match.group(7)) if umanity_match.group(7) else 0.0
             
             # 体重取得の試み
             w_match = re.search(r'(\d{3})\s*\(\s*([+-]?\d+)\s*\)', line)
@@ -793,10 +788,6 @@ def parse_netkeiba_multi_line(raw_text):
             # 人気取得の試み
             pop_match = re.search(r'(\d{1,2})番人気', line)
             pop_val = int(pop_match.group(1)) if pop_match else 10
-
-            # 行内に直接U指数が含まれている場合の取得
-            u_inline = re.search(r'(?:U指数|指数)[\s:]*(\d{2,3}(?:\.\d+)?)', line, re.IGNORECASE)
-            u_val = float(u_inline.group(1)) if u_inline else 0.0
 
             current_horse = {
                 "gate": gate_num,
@@ -808,12 +799,14 @@ def parse_netkeiba_multi_line(raw_text):
                 "weight": w_val,
                 "change": chg_val,
                 "pop": pop_val,
-                "u_idx": u_val
+                "idx": u_index
             }
+            cleaned_horses.append(current_horse)
+            current_horse = None
             continue
 
-        # 3. netkeiba標準・複数行パターン
-        base_match = re.search(r'([ァ-ヴーa-zA-Z0-9]+)\s+([牡牝セ]\d+).*?([\u4e00-\u9fa5ァ-ヴーa-zA-Z]+)\s+(\d{2}(?:\.\d+)?)', line)
+        # --- netkeiba標準・複数行パターン ---
+        base_match = re.search(r'([ァ-ヴーa-zA-Z0-9α-ωＡ-Ｚ０-９]+)\s+([牡牝セ]\d+).*?([\u4e00-\u9fa5ァ-ヴーa-zA-Z]+)\s+(\d{2}(?:\.\d+)?)', line)
         if base_match:
             if current_horse:
                 cleaned_horses.append(current_horse)
@@ -833,22 +826,15 @@ def parse_netkeiba_multi_line(raw_text):
                 "weight": 480,
                 "change": 0,
                 "pop": 10,
-                "u_idx": 0.0
+                "idx": 0.0
             }
             continue
 
         if current_horse:
-            # U指数の単独・末尾検出
-            u_solo = re.search(r'^\d{2,3}\.\d$', line)
-            if u_solo and current_horse["u_idx"] == 0.0:
-                current_horse["u_idx"] = float(u_solo.group(0))
-                continue
-
             # 人気の判定（「11人気」「11番人気」等）
             pop_match = re.search(r'(\d{1,2})(?:人気|番人気)', line)
             if pop_match:
                 current_horse["pop"] = int(pop_match.group(1))
-                continue
 
             # 馬番の判定
             num_match = re.match(r'^(\d{1,2})$', line)
@@ -915,7 +901,7 @@ st.subheader("📋 netkeiba / ウマニティ 出馬表コピペエリア")
 copied_text = st.text_area(
     "netkeiba または ウマニティ の出馬表テキストを丸ごと貼り付けてください", 
     height=150,
-    placeholder="【netkeiba例】\nランフォーヴァウ 牝4 石川 54.0\n20.3 11人気\n1\n\n【ウマニティ例】\n1 1 ランフォーヴァウ 牝4 54.0 石川裕紀人 480(+2) 20.3 11番人気 U指数 95.2"
+    placeholder="【netkeiba例】\nランフォーヴァウ 牝4 石川 54.0\n20.3 11人気\n1\n\n【ウマニティ例】\n1 1 ランフォーヴァウ 牝4 54.0 石川裕紀人 95.2 480(+2) 20.3 11番人気"
 )
 
 if st.button("🚀 データを解析して一括展開", use_container_width=True):
@@ -935,7 +921,7 @@ if st.button("🚀 データを解析して一括展開", use_container_width=Tr
                     "jock": horse["jockey"] if horse["jockey"] in JOCKEY_MASTER else "その他（自由手入力）",
                     "sel_frame": horse["frame"],
                     "pop": horse.get("pop", 10),
-                    "idx": horse.get("u_idx", 0.0),
+                    "idx": float(horse.get("idx", 0.0)),
                     "l3f": 35.0,
                     "sire": "",
                     "heavy_record": False,
@@ -946,7 +932,7 @@ if st.button("🚀 データを解析して一括展開", use_container_width=Tr
                     "sel_plus1": "選択なし",
                     "sel_plus2": "選択なし"
                 }
-            st.success(f"🎯 解析成功！ 全 {len(parsed_result)} 頭のデータを抽出して出馬表に展開しました。ページを再構成します。")
+            st.success(f"🎯 解析成功！ 全 {len(parsed_result)} 頭のデータを抽出（U指数も自動反映）して出馬表に展開しました。")
             st.rerun()
         else:
             st.error("馬データが見つかりませんでした。コピペした文章を確認してください。")
@@ -1048,7 +1034,6 @@ for item in row_tmp_data:
     score = 0.0
     final_apt = "C"
     
-    # ⚠️ 馬名が入力されている場合のみスコア算出を行う（バグ・空行混入防止）
     if name.strip() != "" and jock != "(未選択)":
         j_data = JOCKEY_MASTER.get(jock, JOCKEY_MASTER["その他（自由手入力）"])
         jockey_modifier = 0.0
@@ -1236,3 +1221,111 @@ with save_cols[1]:
                 alert('お使いのブラウザは自動コピーに対応していません。');
             }}
             </script>""", height=0)
+    st.caption("※アプリをWebに公開した後は、その公開サイトのURLの直後に `?data=...` を付与することでお気に入りから直接復元できます。")
+
+# ==========================================
+# 🏆 ランキング生成 & 買い目自動生成
+# ==========================================
+if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primary", use_container_width=True):
+    if calculated_results:
+        res_df = pd.DataFrame(calculated_results)
+        res_df = res_df[res_df["馬名"] != ""].sort_values(by="最終スコア", ascending=False)
+        
+        if not res_df.empty:
+            st.balloons()
+            
+            symbols = ["◎", "○", "▲", "△", "⭐︎"]
+            res_df["印"] = [symbols[idx] if idx < len(symbols) else " " for idx in range(len(res_df))]
+            
+            st.header(f"🎯 本命馬: {res_df.iloc[0]['印']} {res_df.iloc[0]['馬名']} ({res_df.iloc[0]['騎手']})")
+            st.dataframe(res_df[["印", "馬番", "馬名", "人気", "斤量", "馬体重", "父馬", "最終スコア", "騎手", "重道悪適性"]], use_container_width=True, hide_index=True)
+            
+            st.subheader("💰 AI最適化推奨買い目 ＆ 資金配分シミュレーター")
+            top_horses = res_df.head(5).to_dict(orient="records")
+            
+            if len(top_horses) >= 3:
+                h_maru = top_horses[0]["馬番"]
+                h_fuku = top_horses[1]["馬番"]
+                h_ana = top_horses[2]["馬番"]
+                h_sa = [h["馬番"] for h in top_horses[3:5]]
+                
+                pool_maruren = total_budget * 0.40
+                pool_sanrenpuku = total_budget * 0.40
+                pool_sanrentan = total_budget * 0.20
+                
+                tickets = []
+                maruren_targets = [h_fuku, h_ana] + h_sa
+                weights = [0.4, 0.3, 0.15, 0.15]
+                for target, w in zip(maruren_targets, weights):
+                    amt = max(100, int((pool_maruren * w) // 100) * 100)
+                    tickets.append({"券種": "馬連", "買い目": f"{h_maru} ➔ {target}", "推奨投資額": f"{amt}円", "狙い": "軸堅実プラン"})
+                    
+                sanren_combos = [
+                    f"{h_maru} - {h_fuku} - {h_ana}",
+                    f"{h_maru} - {h_fuku} - {h_sa[0]}",
+                    f"{h_maru} - {h_fuku} - {h_sa[1]}",
+                    f"{h_maru} - {h_ana} - {h_sa[0]}",
+                    f"{h_maru} - {h_ana} - {h_sa[1]}",
+                ]
+                each_sanren = max(100, int((pool_sanrenpuku / len(sanren_combos)) // 100) * 100)
+                for combo in sanren_combos:
+                    tickets.append({"券種": "3連複", "買い目": combo, "推奨投資額": f"{each_sanren}円", "狙い": "高回収リターン"})
+                    
+                tickets.append({"券種": "3連単", "買い目": f"{h_maru} ➔ {h_fuku} ➔ {h_ana}", "推奨投資額": f"{int((pool_sanrentan * 0.6) // 100) * 100}円", "狙い": "一撃必殺・本線"})
+                tickets.append({"券種": "3連単", "買い目": f"{h_maru} ➔ {h_fuku} ➔ {h_sa[0]}", "推奨投資額": f"{int((pool_sanrentan * 0.4) // 100) * 100}円", "狙い": "一撃必殺・押さえ"})
+                
+                st.dataframe(pd.DataFrame(tickets), use_container_width=True, hide_index=True)
+                
+                st.session_state["last_predict_horse"] = top_horses[0]["馬名"]
+                st.session_state["last_predict_course"] = sel_course
+    else:
+        st.error("出馬表データが入力されていません。")
+
+# ==========================================
+# 📊 5. 的中率・回収率データログシミュレーター
+# ==========================================
+st.divider()
+st.header("📊 的中率・回収率データログシミュレーター")
+
+with st.expander("📝 当日レースの結果入力を記録する"):
+    log_cols = st.columns(4)
+    with log_cols[0]:
+        res_course = st.text_input("レース名/コース:", value=st.session_state.get("last_predict_course", ""))
+    with log_cols[1]:
+        res_jiku = st.text_input("軸馬名:", value=st.session_state.get("last_predict_horse", ""))
+    with log_cols[2]:
+        is_hit = st.selectbox("軸馬の着順結果:", ["3着以内（的中）", "4着以下（不不的中）"])
+    with log_cols[3]:
+        return_amt = st.number_input("実際の総払戻金 (円):", min_value=0, value=0, step=100)
+        
+    invest_amt = st.number_input("実際の総投資額 (円):", min_value=100, value=int(total_budget), step=100)
+
+    if st.button("💾 この結果をシミュレーションログに公式記録する"):
+        hit_flag = 1 if "3着以内" in is_hit else 0
+        st.session_state["history_log"].append({
+            "コース": res_course, 
+            "軸馬": res_jiku, 
+            "的中": hit_flag, 
+            "投資": invest_amt,
+            "回収": return_amt
+        })
+        st.success("✅ レース結果をログに記録しました！")
+        st.rerun()
+
+if st.session_state["history_log"]:
+    log_df = pd.DataFrame(st.session_state["history_log"])
+    total_races = len(log_df)
+    total_hits = log_df["的中"].sum()
+    total_invest = log_df["投資"].sum()
+    total_return = log_df["回収"].sum()
+    
+    hit_rate = (total_hits / total_races) * 100 if total_races > 0 else 0.0
+    recovery_rate = (total_return / total_invest) * 100 if total_invest > 0 else 0.0
+    
+    m_cols = st.columns(4)
+    m_cols[0].metric("通算レース数", f"{total_races} 戦")
+    m_cols[1].metric("軸馬3着内率 (的中率)", f"{hit_rate:.1f} %")
+    m_cols[2].metric("通算投資額", f"{total_invest:,} 円")
+    m_cols[3].metric("通算回収率", f"{recovery_rate:.1f} %", delta=f"{total_return - total_invest:,} 円")
+    
+    st.dataframe(log_df, use_container_width=True)
