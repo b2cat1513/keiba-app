@@ -1023,33 +1023,32 @@ for item in row_tmp_data:
     
     score = 0.0
     final_apt = "C"
-    
-    # ⚠️ 馬名が入力されている場合のみスコア算出を行う（バグ・空行混入防止）
-    if name.strip() != "" and jock != "(未選択)":
-        j_data = JOCKEY_MASTER.get(jock, JOCKEY_MASTER["その他（自由手入力）"])
-        jockey_modifier = 0.0
+# ⚠️ 馬名が入力されている場合のみスコア算出を行う（バグ・空行混入防止）
+    if name.strip() != "":
+        # 事前に j_data を安全に取得（未選択の場合も考慮）
+        j_data = JOCKEY_MASTER.get(jock, {}) if jock != "(未選択)" else {}
         
-        chosen_conditions = [sel_track, sel_style, sel_frame, sel_dist_change, sel_course]
-        for cond in chosen_conditions:
-            if cond in j_data.get("factors", {}):
-                jockey_modifier += j_data["factors"][cond]
-            elif cond and cond.endswith("m") and cond[:-1] in j_data.get("factors", {}):
-                jockey_modifier += j_data["factors"][cond[:-1]]
-                
-        if "special_factors" in j_data:
-            if sel_plus1 in j_data["special_factors"]:
-                jockey_modifier += j_data["special_factors"][sel_plus1]
-            if sel_plus2 in j_data["special_factors"]:
-                jockey_modifier += j_data["special_factors"][sel_plus2]
-                
-        if jockey_modifier < 0 and l3f <= 33.9: jockey_modifier = 0.0  
-        final_jockey_rate = j_data["base"] + max(min(jockey_modifier, 0.20), -0.20)
-        
-        if idx < 45.0:
-            mitigated_jockey_rate = 1.0 + (final_jockey_rate - 1.0) * 0.40
+        if jock != "(未選択)":
+            jockey_modifier = 0.0
+            
+            chosen_conditions = [sel_track, sel_style, sel_frame, sel_dist_change, sel_course]
+            for cond in chosen_conditions:
+                if cond in j_data.get("factors", {}):
+                    jockey_modifier += j_data["factors"][cond]
+                elif cond and cond.endswith("m") and cond[:-1] in j_data.get("factors", {}):
+                    jockey_modifier += j_data["factors"][cond[:-1]]
+                    
+            if "special_factors" in j_data:
+                if sel_plus1 in j_data["special_factors"]:
+                    jockey_modifier += j_data["special_factors"][sel_plus1]
+                if sel_plus2 in j_data["special_factors"]:
+                    jockey_modifier += j_data["special_factors"][sel_plus2]
+                    
+            if jockey_modifier < 0 and l3f <= 33.9: jockey_modifier = 0.0  
+            final_jockey_rate = j_data.get("base", 1.0) + max(min(jockey_modifier, 0.20), -0.20)
         else:
-            mitigated_jockey_rate = 1.0 + (final_jockey_rate - 1.0) * 0.70
-        
+            final_jockey_rate = 1.0
+
         horse_base_score = idx
         
         # 斤量補正
@@ -1149,6 +1148,7 @@ for item in row_tmp_data:
         if pop >= 10:
             pop_penalty_factor = 0.95
             
+        mitigated_jockey_rate = 1.0 + (final_jockey_rate - 1.0) * (0.40 if idx < 45.0 else 0.70)
         score = (horse_base_score * mitigated_jockey_rate) - (pop * pop_penalty_factor)
         
         if sel_style in pace_bonus:
@@ -1163,14 +1163,24 @@ for item in row_tmp_data:
             elif final_apt == "B": score += 2.0
             elif final_apt == "C": score -= 4.0
             elif final_apt == "D": score -= 10.0
-            
-    if name.strip() != "":
+
+        # スコア表示 & 結果への追加
         score_cell.write(f"**{score:.2f}**")
         calculated_results.append({
-            "馬番": num, "馬名": name, "最終スコア": score, "人気": pop, "斤量": wgt, "馬体重": wgh, "父馬": sire, "重道悪適性": final_apt, "騎手": jock, "戦略メモ": j_data.get("note", "") if jock != "(未選択)" else ""
+            "馬番": num, 
+            "馬名": name, 
+            "最終スコア": score, 
+            "人気": pop, 
+            "斤量": wgt, 
+            "馬体重": wgh, 
+            "父馬": sire, 
+            "重道悪適性": final_apt, 
+            "騎手": jock, 
+            "戦略メモ": j_data.get("note", "")
         })
     else:
-        score_cell.write("")
+        score_cell.write("")    
+   
 
 # ==========================================
 # 💾 スマホ専用セーブデータ生成エリア
