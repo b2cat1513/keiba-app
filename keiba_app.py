@@ -13,8 +13,8 @@ from streamlit.components.v1 import html
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.11", layout="wide")
-st.title("🏆 ジェニーAI予想ver1.11 (父馬系統自動判定・コース事典2統合版)")
+st.set_page_config(page_title="ジェニーAI予想ver1.12", layout="wide")
+st.title("🏆 ジェニーAI予想ver1.12 (ジョッキー条件自動判定・特記事項入力廃止版)")
 
 # 🛠️ スマホ向け：データを極限まで縮小・Base64圧縮する関数
 def encode_for_mobile(data_dict):
@@ -367,6 +367,144 @@ JOCKEY_MASTER = {
     "地方所属騎手": {"base": 1.05, "factors": {"ダート": 0.15, "東京ダ1600": 0.10}, "note": "地方リーディング級"},
     "その他（自由手入力）": {"base": 1.00, "factors": {}, "note": "リスト外の騎手。"}
 }
+
+# ==========================================
+# 🧑‍🏫 Ver1.12 ジョッキー条件自動判定マスター
+# ==========================================
+TRAINER_OPTIONS = [
+    "(未選択)", "堀宣行", "斉藤崇史", "鹿戸雄一", "石坂公一",
+    "藤原英昭", "武藤善則", "竹内正洋", "牧浦充徳", "武英智",
+    "杉山晴紀", "その他"
+]
+
+OWNER_OPTIONS = [
+    "(未選択)", "サンデーレーシング", "キャロットファーム",
+    "シルクレーシング", "社台レースホース", "ノースヒルズ",
+    "ビッグレッドファーム", "ウイン", "マイネル", "その他"
+]
+
+JOCKEY_NAME_ALIASES = {
+    "斉藤新": "斎藤新",
+    "藤岡祐介": "藤岡佑介",
+    "大野拓哉": "大野拓弥",
+}
+
+def normalize_jockey_name(name):
+    normalized = str(name or "").strip().replace("　", " ")
+    normalized = re.sub(r"[（(].*?[）)]", "", normalized).strip()
+    return JOCKEY_NAME_ALIASES.get(normalized, normalized)
+
+def get_ride_change_status(current_jockey, previous_jockey):
+    current = normalize_jockey_name(current_jockey)
+    previous = normalize_jockey_name(previous_jockey)
+    if not current or current == "(未選択)" or not previous or previous == "(未選択)":
+        return "不明"
+    return "継続騎乗" if current == previous else "乗り替わり"
+
+def _contains_any(text, keywords):
+    source = str(text or "")
+    return any(keyword in source for keyword in keywords)
+
+def calculate_jockey_auto_conditions(
+    jockey, previous_jockey, trainer, owner, popularity,
+    race_class, course, track, style, frame, distance_change,
+    sex, body_weight
+):
+    """入力情報とジョッキー事典の特記事項を照合し、自動補正を返す。
+
+    人気薄補正は能力値に混ぜず、妙味スコアだけへ反映する。
+    """
+    j_data = JOCKEY_MASTER.get(jockey, JOCKEY_MASTER["その他（自由手入力）"])
+    tags = j_data.get("special_factors", {})
+    note = j_data.get("note", "")
+    source = " / ".join(list(tags.keys()) + [note])
+    ride_status = get_ride_change_status(jockey, previous_jockey)
+    ability = 0.0
+    value = 0.0
+    reasons = []
+
+    def add_ability(points, reason):
+        nonlocal ability
+        ability += points
+        reasons.append(f"{reason} {points:+.1f}")
+
+    def add_value(points, reason):
+        nonlocal value
+        value += points
+        reasons.append(f"{reason}（妙味） {points:+.1f}")
+
+    # 継続騎乗・乗り替わり・前走騎手
+    if ride_status == "継続騎乗" and _contains_any(source, ["継続騎乗", "継騎"]):
+        add_ability(2.5, "継続騎乗の好条件")
+    if ride_status == "乗り替わり" and "乗り替わり" in source and "乗り替わり✕" not in source:
+        add_ability(2.0, "乗り替わりの好条件")
+    if ride_status == "乗り替わり" and "乗り替わり✕" in source:
+        add_ability(-2.0, "乗り替わりの不利条件")
+    if normalize_jockey_name(previous_jockey) == "C.ルメール" and "前走ルメール" in source:
+        add_ability(3.0, "前走ルメールからの乗り替わり")
+
+    # 厩舎相性
+    trainer_rules = {
+        "堀": "堀厩舎", "斉藤崇": "斉藤崇厩舎", "鹿戸": "鹿戸厩舎",
+        "石坂": "石坂厩舎", "藤原英": "藤原英厩舎", "武藤": "武藤厩舎",
+        "竹内": "竹内厩舎", "牧浦": "牧浦厩舎", "武英": "武英厩舎",
+        "杉山晴": "杉山晴厩舎",
+    }
+    for key, label in trainer_rules.items():
+        if key in str(trainer) and label in source:
+            points = 3.0 if "◎" in source[source.find(label):source.find(label)+12] else 2.0
+            add_ability(points, f"{trainer}との好相性")
+            break
+
+    # 馬主・クラブ相性
+    owner_rules = {
+        "ノースヒルズ": ["ノースヒルズ"],
+        "ウイン": ["ウイン"],
+        "マイネル": ["マイネル"],
+        "ビッグレッド": ["ビッグレッド"],
+        "キャロット": ["キャロット"],
+        "シルク": ["シルク"],
+        "サンデー": ["サンデー"],
+    }
+    for owner_key, labels in owner_rules.items():
+        if owner_key in str(owner) and _contains_any(source, labels):
+            add_ability(2.0, f"{owner}との好相性")
+            break
+
+    # レース条件・脚質・枠・馬体など、入力から判定可能な特記事項
+    if popularity >= 8 and _contains_any(source, ["人気薄", "人薄", "妙味"]):
+        add_value(3.0, "人気薄で力を出す騎手")
+    if popularity == 1 and "1番人気" in source:
+        add_ability(2.0, "1番人気での信頼度")
+    if race_class in ["G1", "G2/G3"] and _contains_any(source, ["重賞◎", "大舞台＆重賞", "重賞◯"]):
+        add_ability(2.5, "重賞での騎手適性")
+    if frame == "内枠" and _contains_any(source, ["内枠◎", "芝内枠", "イン突き"]):
+        add_ability(2.0, "内枠・イン立ち回り適性")
+    if frame == "外枠" and _contains_any(source, ["外枠◎", "ダート外枠"]):
+        add_ability(2.0, "外枠適性")
+    if style in ["逃げ", "先行"] and _contains_any(source, ["逃げ◎", "逃げ先行", "積極策"]):
+        add_ability(2.0, "逃げ・先行適性")
+    if style in ["差し", "追い込み"] and _contains_any(source, ["差し◎", "差し馬", "追い込み", "差し追込"]):
+        add_ability(2.0, "差し・追い込み適性")
+    if distance_change == "距離延長" and "距離延長" in source:
+        add_ability(2.0, "距離延長適性")
+    if body_weight >= 480 and "大型馬" in source:
+        add_ability(1.5, "大型馬との好相性")
+    if sex == "牝" and "牝馬" in source:
+        add_ability(1.5, "牝馬との好相性")
+    if track == "ダート" and "ダート◎" in source:
+        add_ability(2.0, "ダート適性")
+    if course and course != "(未選択)":
+        compact_course = course.replace("ート", "").replace("m", "")
+        if course in source or compact_course in source:
+            add_ability(2.5, f"{course}の騎手適性")
+
+    return {
+        "ability": round(ability, 2),
+        "value": round(value, 2),
+        "ride_status": ride_status,
+        "reasons": reasons,
+    }
 
 # ==========================================
 # ⚙️ 2. コース事典マスターデータ (統合・最適化版)
@@ -1616,8 +1754,9 @@ with tab_nk:
                         ),
                         "sel_style": prev_row.get("sel_style", "選択なし"),
                         "sel_dist_change": prev_row.get("sel_dist_change", "同距離"),
-                        "sel_plus1": prev_row.get("sel_plus1", "選択なし"),
-                        "sel_plus2": prev_row.get("sel_plus2", "選択なし"),
+                        "previous_jockey": prev_row.get("previous_jockey", "(未選択)"),
+                        "trainer": prev_row.get("trainer", "(未選択)"),
+                        "owner": prev_row.get("owner", "(未選択)"),
                     }
 
                 st.success(
@@ -1687,8 +1826,9 @@ with tab_um:
                             "sel_track": auto_track if auto_track in ["芝", "ダート"] else "選択なし",
                             "sel_style": "選択なし",
                             "sel_dist_change": "同距離",
-                            "sel_plus1": "選択なし",
-                            "sel_plus2": "選択なし",
+                            "previous_jockey": "(未選択)",
+                            "trainer": "(未選択)",
+                            "owner": "(未選択)",
                         }
                         created_count += 1
 
@@ -1707,9 +1847,9 @@ st.divider()
 # ==========================================
 st.write("### 📝 出馬表データ入力")
 
-c_widths = [0.6, 1.4, 0.6, 0.6, 0.6, 0.7, 0.6, 1.3, 0.6, 1.3, 1.0, 0.8, 0.8, 0.8, 0.8, 1.2, 1.2, 0.8]
+c_widths = [0.55, 1.25, 0.55, 0.60, 0.60, 0.65, 0.60, 1.15, 0.55, 1.05, 1.05, 1.00, 1.00, 1.10, 0.70, 0.75, 0.75, 0.80, 0.75]
 cols = st.columns(c_widths)
-headers = ["馬番", "馬名", "人気", "指数", "斤量", "馬体重", "前3F", "父馬", "道悪", "騎手選択", "手入力メモ", "馬場", "脚質", "枠有利", "前走距離", "特記メモ補正①", "特記メモ補正②", "最終スコア"]
+headers = ["馬番", "馬名", "人気", "指数", "斤量", "馬体重", "前3F", "父馬", "道悪", "今回騎手", "前走騎手", "厩舎", "馬主", "手入力メモ", "馬場", "脚質", "枠有利", "前走距離", "最終スコア"]
 for col, h in zip(cols, headers):
     col.write(f"**{h}**")
 
@@ -1720,51 +1860,47 @@ row_tmp_data = []
 for i in range(1, 19):
     c = st.columns(c_widths)
     s_row = st.session_state["loaded_data"].get("rows", {}).get(str(i), {})
-    
+
     num = c[0].text_input(f"num_{i}", value=s_row.get("num", str(i)), label_visibility="collapsed")
     name = c[1].text_input(f"name_{i}", value=s_row.get("name", ""), label_visibility="collapsed")
     pop = c[2].number_input(f"pop_{i}", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), label_visibility="collapsed")
     idx = c[3].number_input(f"idx_{i}", value=float(s_row.get("idx", 0.0)), step=0.1, label_visibility="collapsed")
-    
     wgt = c[4].number_input(f"wgt_{i}", min_value=48.0, max_value=62.0, value=float(s_row.get("wgt", 56.0)), step=0.5, label_visibility="collapsed")
     wgh = c[5].number_input(f"wgh_{i}", min_value=350, max_value=600, value=int(s_row.get("wgh", 480)), step=2, label_visibility="collapsed")
-    
     l3f = c[6].number_input(f"l3f_{i}", value=float(s_row.get("l3f", 35.0)), step=0.1, label_visibility="collapsed")
     sire = c[7].text_input(f"sire_{i}", value=s_row.get("sire", ""), label_visibility="collapsed", placeholder="父馬")
     has_heavy_record = c[8].checkbox(f"rec_{i}", value=s_row.get("heavy_record", False), label_visibility="collapsed")
-    
+
     jock_list = sorted([k for k in JOCKEY_MASTER.keys() if k != "その他（自由手入力）"]) + ["その他（自由手入力）"]
-    jock = c[9].selectbox(f"jock_{i}", ["(未選択)"] + jock_list, index=(["(未選択)"] + jock_list).index(s_row.get("jock", "(未選択)")) if s_row.get("jock") in (["(未選択)"] + jock_list) else 0, label_visibility="collapsed")
-    
-    special_opts = ["選択なし"]
-    if jock in JOCKEY_MASTER and "special_factors" in JOCKEY_MASTER[jock]:
-        special_opts += list(JOCKEY_MASTER[jock]["special_factors"].keys())
-        
-    custom_note = c[10].text_input(f"custom_note_{i}", value=s_row.get("custom_note", ""), label_visibility="collapsed", placeholder="特徴・メモ")
-        
-    sel_track = c[11].selectbox(f"track_{i}", ["選択なし", "芝", "ダート"], index=["選択なし", "芝", "ダート"].index(s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")), label_visibility="collapsed")
-    sel_style = c[12].selectbox(f"style_{i}", ["選択なし", "逃げ", "先行", "差し", "追い込み"], index=["選択なし", "逃げ", "先行", "差し", "追い込み"].index(s_row.get("sel_style", "選択なし")), label_visibility="collapsed")
-    
+    jockey_options = ["(未選択)"] + jock_list
+    saved_jockey = normalize_jockey_name(s_row.get("jock", "(未選択)"))
+    jock = c[9].selectbox(f"jock_{i}", jockey_options, index=jockey_options.index(saved_jockey) if saved_jockey in jockey_options else 0, label_visibility="collapsed")
+
+    saved_previous = normalize_jockey_name(s_row.get("previous_jockey", "(未選択)"))
+    previous_jockey = c[10].selectbox(f"previous_jockey_{i}", jockey_options, index=jockey_options.index(saved_previous) if saved_previous in jockey_options else 0, label_visibility="collapsed")
+    trainer = c[11].selectbox(f"trainer_{i}", TRAINER_OPTIONS, index=TRAINER_OPTIONS.index(s_row.get("trainer")) if s_row.get("trainer") in TRAINER_OPTIONS else 0, label_visibility="collapsed")
+    owner = c[12].selectbox(f"owner_{i}", OWNER_OPTIONS, index=OWNER_OPTIONS.index(s_row.get("owner")) if s_row.get("owner") in OWNER_OPTIONS else 0, label_visibility="collapsed")
+    custom_note = c[13].text_input(f"custom_note_{i}", value=s_row.get("custom_note", ""), label_visibility="collapsed", placeholder="性齢・特徴メモ")
+    sel_track = c[14].selectbox(f"track_{i}", ["選択なし", "芝", "ダート"], index=["選択なし", "芝", "ダート"].index(s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")), label_visibility="collapsed")
+    sel_style = c[15].selectbox(f"style_{i}", ["選択なし", "逃げ", "先行", "差し", "追い込み"], index=["選択なし", "逃げ", "先行", "差し", "追い込み"].index(s_row.get("sel_style", "選択なし")), label_visibility="collapsed")
+
     if name and sel_style in style_counts:
         style_counts[sel_style] += 1
-        
+
     f_opts = ["選択なし", "内枠", "外枠"]
     num_int = safe_int_convert(num, i)
     f_def_idx = 1 if num_int <= 8 else (2 if num_int >= 13 else 0)
-    
-    sel_frame = c[13].selectbox(f"frame_{i}", f_opts, index=f_opts.index(s_row.get("sel_frame", f_opts[f_def_idx])), label_visibility="collapsed")
-    sel_dist_change = c[14].selectbox(f"dist_change_{i}", ["同距離", "距離短縮", "距離延長"], index=["同距離", "距離短縮", "距離延長"].index(s_row.get("sel_dist_change", "同距離")), label_visibility="collapsed")
-    
-    sel_plus1 = c[15].selectbox(f"p5_1_{i}", special_opts, index=special_opts.index(s_row.get("sel_plus1")) if s_row.get("sel_plus1") in special_opts else 0, label_visibility="collapsed")
-    sel_plus2 = c[16].selectbox(f"p5_2_{i}", special_opts, index=special_opts.index(s_row.get("sel_plus2")) if s_row.get("sel_plus2") in special_opts else 0, label_visibility="collapsed")
-    
+    sel_frame = c[16].selectbox(f"frame_{i}", f_opts, index=f_opts.index(s_row.get("sel_frame", f_opts[f_def_idx])), label_visibility="collapsed")
+    sel_dist_change = c[17].selectbox(f"dist_change_{i}", ["同距離", "距離短縮", "距離延長"], index=["同距離", "距離短縮", "距離延長"].index(s_row.get("sel_dist_change", "同距離")), label_visibility="collapsed")
+
     current_inputs["rows"][str(i)] = {
         "num": num, "name": name, "pop": pop, "idx": idx, "wgt": wgt, "wgh": wgh, "l3f": l3f, "sire": sire, "heavy_record": has_heavy_record,
-        "jock": jock, "custom_note": custom_note, "sel_track": sel_track, "sel_style": sel_style, 
-        "sel_frame": sel_frame, "sel_dist_change": sel_dist_change, "sel_plus1": sel_plus1, "sel_plus2": sel_plus2
+        "jock": jock, "previous_jockey": previous_jockey, "trainer": trainer, "owner": owner,
+        "custom_note": custom_note, "sel_track": sel_track, "sel_style": sel_style,
+        "sel_frame": sel_frame, "sel_dist_change": sel_dist_change
     }
-    
-    row_tmp_data.append((num, name, pop, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, custom_note, sel_track, sel_style, sel_frame, sel_dist_change, sel_plus1, sel_plus2, c[17]))
+
+    row_tmp_data.append((num, name, pop, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, previous_jockey, trainer, owner, custom_note, sel_track, sel_style, sel_frame, sel_dist_change, c[18]))
 
 # ==========================================
 # 🏁 4. 展開（ペース）AI自動予測
@@ -1791,7 +1927,7 @@ st.info(f"**現在の登録馬から算出された展開:** {pace_status} (逃�
 LEARNING_DB_PATH = Path(__file__).with_name("keiba_learning.db")
 LEARNING_FACTORS = [
     "指数", "斤量", "馬体重", "格・斤量価値", "馬番・枠",
-    "血統・コース", "脚質・距離", "騎手補正", "人気補正",
+    "血統・コース", "脚質・距離", "騎手補正", "騎手条件", "人気補正",
     "展開補正", "道悪補正"
 ]
 MIN_LEARNING_SAMPLES = 10
@@ -1985,7 +2121,7 @@ ACTIVE_LEARNING_WEIGHTS = load_learning_weights()
 # ==========================================
 calculated_results = []
 for item in row_tmp_data:
-    num, name, pop, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, custom_note, sel_track, sel_style, sel_frame, sel_dist_change, sel_plus1, sel_plus2, score_cell = item
+    num, name, pop, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, previous_jockey, trainer, owner, custom_note, sel_track, sel_style, sel_frame, sel_dist_change, score_cell = item
     sex_age, sex, age, body_change = extract_sex_age_and_change(custom_note)
     
     score = 0.0
@@ -1993,11 +2129,13 @@ for item in row_tmp_data:
     score_breakdown = {
         "指数": 0.0, "斤量": 0.0, "馬体重": 0.0, "格・斤量価値": 0.0,
         "馬番・枠": 0.0, "血統・コース": 0.0, "脚質・距離": 0.0,
-        "騎手補正": 0.0, "人気補正": 0.0, "展開補正": 0.0, "道悪補正": 0.0, "馬場バイアス": 0.0, "性齢・馬体増減": 0.0
+        "騎手補正": 0.0, "騎手条件": 0.0, "人気補正": 0.0, "展開補正": 0.0, "道悪補正": 0.0, "馬場バイアス": 0.0, "性齢・馬体増減": 0.0
     }
     evaluation_reasons = []
     learning_adjustment = 0.0
     applied_weights = {}
+    j_data = JOCKEY_MASTER.get(jock, JOCKEY_MASTER["その他（自由手入力）"])
+    jockey_auto = {"ability": 0.0, "value": 0.0, "ride_status": "不明", "reasons": []}
     
     if name.strip() != "" and jock != "(未選択)":
         j_data = JOCKEY_MASTER.get(jock, JOCKEY_MASTER["その他（自由手入力）"])
@@ -2010,12 +2148,14 @@ for item in row_tmp_data:
             elif cond and cond.endswith("m") and cond[:-1] in j_data.get("factors", {}):
                 jockey_modifier += j_data["factors"][cond[:-1]]
                 
-        if "special_factors" in j_data:
-            if sel_plus1 in j_data["special_factors"]:
-                jockey_modifier += j_data["special_factors"][sel_plus1]
-            if sel_plus2 in j_data["special_factors"]:
-                jockey_modifier += j_data["special_factors"][sel_plus2]
-                
+        # 特記事項1・2の手入力は廃止。入力済み情報からジョッキー条件を自動判定する。
+        jockey_auto = calculate_jockey_auto_conditions(
+            jockey=jock, previous_jockey=previous_jockey, trainer=trainer, owner=owner,
+            popularity=pop, race_class=race_class, course=sel_course, track=sel_track,
+            style=sel_style, frame=sel_frame, distance_change=sel_dist_change,
+            sex=sex, body_weight=wgh
+        )
+
         if jockey_modifier < 0 and l3f <= 33.9: jockey_modifier = 0.0  
         final_jockey_rate = j_data["base"] + max(min(jockey_modifier, 0.20), -0.20)
         
@@ -2223,6 +2363,11 @@ for item in row_tmp_data:
         elif jockey_effect <= -1.0:
             evaluation_reasons.append(f"騎手適性で {jockey_effect:.1f}")
         score = horse_base_score * mitigated_jockey_rate
+
+        # 前走騎手・厩舎・馬主など、ジョッキー事典の特記事項を自動反映。
+        score += jockey_auto["ability"]
+        score_breakdown["騎手条件"] = jockey_auto["ability"]
+        evaluation_reasons.extend(jockey_auto["reasons"])
         
         if sel_style in pace_bonus:
             score += pace_bonus[sel_style]
@@ -2264,7 +2409,7 @@ for item in row_tmp_data:
         )
             
     # 妙味スコアは能力値とは別軸。人気薄ほど上げるが能力順位には影響させない。
-    value_score = score + max(0, pop - 1) * 0.8 if name.strip() else 0.0
+    value_score = (score + max(0, pop - 1) * 0.8 + (jockey_auto["value"] if name.strip() and jock != "(未選択)" else 0.0)) if name.strip() else 0.0
 
     if name.strip() != "":
         score_cell.write(f"**{score:.2f}**")
@@ -2273,6 +2418,8 @@ for item in row_tmp_data:
             "父馬": sire,
             "父系統": " / ".join([x for x in auto_detect_lineage(sire) if x != normalize_sire_name(sire)]) or "個別判定",
             "性齢": sex_age, "馬体重増減": body_change, "重道悪適性": final_apt, "騎手": jock,
+            "前走騎手": previous_jockey, "継続・乗替": jockey_auto["ride_status"] if jock != "(未選択)" else "不明",
+            "厩舎": trainer, "馬主": owner,
             "戦略メモ": j_data.get("note", "") if jock != "(未選択)" else "",
             "評価理由": evaluation_reasons,
             "得点内訳": score_breakdown,
