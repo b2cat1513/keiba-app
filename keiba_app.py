@@ -752,104 +752,333 @@ def determine_final_aptitude(sire_name, has_past_record):
 # ==========================================
 # 🔍 パース関数群 (Netkeiba / ウマニティ)
 # ==========================================
+def normalize_copied_text(raw_text):
+    """サイトからコピーした文字列を解析しやすい形に統一する。"""
+    if not raw_text:
+        return ""
+
+    text = str(raw_text)
+    replacements = {
+        "\r\n": "\n",
+        "\r": "\n",
+        "\u3000": " ",
+        "\xa0": " ",
+        "\u200b": "",
+        "\t": " ",
+        "＋": "+",
+        "－": "-",
+        "−": "-",
+        "．": ".",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    lines = []
+    for line in text.splitlines():
+        line = re.sub(r"[ ]+", " ", line).strip()
+        if line:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+HORSE_NAME_PATTERN = r"[ァ-ヶーヴ・A-Za-z0-9０-９一-龠々'’\-]+"
+SEX_AGE_PATTERN = r"[牡牝セ騙]\s*\d{1,2}"
+
+
+def normalize_horse_name(name):
+    """照合用に馬名の余分な空白や記号差を補正する。"""
+    if not name:
+        return ""
+    name = str(name).strip().replace("\u3000", "")
+    name = re.sub(r"\s+", "", name)
+    return name.replace("’", "'")
+
+
+def parse_body_weight(text):
+    """馬体重と増減を取得する。取得できない場合は既定値を返す。"""
+    if not text:
+        return 480, 0
+
+    match = re.search(r"(?<!\d)(\d{3})\s*[（(]\s*([+\-]?\d+)\s*[）)]", text)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+
+    match = re.search(r"(?:馬体重\s*)?(\d{3})(?!\d)", text)
+    if match:
+        weight = int(match.group(1))
+        if 300 <= weight <= 700:
+            return weight, 0
+
+    return 480, 0
+
+
+def calculate_frame_position(gate):
+    """アプリ既存仕様に合わせ、1～8番を内枠、それ以降を外枠とする。"""
+    return "内枠" if int(gate) <= 8 else "外枠"
+
+
 def parse_netkeiba_multi_line(raw_text):
-    """
-    Netkeibaスマホ版の複数行にまたがる出馬表テキストを解析
-    """
-    cleaned_horses = []
-    current_horse = None
-    lines = raw_text.strip().split("\n")
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-            
-        base_match = re.search(r'([ァ-ヴーa-zA-Z0-9]+)\s+([牡牝セ]\d+).*?([\u4e00-\u9fa5ァ-ヴーa-zA-Z]+)\s+(\d{2}(?:\.\d+)?)', line)
-        
-        if base_match:
-            if current_horse:
-                cleaned_horses.append(current_horse)
-                
-            horse_name = base_match.group(1)
-            sex_age = base_match.group(2)
-            jockey_name = base_match.group(3)
-            jockey_weight = float(base_match.group(4))
-            
-            current_horse = {
-                "gate": None,
-                "frame": "内枠",
-                "name": horse_name,
-                "sex_age": sex_age,
-                "jockey_weight": jockey_weight,
-                "jockey": jockey_name,
-                "weight": 480,
-                "change": 0
-            }
+    """NetkeibaのPC版・スマホ版からコピーした出馬表を解析する。"""
+    text = normalize_copied_text(raw_text)
+    if not text:
+        return []
+
+    lines = text.splitlines()
+    horses = []
+    used_gates = set()
+
+    for index, line in enumerate(lines):
+        sex_match = re.search(SEX_AGE_PATTERN, line)
+        if not sex_match:
             continue
 
-        if current_horse:
-            num_match = re.match(r'^(\d{1,2})$', line)
-            if num_match:
-                gate_num = int(num_match.group(1))
-                current_horse["gate"] = gate_num
-                current_horse["frame"] = "内枠" if gate_num <= 8 else "外枠"
-                cleaned_horses.append(current_horse)
-                current_horse = None
-                continue
-                
-            weight_match = re.search(r'(\d{3})\s*\(\s*([+-]?\d+)\s*\)', line)
-            if weight_match:
-                current_horse["weight"] = int(weight_match.group(1))
-                current_horse["change"] = int(weight_match.group(2))
-                continue
+        sex_age = re.sub(r"\s+", "", sex_match.group(0))
+        horse_name = ""
 
-    if current_horse:
-        cleaned_horses.append(current_horse)
+        before_sex = line[:sex_match.start()].strip()
+        inline_name_match = re.search(rf"({HORSE_NAME_PATTERN})\s*$", before_sex)
+        if inline_name_match:
+            candidate = normalize_horse_name(inline_name_match.group(1))
+            if candidate and not candidate.isdigit():
+                horse_name = candidate
 
-    for idx, h in enumerate(cleaned_horses):
-        if h["gate"] is None:
-            h["gate"] = idx + 1
-            h["frame"] = "内枠" if (idx + 1) <= 8 else "外枠"
+        if not horse_name:
+            for offset in range(1, 5):
+                prev_idx = index - offset
+                if prev_idx < 0:
+                    break
+                candidate = normalize_horse_name(lines[prev_idx])
+                if not candidate:
+                    continue
+                if re.fullmatch(r"\d{1,2}", candidate):
+                    continue
+                if re.fullmatch(r"\d{1,2}\.\d+", candidate):
+                    continue
+                if re.fullmatch(SEX_AGE_PATTERN, candidate):
+                    continue
+                if re.search(r"\d{3}\s*[（(]", candidate):
+                    continue
+                if re.fullmatch(HORSE_NAME_PATTERN, candidate):
+                    horse_name = candidate
+                    break
 
-    return sorted(cleaned_horses, key=lambda x: x["gate"])
+        if not horse_name:
+            continue
+
+        start = max(0, index - 7)
+        end = min(len(lines), index + 9)
+        block_lines = lines[start:end]
+        block_text = " ".join(block_lines)
+
+        gate = None
+        same_line_gate = re.search(
+            rf"(?:^|\s)(\d{{1,2}})\s+(?:\d{{1,2}}\s+)?{re.escape(horse_name)}(?:\s|$)",
+            line,
+        )
+        if same_line_gate:
+            candidate = int(same_line_gate.group(1))
+            if 1 <= candidate <= 18:
+                gate = candidate
+
+        if gate is None:
+            number_candidates = []
+            for offset in range(1, 7):
+                prev_idx = index - offset
+                if prev_idx < 0:
+                    break
+                number_line = lines[prev_idx].strip()
+
+                pair_match = re.fullmatch(r"(\d{1,2})\s+(\d{1,2})", number_line)
+                if pair_match:
+                    value = int(pair_match.group(2))
+                    if 1 <= value <= 18:
+                        number_candidates.insert(0, value)
+                    continue
+
+                if re.fullmatch(r"\d{1,2}", number_line):
+                    value = int(number_line)
+                    if 1 <= value <= 18:
+                        number_candidates.append(value)
+
+            for candidate in number_candidates:
+                if candidate not in used_gates:
+                    gate = candidate
+                    break
+
+        jockey = ""
+        jockey_weight = 56.0
+
+        jw_match = re.search(
+            r"([一-龠々ぁ-んァ-ヶーA-Za-z.・]{2,20})\s+(\d{2}(?:\.\d)?)\b",
+            block_text,
+        )
+        if jw_match:
+            possible_weight = float(jw_match.group(2))
+            if 45.0 <= possible_weight <= 65.0:
+                jockey = jw_match.group(1).strip()
+                jockey_weight = possible_weight
+
+        if not jockey:
+            for pos in range(index, min(index + 7, len(lines))):
+                weight_match = re.fullmatch(r"(\d{2}(?:\.\d)?)", lines[pos])
+                if not weight_match:
+                    continue
+                possible_weight = float(weight_match.group(1))
+                if not 45.0 <= possible_weight <= 65.0:
+                    continue
+                jockey_weight = possible_weight
+                if pos > 0:
+                    possible_jockey = lines[pos - 1].strip()
+                    if (
+                        re.fullmatch(r"[一-龠々ぁ-んァ-ヶーA-Za-z.・]{2,20}", possible_jockey)
+                        and normalize_horse_name(possible_jockey) != horse_name
+                        and not re.fullmatch(SEX_AGE_PATTERN, possible_jockey)
+                    ):
+                        jockey = possible_jockey
+                break
+
+        weight, change = parse_body_weight(block_text)
+
+        if gate is None:
+            for candidate in range(1, 19):
+                if candidate not in used_gates:
+                    gate = candidate
+                    break
+
+        if gate is None or gate in used_gates:
+            continue
+
+        used_gates.add(gate)
+        horses.append({
+            "gate": gate,
+            "frame": calculate_frame_position(gate),
+            "name": horse_name,
+            "sex_age": sex_age,
+            "jockey_weight": jockey_weight,
+            "jockey": jockey,
+            "weight": weight,
+            "change": change,
+        })
+
+    unique_horses = {}
+    for horse in horses:
+        gate = horse["gate"]
+        if gate not in unique_horses:
+            unique_horses[gate] = horse
+            continue
+        old = unique_horses[gate]
+        old_score = sum([bool(old.get("name")), bool(old.get("jockey")), old.get("weight", 480) != 480])
+        new_score = sum([bool(horse.get("name")), bool(horse.get("jockey")), horse.get("weight", 480) != 480])
+        if new_score > old_score:
+            unique_horses[gate] = horse
+
+    return sorted(unique_horses.values(), key=lambda horse: horse["gate"])
 
 
 def parse_umanity_multi_line(raw_text):
-    """
-    ウマニティの出馬表・Ｕ指数ページからコピペしたテキストを解析する専用パース関数
-    馬番、馬名、Ｕ指数を抽出
-    """
-    cleaned_data = []
-    lines = raw_text.strip().split("\n")
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        
-        # ウマニティのテキストパターン（馬番、馬名、指数が含まれる行をサーチ）
-        # パターン例: "1 ランフォーヴァウ 88.5" や "88.5 1 ランフォーヴァウ" などに柔軟に対応
-        match = re.search(r'(\d{1,2})\s*[\s\t]+([ァ-ヴーa-zA-Z0-9]+)[\s\t]+.*?(\d{2,3}(?:\.\d+)?)', line)
-        if match:
-            gate_num = int(match.group(1))
-            horse_name = match.group(2)
-            u_index = float(match.group(3))
-            cleaned_data.append({
-                "gate": gate_num,
-                "name": horse_name,
-                "u_index": u_index
-            })
-            continue
-            
-        # 馬番と馬名のみ、または指数のみが別行にある場合の補正マッチ
-        u_match = re.search(r'(\d{1,2})\s+([ァ-ヴーa-zA-Z0-9]+)', line)
-        index_match = re.search(r'Ｕ指数[:：]?\s*(\d{2,3}(?:\.\d+)?)', line) or re.search(r'^(\d{2,3}\.\d)$', line)
-        
-        if index_match and cleaned_data and "u_index" not in cleaned_data[-1]:
-            cleaned_data[-1]["u_index"] = float(index_match.group(1))
+    """ウマニティの出馬表・U指数ページから馬番、馬名、指数を抽出する。"""
+    text = normalize_copied_text(raw_text)
+    if not text:
+        return []
 
-    return cleaned_data
+    results = {}
+    lines = text.splitlines()
+
+    def valid_index(value):
+        return 20.0 <= value <= 200.0
+
+    def add_result(gate, name="", u_index=None):
+        try:
+            gate = int(gate)
+        except (TypeError, ValueError):
+            return
+        if not 1 <= gate <= 18:
+            return
+
+        results.setdefault(gate, {"gate": gate, "name": "", "u_index": None})
+        if name:
+            results[gate]["name"] = normalize_horse_name(name)
+        if u_index is not None:
+            try:
+                value = float(u_index)
+            except (TypeError, ValueError):
+                return
+            if valid_index(value):
+                results[gate]["u_index"] = value
+
+    pattern1 = re.compile(
+        rf"(?:^|\s)(?P<gate>\d{{1,2}})\s+(?P<name>{HORSE_NAME_PATTERN}).{{0,80}}?"
+        rf"(?:U指数|Ｕ指数|指数)?\s*[:：]?\s*(?P<index>\d{{2,3}}(?:\.\d+)?)(?:\s|$)",
+        re.IGNORECASE,
+    )
+    for match in pattern1.finditer(text):
+        add_result(match.group("gate"), match.group("name"), match.group("index"))
+
+    pattern2 = re.compile(
+        rf"(?:^|\s)(?:U指数|Ｕ指数|指数)?\s*[:：]?\s*(?P<index>\d{{2,3}}(?:\.\d+)?)\s+"
+        rf"(?P<gate>\d{{1,2}})\s+(?P<name>{HORSE_NAME_PATTERN})(?:\s|$)",
+        re.IGNORECASE,
+    )
+    for match in pattern2.finditer(text):
+        add_result(match.group("gate"), match.group("name"), match.group("index"))
+
+    pending_gate = None
+    pending_name = ""
+
+    for line in lines:
+        match = re.fullmatch(
+            rf"(?P<gate>\d{{1,2}})\s+(?P<name>{HORSE_NAME_PATTERN}).*?(?P<index>\d{{2,3}}(?:\.\d+)?)",
+            line,
+        )
+        if match:
+            value = float(match.group("index"))
+            if valid_index(value):
+                add_result(match.group("gate"), match.group("name"), value)
+                pending_gate = None
+                pending_name = ""
+                continue
+
+        match = re.fullmatch(rf"(?P<gate>\d{{1,2}})\s+(?P<name>{HORSE_NAME_PATTERN})", line)
+        if match:
+            pending_gate = int(match.group("gate"))
+            pending_name = match.group("name")
+            add_result(pending_gate, pending_name)
+            continue
+
+        match = re.fullmatch(r"(\d{1,2})", line)
+        if match:
+            possible_gate = int(match.group(1))
+            if 1 <= possible_gate <= 18:
+                pending_gate = possible_gate
+                pending_name = ""
+            continue
+
+        if pending_gate is not None and re.fullmatch(HORSE_NAME_PATTERN, line) and not re.fullmatch(SEX_AGE_PATTERN, line):
+            pending_name = line
+            add_result(pending_gate, pending_name)
+            continue
+
+        match = re.search(r"(?:U指数|Ｕ指数|指数)\s*[:：]?\s*(\d{2,3}(?:\.\d+)?)", line, re.IGNORECASE)
+        if match and pending_gate is not None:
+            value = float(match.group(1))
+            if valid_index(value):
+                add_result(pending_gate, pending_name, value)
+                pending_gate = None
+                pending_name = ""
+            continue
+
+        match = re.fullmatch(r"(\d{2,3}\.\d+)", line)
+        if match and pending_gate is not None:
+            value = float(match.group(1))
+            if valid_index(value):
+                add_result(pending_gate, pending_name, value)
+                pending_gate = None
+                pending_name = ""
+
+    return sorted(
+        [item for item in results.values() if item.get("u_index") is not None],
+        key=lambda item: item["gate"],
+    )
 
 
 def safe_int_convert(value, default=0):
@@ -892,98 +1121,142 @@ tab_nk, tab_um = st.tabs(["📋 Netkeiba一括入力", "🐎 ウマニティ (�
 
 with tab_nk:
     copied_text_nk = st.text_area(
-        "Netkeibaの出馬表テキスト（馬名、オッズ、馬番などが複数行にまたがっていてもOK）を貼り付けてください", 
-        height=130,
-        placeholder="ランフォーヴァウ 牝4 名 石川 54.0\n20.3 11人気\n1",
+        "Netkeibaの出馬表テキストを貼り付けてください（複数行でも解析します）",
+        height=180,
+        placeholder="1\nランフォーヴァウ\n牝4\n石川裕紀人\n54.0\n480(+4)",
         key="nk_text"
     )
 
     if st.button("🚀 Netkeibaデータを解析して展開", use_container_width=True):
-        if copied_text_nk:
+        if not copied_text_nk.strip():
+            st.warning("テキストエリアが空欄です。")
+        else:
             parsed_result = parse_netkeiba_multi_line(copied_text_nk)
-            if parsed_result:
-                if "rows" not in st.session_state["loaded_data"]:
-                    st.session_state["loaded_data"]["rows"] = {}
-                    
-                for idx, horse in enumerate(parsed_result):
-                    row_key = str(idx + 1)
-                    # 既存の入力（指数など）があれば維持しつつ上書き
+            if not parsed_result:
+                st.error("馬データが見つかりませんでした。馬番・馬名・性齢・騎手・斤量を含む範囲をコピーしてください。")
+            else:
+                st.session_state["loaded_data"].setdefault("rows", {})
+                imported_gates = []
+                unregistered_jockeys = []
+
+                for horse in parsed_result:
+                    gate = int(horse["gate"])
+                    row_key = str(gate)
+                    imported_gates.append(gate)
                     prev_row = st.session_state["loaded_data"]["rows"].get(row_key, {})
-                    
+
+                    jockey_name = horse.get("jockey", "").strip()
+                    jockey_registered = jockey_name in JOCKEY_MASTER
+                    note_parts = [
+                        horse.get("sex_age", ""),
+                        f"体重増減:{horse.get('change', 0):+d}",
+                    ]
+                    if jockey_name and not jockey_registered:
+                        note_parts.append(f"騎手:{jockey_name}")
+                        unregistered_jockeys.append(f"{gate}番 {horse.get('name', '')}: {jockey_name}")
+
                     st.session_state["loaded_data"]["rows"][row_key] = {
-                        "num": str(horse["gate"]),
-                        "name": horse["name"],
-                        "wgt": float(horse["jockey_weight"]),
-                        "wgh": int(horse["weight"]),
-                        "jock": horse["jockey"] if horse["jockey"] in JOCKEY_MASTER else "その他（自由手入力）",
-                        "sel_frame": horse["frame"],
+                        "num": str(gate),
+                        "name": horse.get("name", ""),
+                        "wgt": float(horse.get("jockey_weight", 56.0)),
+                        "wgh": int(horse.get("weight", 480)),
+                        "jock": jockey_name if jockey_registered else "その他（自由手入力）",
+                        "sel_frame": horse.get("frame", calculate_frame_position(gate)),
                         "pop": prev_row.get("pop", 10),
-                        "idx": prev_row.get("idx", 0.0), # 指数は維持
+                        "idx": prev_row.get("idx", 0.0),
                         "l3f": prev_row.get("l3f", 35.0),
                         "sire": prev_row.get("sire", ""),
                         "heavy_record": prev_row.get("heavy_record", False),
-                        "custom_note": f"{horse['sex_age']} 体重増減:{horse['change']}",
-                        "sel_track": auto_track if auto_track in ["芝", "ダート"] else "選択なし",
-                        "sel_style": "選択なし",
-                        "sel_dist_change": "同距離",
-                        "sel_plus1": "選択なし",
-                        "sel_plus2": "選択なし"
+                        "custom_note": " / ".join(x for x in note_parts if x),
+                        "sel_track": prev_row.get(
+                            "sel_track",
+                            auto_track if auto_track in ["芝", "ダート"] else "選択なし"
+                        ),
+                        "sel_style": prev_row.get("sel_style", "選択なし"),
+                        "sel_dist_change": prev_row.get("sel_dist_change", "同距離"),
+                        "sel_plus1": prev_row.get("sel_plus1", "選択なし"),
+                        "sel_plus2": prev_row.get("sel_plus2", "選択なし"),
                     }
-                st.success(f"🎯 Netkeibaデータ解析成功！ 全 {len(parsed_result)} 頭の基本データを反映しました。")
+
+                st.success(
+                    f"🎯 Netkeiba解析成功：{len(parsed_result)}頭を反映しました。"
+                    f" 馬番: {', '.join(map(str, sorted(imported_gates)))}"
+                )
+                if unregistered_jockeys:
+                    with st.expander(f"⚠️ 騎手マスター未登録：{len(unregistered_jockeys)}件"):
+                        for message in unregistered_jockeys:
+                            st.write(message)
                 st.rerun()
-            else:
-                st.error("馬データが見つかりませんでした。コピペテキストを確認してください。")
-        else:
-            st.warning("テキストエリアが空欄です。")
 
 with tab_um:
     copied_text_um = st.text_area(
-        "ウマニティの出馬表・Ｕ指数ページからコピペしたテキストを貼り付けてください（Netkeibaの後に読み込むと「指数」だけが上書きされます）", 
-        height=130,
+        "ウマニティの出馬表・Ｕ指数ページからコピーしたテキストを貼り付けてください",
+        height=180,
         placeholder="1 ランフォーヴァウ 88.5\n2 サトノカルナバ 92.1",
         key="um_text"
     )
 
     if st.button("🚀 ウマニティ Ｕ指数を解析して注入", use_container_width=True):
-        if copied_text_um:
+        if not copied_text_um.strip():
+            st.warning("テキストエリアが空欄です。")
+        else:
             parsed_um = parse_umanity_multi_line(copied_text_um)
-            if parsed_um:
-                if "rows" not in st.session_state["loaded_data"]:
-                    st.session_state["loaded_data"]["rows"] = {}
-                
+            if not parsed_um:
+                st.error("Ｕ指数データが見つかりませんでした。馬番・馬名・Ｕ指数を含む範囲をコピーしてください。")
+            else:
+                st.session_state["loaded_data"].setdefault("rows", {})
                 updated_count = 0
+                created_count = 0
+                mismatch_messages = []
+
                 for item in parsed_um:
-                    gate = item["gate"]
-                    u_idx = item.get("u_index", 0.0)
+                    gate = int(item["gate"])
                     row_key = str(gate)
-                    
-                    if row_key in st.session_state["loaded_data"]["rows"]:
-                        # 既存データ保持で「指数」のみスマート上書き
-                        st.session_state["loaded_data"]["rows"][row_key]["idx"] = u_idx
-                        if not st.session_state["loaded_data"]["rows"][row_key]["name"] and item.get("name"):
-                            st.session_state["loaded_data"]["rows"][row_key]["name"] = item["name"]
+                    u_index = float(item["u_index"])
+                    umanity_name = normalize_horse_name(item.get("name", ""))
+                    existing_row = st.session_state["loaded_data"]["rows"].get(row_key)
+
+                    if existing_row:
+                        existing_name = normalize_horse_name(existing_row.get("name", ""))
+                        if existing_name and umanity_name and existing_name != umanity_name:
+                            mismatch_messages.append(
+                                f"{gate}番：Netkeiba『{existing_name}』 / ウマニティ『{umanity_name}』"
+                            )
+                            continue
+
+                        existing_row["idx"] = u_index
+                        if not existing_row.get("name") and umanity_name:
+                            existing_row["name"] = umanity_name
                         updated_count += 1
                     else:
-                        # 新規作成
                         st.session_state["loaded_data"]["rows"][row_key] = {
                             "num": str(gate),
-                            "name": item.get("name", ""),
-                            "wgt": 56.0, "wgh": 480, "jock": "(未選択)",
-                            "sel_frame": "内枠" if gate <= 8 else "外枠",
-                            "pop": 10, "idx": u_idx, "l3f": 35.0, "sire": "",
-                            "heavy_record": False, "custom_note": "ウマニティＵ指数取込",
+                            "name": umanity_name,
+                            "wgt": 56.0,
+                            "wgh": 480,
+                            "jock": "その他（自由手入力）",
+                            "sel_frame": calculate_frame_position(gate),
+                            "pop": 10,
+                            "idx": u_index,
+                            "l3f": 35.0,
+                            "sire": "",
+                            "heavy_record": False,
+                            "custom_note": "ウマニティＵ指数取込",
                             "sel_track": auto_track if auto_track in ["芝", "ダート"] else "選択なし",
-                            "sel_style": "選択なし", "sel_dist_change": "同距離",
-                            "sel_plus1": "選択なし", "sel_plus2": "選択なし"
+                            "sel_style": "選択なし",
+                            "sel_dist_change": "同距離",
+                            "sel_plus1": "選択なし",
+                            "sel_plus2": "選択なし",
                         }
-                        updated_count += 1
-                        
-                st.success(f"🎯 ウマニティＵ指数の反映完了！ 全 {updated_count} 頭の「指数」をスマート更新しました。")
+                        created_count += 1
+
+                st.success(f"🎯 ウマニティＵ指数を反映しました。更新:{updated_count}頭 / 新規:{created_count}頭")
+                if mismatch_messages:
+                    st.warning(f"馬名不一致のため、{len(mismatch_messages)}頭は更新しませんでした。")
+                    with st.expander("馬名不一致の詳細"):
+                        for message in mismatch_messages:
+                            st.write(message)
                 st.rerun()
-            else:
-                st.error("Ｕ指数データが見つかりませんでした。コピペテキストを確認してください。")
-        else:
-            st.warning("テキストエリアが空欄です。")
 
 st.divider()
 
@@ -1370,4 +1643,4 @@ if st.session_state["history_log"]:
     tot_return = log_df["回収額"].sum()
     recovery_rate = (tot_return / tot_invest * 100) if tot_invest > 0 else 0
     
-    st.metric("累計回収率", f"{recovery_rate:.1f}%", delta=f"{tot_return - tot_invest:,}円")
+    st.metric("累計回収率", f"{recovery_rate:.1f}%", delta=f"{tot
