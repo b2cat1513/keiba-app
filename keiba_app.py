@@ -6,15 +6,15 @@ import base64
 import re
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 from streamlit.components.v1 import html
 
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.08", layout="wide")
-st.title("🏆 ジェニーAI予想ver1.08 (AIコメント自動生成搭載版)")
+st.set_page_config(page_title="ジェニーAI予想ver1.11", layout="wide")
+st.title("🏆 ジェニーAI予想ver1.11 (父馬系統自動判定・コース事典2統合版)")
 
 # 🛠️ スマホ向け：データを極限まで縮小・Base64圧縮する関数
 def encode_for_mobile(data_dict):
@@ -706,35 +706,54 @@ COURSE_MASTER = {
 # 🧬 3. 血統の系統自動判定マスター
 # ==========================================
 BLOOD_LINEAGE_MAP = {
-    "キズナ": ["キズナ"],
-    "コントレイル": ["コントレイル"],
-    "サトノダイヤモンド": ["サトノダイヤモンド"],
-    "ディープインパクト系": ["ディープインパクト", "リアルインパクト", "ミッキーアイル", "ワールドエース"],
-    "ジャスタウェイ": ["ジャスタウェイ"],
-    "スワーヴリチャード": ["スワーヴリチャード"],
-    "ハーツクライ系": ["ハーツクライ", "サリオス", "シュヴァルグラン"],
-    "ゴールドシップ": ["ゴールドシップ"],
-    "オルフェーヴル": ["オルフェーヴル"],
-    "ステイゴールド系": ["ステイゴールド", "インディチャンプ", "ウインバリアシオン"],
-    "ロードカナロア": ["ロードカナロア"],
-    "ドゥラメンテ": ["ドゥラメンテ"],
-    "ルーラーシップ": ["ルーラーシップ"],
-    "キングカメハメハ系": ["キングカメハメハ", "レイデオロ", "ホッコータルマエ"],
-    "エピファネイア": ["エピファネイア"],
-    "モーリス": ["モーリス"],
-    "キタサンブラック": ["キタサンブラック"],
-    "ヘニーヒューズ": ["ヘニーヒューズ"],
-    "ドレフォン": ["ドレフォン"],
-    "シニスターミニスター": ["シニスターミニスター"]
+    "ディープインパクト系": ["ディープインパクト", "キズナ", "コントレイル", "リアルインパクト", "ミッキーアイル", "ワールドエース", "サトノダイヤモンド", "シルバーステート", "ダノンバラード", "トーセンラー"],
+    "ハーツクライ系": ["ハーツクライ", "ジャスタウェイ", "スワーヴリチャード", "サリオス", "シュヴァルグラン"],
+    "ステイゴールド系": ["ステイゴールド", "ゴールドシップ", "オルフェーヴル", "インディチャンプ", "ウインバリアシオン"],
+    "キングカメハメハ系": ["キングカメハメハ", "ロードカナロア", "ドゥラメンテ", "ルーラーシップ", "レイデオロ", "ホッコータルマエ", "ラブリーデイ", "リオンディーズ", "サートゥルナーリア"],
+    "ロベルト系": ["エピファネイア", "モーリス", "スクリーンヒーロー", "ブライアンズタイム", "シンボリクリスエス"],
+    "ダンチヒ系": ["ハービンジャー", "デクラレーションオブウォー", "アメリカンペイトリオット"],
+    "ストームキャット系": ["ヘニーヒューズ", "ドレフォン", "マインドユアビスケッツ", "ディスクリートキャット", "シャンハイボビー"],
+    "エーピーインディ系": ["シニスターミニスター", "パイロ", "マジェスティックウォリアー", "エスポワールシチー"],
 }
 
+SIRE_NAME_ALIASES = {
+    "ドレフィン": "ドレフォン",
+    "シスターミニスター": "シニスターミニスター",
+    "ビックアーサー": "ビッグアーサー",
+    "スワーブリチャード": "スワーヴリチャード",
+    "マイルドユアビスケッツ": "マインドユアビスケッツ",
+}
+
+
+def normalize_sire_name(sire_name):
+    name = str(sire_name or "").strip().replace(" ", "").replace("　", "")
+    for old, new in SIRE_NAME_ALIASES.items():
+        name = name.replace(old, new)
+    return name
+
+
 def auto_detect_lineage(sire_name):
-    if not sire_name: return []
+    normalized = normalize_sire_name(sire_name)
+    if not normalized:
+        return []
+    detected = [normalized]
     for system_name, match_list in BLOOD_LINEAGE_MAP.items():
-        for target in match_list:
-            if target in sire_name:
-                return [system_name]
-    return []
+        if any(normalize_sire_name(target) in normalized for target in match_list):
+            detected.append(system_name)
+    if normalized.endswith("系"):
+        detected.append(normalized)
+    return list(dict.fromkeys(detected))
+
+
+def lineage_matches_course_target(sire_name, target_name):
+    target = normalize_sire_name(target_name)
+    if not target:
+        return False
+    for detected in auto_detect_lineage(sire_name):
+        detected = normalize_sire_name(detected)
+        if target == detected or target in detected or detected in target:
+            return True
+    return False
 
 SIRE_TRACK_APTITUDE = {
     "キズナ": "A", "オルフェーヴル": "A", "ゴールドシップ": "A", "ハービンジャー": "A", "クロフネ": "A", "シニスターミニスター": "A",
@@ -1092,9 +1111,424 @@ def safe_int_convert(value, default=0):
     except (ValueError, TypeError):
         return default
 
+
+# ==========================================
+# 🧬 性齢・馬体重増減・性別血統の補助関数 Ver1.09
+# ==========================================
+def extract_sex_age_and_change(custom_note):
+    """Netkeiba取込メモから性別・年齢・馬体重増減を復元する。"""
+    text = str(custom_note or "")
+    sex_age_match = re.search(r"([牡牝騸セ]\s*\d{1,2})", text)
+    sex_age = re.sub(r"\s+", "", sex_age_match.group(1)) if sex_age_match else ""
+    sex = sex_age[:1] if sex_age else ""
+    age_match = re.search(r"\d{1,2}", sex_age)
+    age = int(age_match.group()) if age_match else 0
+    change_match = re.search(r"体重増減\s*:\s*([+\-]?\d+)", text)
+    body_change = int(change_match.group(1)) if change_match else 0
+    return sex_age, sex, age, body_change
+
+
+def calculate_sex_age_body_adjustment(sex, age, body_change, race_month, race_class):
+    """性別・年齢・馬体重増減を能力スコアへ反映する。"""
+    adjustment = 0.0
+    reasons = []
+    if sex == "牝" and race_month in (7, 8):
+        adjustment += 1.5
+        reasons.append("夏季の牝馬補正 +1.5")
+    if abs(body_change) >= 15:
+        adjustment -= 3.0
+        reasons.append(f"馬体重大幅増減{body_change:+d}kgで -3.0")
+    elif abs(body_change) >= 10:
+        adjustment -= 1.5
+        reasons.append(f"馬体重増減{body_change:+d}kgで -1.5")
+    if age == 3 and race_class in ["G1", "G2/G3", "オープン/L"]:
+        adjustment += 0.5
+        reasons.append("3歳馬の斤量差余地を補助評価 +0.5")
+    elif age >= 8:
+        adjustment -= 1.0
+        reasons.append("高齢馬の安定性リスク -1.0")
+    return adjustment, reasons
+
+
+def calculate_track_bias_adjustment(track_bias, frame, style):
+    """当日のトラックバイアスを枠順・脚質へ反映する。"""
+    adjustment = 0.0
+    reasons = []
+    if track_bias == "内・前有利":
+        if frame == "内枠":
+            adjustment += 2.0; reasons.append("当日バイアス：内枠 +2.0")
+        if style in ["逃げ", "先行"]:
+            adjustment += 3.0; reasons.append("当日バイアス：前脚質 +3.0")
+        elif style in ["差し", "追い込み"]:
+            adjustment -= 1.5; reasons.append("当日バイアス：後方脚質 -1.5")
+    elif track_bias == "外・差し有利":
+        if frame == "外枠":
+            adjustment += 2.0; reasons.append("当日バイアス：外枠 +2.0")
+        if style in ["差し", "追い込み"]:
+            adjustment += 3.0; reasons.append("当日バイアス：差し脚質 +3.0")
+        elif style in ["逃げ", "先行"]:
+            adjustment -= 1.5; reasons.append("当日バイアス：前脚質 -1.5")
+    return adjustment, reasons
+
+
+
+# ==========================================
+# 📚 コース事典2.xlsx 厳格血統条件マスター Ver1.10
+# ==========================================
+# 条件キー:
+# sex=["牡","牝","セ"], weight_min / weight_max, gate_min / gate_max,
+# styles=["逃げ","先行","差し","追い込み"], conditions=["良","稍重","重・不良"]
+COURSE_LINEAGE_RULES = {'東京芝1600m': [{'sire': 'ロードカナロア', 'score': 5.0},
+              {'sire': 'エピファネイア', 'score': 5.0},
+              {'sire': 'モーリス', 'score': 5.0},
+              {'sire': 'ドゥラメンテ', 'score': 5.0},
+              {'sire': 'イスラボニータ', 'score': 5.0},
+              {'sire': 'キズナ', 'score': 5.0, 'sex': ['牝']}],
+ '東京芝2000m': [{'sire': 'エピファネイア', 'score': 5.0},
+              {'sire': 'モーリス', 'score': 5.0, 'sex': ['牡']},
+              {'sire': 'キズナ', 'score': 5.0},
+              {'sire': 'キタサンブラック', 'score': 5.0},
+              {'sire': 'ロードカナロア', 'score': 5.0, 'sex': ['牡']}],
+ '東京芝2400m': [{'sire': 'ドゥラメンテ', 'score': 5.0},
+              {'sire': 'ハービンジャー', 'score': 5.0},
+              {'sire': 'ルーラーシップ', 'score': 5.0},
+              {'sire': 'レイデオロ', 'score': 5.0, 'sex': ['牡']},
+              {'sire': 'キタサンブラック', 'score': 5.0, 'sex': ['牡']}],
+ '東京ダート1600m': [{'sire': 'ヘニーヒューズ', 'score': 5.0},
+                {'sire': 'ドレフォン', 'score': 5.0, 'styles': ['逃げ', '先行']},
+                {'sire': 'ロードカナロア', 'score': 5.0},
+                {'sire': 'ドゥラメンテ', 'score': 5.0, 'sex': ['牡']},
+                {'sire': 'ジャスタウェイ', 'score': 5.0},
+                {'sire': 'キタサンブラック', 'score': 5.0}],
+ '中山芝1200m': [{'sire': 'ファインニードル', 'score': 5.0}, {'sire': 'アメリカンペイトリオット', 'score': 5.0, 'sex': ['牝']}],
+ '中山芝2000m': [{'sire': 'エピファネイア', 'score': 5.0, 'sex': ['牡']},
+              {'sire': 'ハービンジャー', 'score': 5.0},
+              {'sire': 'モーリス', 'score': 5.0},
+              {'sire': 'キタサンブラック', 'score': 5.0},
+              {'sire': 'ドゥラメンテ', 'score': 5.0},
+              {'sire': 'ルーラーシップ', 'score': 5.0}],
+ '中山芝2500m': [{'sire': 'エピファネイア', 'score': 5.0},
+              {'sire': 'キズナ', 'score': 5.0},
+              {'sire': 'ドゥラメンテ', 'score': 5.0},
+              {'sire': 'ゴールドシップ', 'score': 5.0},
+              {'sire': 'ジャスタウェイ', 'score': 5.0}],
+ '中京芝1200m': [{'sire': 'ロードカナロア', 'score': 5.0},
+              {'sire': 'ビッグアーサー', 'score': 5.0},
+              {'sire': 'キズナ', 'score': 5.0, 'sex': ['牝']},
+              {'sire': 'ミッキーアイル', 'score': 5.0, 'sex': ['牝']},
+              {'sire': 'ファインニードル', 'score': 5.0}],
+ '中京ダート1800m': [{'sire': 'ドレフォン', 'score': 5.0},
+                {'sire': 'ヘニーヒューズ', 'score': 5.0, 'sex': ['牡']},
+                {'sire': 'ダノンレジェンド', 'score': 5.0},
+                {'sire': 'マジェスティックウォリアー', 'score': 5.0, 'styles': ['先行'], 'gate_min': 6, 'gate_max': 8},
+                {'sire': 'シニスターミニスター', 'score': 5.0, 'styles': ['逃げ', '先行']},
+                {'sire': 'キズナ', 'score': 5.0, 'sex': ['牡']},
+                {'sire': 'リアルスティール', 'score': 5.0, 'sex': ['牡']}],
+ '京都芝1600m(外)': [{'sire': 'イスラボニータ', 'score': 5.0},
+                 {'sire': 'ルーラーシップ', 'score': 5.0},
+                 {'sire': 'リオンディーズ', 'score': 5.0},
+                 {'sire': 'キタサンブラック', 'score': 5.0},
+                 {'sire': 'ハービンジャー', 'score': 5.0}],
+ '京都芝2000m': [{'sire': 'キズナ', 'score': 5.0},
+              {'sire': 'キタサンブラック', 'score': 5.0},
+              {'sire': 'サトノダイヤモンド', 'score': 5.0},
+              {'sire': 'ハービンジャー', 'score': 5.0},
+              {'sire': 'ブリックスアンドモルタル', 'score': 5.0},
+              {'sire': 'レイデオロ', 'score': 5.0, 'sex': ['牡']}],
+ '京都芝2200m': [{'sire': 'キズナ', 'score': 5.0, 'sex': ['牡']},
+              {'sire': 'サトノダイヤモンド', 'score': 5.0},
+              {'sire': 'ハーツクライ', 'score': 5.0},
+              {'sire': 'ゴールドシップ', 'score': 5.0},
+              {'sire': 'オルフェーヴル', 'score': 5.0}],
+ '京都芝3000m': [{'sire': '小柄なエピファネイア', 'score': 5.0},
+              {'sire': 'ゴールドシップ', 'score': 5.0},
+              {'sire': 'オルフェーヴル', 'score': 5.0}],
+ '京都芝3200m': [{'sire': '小柄なエピファネイア', 'score': 5.0},
+              {'sire': 'ゴールドシップ', 'score': 5.0},
+              {'sire': 'オルフェーヴル', 'score': 5.0}],
+ '阪神芝1600m': [{'sire': 'ロードカナロア', 'score': 5.0},
+              {'sire': 'エピファネイア', 'score': 5.0},
+              {'sire': 'キズナ', 'score': 5.0},
+              {'sire': 'ルーラーシップ', 'score': 5.0},
+              {'sire': 'イスラボニータ１～4枠\u3000ハービンジャー', 'score': 5.0, 'gate_min': 1, 'gate_max': 4}],
+ '阪神芝2000m': [{'sire': 'ドゥラメンテ', 'score': 5.0, 'sex': ['牡']},
+              {'sire': 'ルーラーシップ', 'score': 5.0},
+              {'sire': 'キズナ', 'score': 5.0},
+              {'sire': 'キタサンブラック', 'score': 5.0, 'sex': ['牡']},
+              {'sire': 'シルバーステート', 'score': 5.0, 'sex': ['牡']},
+              {'sire': 'サトノダイヤモンド', 'score': 5.0},
+              {'sire': 'ジャスタウェイ', 'score': 5.0},
+              {'sire': 'ラブリーデイ', 'score': 5.0}],
+ '阪神芝2200m': [{'sire': 'キズナ', 'score': 5.0},
+              {'sire': 'ハービンジャー', 'score': 5.0},
+              {'sire': 'ドゥラメンテ', 'score': 5.0},
+              {'sire': 'レイデオロ', 'score': 5.0, 'sex': ['牡']},
+              {'sire': 'ゴールドシップ', 'score': 5.0},
+              {'sire': 'オルフェーヴル', 'score': 5.0}],
+ '札幌芝1200m': [{'sire': 'ロードカナロア', 'score': 5.0},
+              {'sire': 'ミッキーアイル', 'score': 5.0, 'sex': ['牝']},
+              {'sire': 'ファインニードル', 'score': 5.0},
+              {'sire': 'タワーオブロンドン', 'score': 5.0}],
+ '札幌芝1500m': [{'sire': 'モーリス', 'score': 5.0},
+              {'sire': 'エピファネイア', 'score': 5.0},
+              {'sire': 'リオンディーズ', 'score': 5.0, 'sex': ['牝']},
+              {'sire': 'キズナ', 'score': 5.0, 'sex': ['牝']}],
+ '札幌芝1800m': [{'sire': 'ドゥラメンテ', 'score': 5.0},
+              {'sire': 'ハービンジャー', 'score': 5.0},
+              {'sire': 'ロードカナロア', 'score': 5.0},
+              {'sire': 'スワーヴリチャード', 'score': 5.0},
+              {'sire': 'リオンディーズ', 'score': 5.0},
+              {'sire': 'キタサンブラック', 'score': 5.0},
+              {'sire': 'ゴールドシップ', 'score': 5.0}],
+ '札幌芝2000m': [{'sire': 'ゴールドシップ', 'score': 5.0},
+              {'sire': 'オルフェーヴル', 'score': 5.0},
+              {'sire': 'ドゥラメンテ', 'score': 5.0},
+              {'sire': 'キズナ', 'score': 5.0},
+              {'sire': 'モーリス', 'score': 5.0},
+              {'sire': 'ハービンジャー', 'score': 5.0},
+              {'sire': 'ジャスタウェイ', 'score': 5.0}],
+ '札幌芝2600m': [{'sire': 'ドゥラメンテ', 'score': 5.0},
+              {'sire': 'キズナ', 'score': 5.0},
+              {'sire': 'エピファネイア', 'score': 5.0, 'weight_max': 479},
+              {'sire': 'レイデオロ', 'score': 5.0, 'sex': ['牡', 'セ']},
+              {'sire': 'オルフェーヴル', 'score': 5.0},
+              {'sire': 'サトノクラウン', 'score': 5.0}],
+ '札幌ダート1000m': [{'sire': 'シニスターミニスター', 'score': 5.0},
+                {'sire': 'マジェスティックウォリアー', 'score': 5.0, 'gate_min': 4, 'gate_max': 8},
+                {'sire': 'ヘニーヒューズ', 'score': 5.0},
+                {'sire': 'アジアエクスプレス', 'score': 5.0},
+                {'sire': 'リオンディーズ', 'score': 5.0},
+                {'sire': 'ロードカナロア', 'score': 5.0}],
+ '札幌ダート1700m': [{'sire': 'ヘニーヒューズ', 'score': 5.0},
+                {'sire': 'ドレフォン', 'score': 5.0},
+                {'sire': 'シニスターミニスター', 'score': 5.0, 'sex': ['牡', 'セ']},
+                {'sire': 'マジェスティックウォリアー', 'score': 5.0, 'gate_min': 5, 'gate_max': 8},
+                {'sire': 'パイロ', 'score': 5.0, 'sex': ['牡', 'セ']},
+                {'sire': 'キズナ', 'score': 5.0},
+                {'sire': 'リオンディーズ', 'score': 5.0, 'sex': ['牡', 'セ']},
+                {'sire': 'マインドユアビスケッツ', 'score': 5.0, 'gate_min': 5, 'gate_max': 8}],
+ '函館芝1200m': [{'sire': 'ロードカナロア', 'score': 5.0},
+              {'sire': 'モーリス', 'score': 5.0},
+              {'sire': 'ビッグアーサー', 'score': 5.0},
+              {'sire': 'ミッキーアイル', 'score': 5.0, 'sex': ['牝']},
+              {'sire': 'キタサンブラック', 'score': 5.0, 'sex': ['牝']},
+              {'sire': 'キンシャサノキセキ', 'score': 5.0}],
+ '函館芝1800m': [{'sire': 'キズナ', 'score': 5.0},
+              {'sire': 'キタサンブラック', 'score': 5.0},
+              {'sire': 'ハービンジャー', 'score': 5.0, 'styles': ['逃げ', '先行'], 'conditions': ['良']},
+              {'sire': 'ロードカナロア', 'score': 5.0, 'conditions': ['良']},
+              {'sire': 'ダノンバラード', 'score': 5.0},
+              {'sire': 'サトノダイヤモンド', 'score': 5.0}],
+ '函館芝2000m': [{'sire': 'ハービンジャー', 'score': 5.0},
+              {'sire': 'キズナ', 'score': 5.0},
+              {'sire': 'キタサンブラック', 'score': 5.0},
+              {'sire': 'ダノンバラード', 'score': 5.0},
+              {'sire': 'エピファネイア', 'score': 5.0, 'conditions': ['良']}],
+ '函館芝2600m': [{'sire': 'オルフェーヴル', 'score': 5.0},
+              {'sire': 'キズナ', 'score': 5.0},
+              {'sire': 'ハービンジャー', 'score': 5.0, 'weight_max': 479}],
+ '函館ダート1000m': [{'sire': 'ドレフォン', 'score': 5.0},
+                {'sire': 'ディスクリートキャット', 'score': 5.0},
+                {'sire': 'ヘニーヒューズ', 'score': 5.0, 'conditions': ['良']},
+                {'sire': 'モズアスコット', 'score': 5.0},
+                {'sire': 'パイロ', 'score': 5.0},
+                {'sire': 'シニスターミニスター', 'score': 5.0}],
+ '函館ダート1700m': [{'sire': 'キズナ', 'score': 5.0},
+                {'sire': 'ドレフォン', 'score': 5.0},
+                {'sire': 'ヘニーヒューズ', 'score': 5.0},
+                {'sire': 'シニスターミニスター', 'score': 5.0, 'sex': ['牡', 'セ']},
+                {'sire': 'ルヴァンスレーブ', 'score': 5.0}],
+ '函館ダート2400m': [{'sire': 'マジェスティックウォリアー', 'score': 5.0},
+                {'sire': 'ジャスタウェイ', 'score': 5.0},
+                {'sire': 'ホッコータルマエ', 'score': 5.0}],
+ '福島芝1200m': [{'sire': 'ビッグアーサー', 'score': 5.0},
+              {'sire': 'ミッキーアイル', 'score': 5.0},
+              {'sire': 'ダイワメジャー', 'score': 5.0},
+              {'sire': 'ルーラーシップ', 'score': 5.0},
+              {'sire': 'キズナ', 'score': 5.0},
+              {'sire': 'リオンディーズ', 'score': 5.0},
+              {'sire': 'ファインニードル', 'score': 5.0},
+              {'sire': 'スクリーンヒーロー', 'score': 5.0}],
+ '福島芝1800m': [{'sire': 'ゴールドシップ', 'score': 5.0},
+              {'sire': 'キズナ', 'score': 5.0},
+              {'sire': 'シルバーステート', 'score': 5.0},
+              {'sire': 'ダノンバラード', 'score': 5.0},
+              {'sire': 'オルフェーヴル', 'score': 5.0},
+              {'sire': 'スクリーンヒーロー', 'score': 5.0},
+              {'sire': 'レイデオロ', 'score': 5.0, 'sex': ['牡', 'セ']}],
+ '福島芝2000m': [{'sire': 'キズナ', 'score': 5.0},
+              {'sire': 'スクリーンヒーロー', 'score': 5.0},
+              {'sire': 'ゴールドシップ', 'score': 5.0},
+              {'sire': 'オルフェーヴル', 'score': 5.0},
+              {'sire': 'シルバーステート', 'score': 5.0, 'sex': ['牡', 'セ']}],
+ '福島芝2600m': [{'sire': 'ゴールドシップ', 'score': 5.0},
+              {'sire': 'オルフェーヴル', 'score': 5.0},
+              {'sire': 'ドゥラメンテ', 'score': 5.0},
+              {'sire': 'キズナ', 'score': 5.0},
+              {'sire': 'キタサンブラック', 'score': 5.0}],
+ '福島ダート1150m': [{'sire': 'ヘニーヒューズ', 'score': 5.0},
+                {'sire': 'アジアエクスプレス', 'score': 5.0},
+                {'sire': 'ディスクリートキャット', 'score': 5.0},
+                {'sire': 'シャンハイボビー', 'score': 5.0},
+                {'sire': 'ドレフォン', 'score': 5.0},
+                {'sire': 'ベストウォリアー', 'score': 5.0}],
+ '福島ダート1700m': [{'sire': 'シニスターミニスター', 'score': 5.0},
+                {'sire': 'パイロ', 'score': 5.0},
+                {'sire': 'マジェスティックウォリアー', 'score': 5.0, 'gate_min': 5, 'gate_max': 8},
+                {'sire': 'ヘニーヒューズ', 'score': 5.0},
+                {'sire': 'エスケンデレヤ', 'score': 5.0},
+                {'sire': 'ドレフォン', 'score': 5.0, 'gate_min': 1, 'gate_max': 3},
+                {'sire': 'キンシャサノキセキ', 'score': 5.0, 'sex': ['牡', 'セ']},
+                {'sire': 'オルフェーヴル', 'score': 5.0, 'sex': ['牡', 'セ']}],
+ '小倉芝1200m': [{'sire': 'ロードカナロア', 'score': 5.0},
+              {'sire': 'ダイワメジャー', 'score': 5.0},
+              {'sire': 'ビッグアーサー', 'score': 5.0},
+              {'sire': 'トーセンラー', 'score': 5.0},
+              {'sire': 'アメリカンペイトリオット', 'score': 5.0},
+              {'sire': 'エイシンヒカリ', 'score': 5.0},
+              {'sire': 'ファインニードル', 'score': 5.0},
+              {'sire': 'ネロ', 'score': 5.0},
+              {'sire': 'ミスターメロディ', 'score': 5.0}],
+ '小倉芝1800m': [{'sire': 'エピファネイア', 'score': 5.0},
+              {'sire': 'キタサンブラック', 'score': 5.0},
+              {'sire': 'キズナ', 'score': 5.0},
+              {'sire': 'リアルスティール', 'score': 5.0},
+              {'sire': 'ゴールドシップ', 'score': 5.0, 'gate_min': 1, 'gate_max': 3},
+              {'sire': 'ハービンジャー', 'score': 5.0},
+              {'sire': 'ブリックスアンドモルタル', 'score': 5.0},
+              {'sire': 'アメリカンペイトリオット', 'score': 5.0}],
+ '小倉芝2000m': [{'sire': 'エピファネイア', 'score': 5.0},
+              {'sire': 'キズナ', 'score': 5.0},
+              {'sire': 'ロードカナロア', 'score': 5.0},
+              {'sire': 'キタサンブラック', 'score': 5.0},
+              {'sire': 'ゴールドシップ', 'score': 5.0, 'gate_min': 1, 'gate_max': 3},
+              {'sire': 'オルフェーヴル', 'score': 5.0},
+              {'sire': 'モーリス', 'score': 5.0},
+              {'sire': 'スクリーンヒーロー', 'score': 5.0},
+              {'sire': 'シルバーステート', 'score': 5.0},
+              {'sire': 'ハービンジャー', 'score': 5.0}],
+ '小倉芝2600m': [{'sire': 'ゴールドシップ', 'score': 5.0},
+              {'sire': 'オルフェーヴル', 'score': 5.0},
+              {'sire': 'ルーラーシップ', 'score': 5.0},
+              {'sire': 'エピファネイア', 'score': 5.0},
+              {'sire': 'ジャスタウェイ', 'score': 5.0},
+              {'sire': 'レイデオロ', 'score': 5.0, 'sex': ['牡', 'セ']}],
+ '小倉ダート1000m': [{'sire': 'ヘニーヒューズ', 'score': 5.0, 'conditions': ['良']},
+                {'sire': 'ダノンレジェンド', 'score': 5.0, 'sex': ['牝']},
+                {'sire': 'シニスターミニスター', 'score': 5.0},
+                {'sire': 'ロードカナロア', 'score': 5.0},
+                {'sire': 'ベストウォリアー', 'score': 5.0},
+                {'sire': 'キンシャサノキセキ', 'score': 5.0},
+                {'sire': 'ミッキーアイル', 'score': 5.0}],
+ '小倉ダート1700m': [{'sire': 'シニスターミニスター', 'score': 5.0},
+                {'sire': 'パイロ', 'score': 5.0, 'conditions': ['稍重', '重・不良']},
+                {'sire': 'マジェスティックウォリアー', 'score': 5.0, 'gate_min': 5, 'gate_max': 8},
+                {'sire': 'ドレフォン', 'score': 5.0},
+                {'sire': 'ヘニーヒューズ', 'score': 5.0},
+                {'sire': 'アジアエクスプレス', 'score': 5.0, 'sex': ['牡', 'セ']},
+                {'sire': 'アメリカンペイトリオット', 'score': 5.0, 'sex': ['牝']}]}
+
+SIRE_NAME_ALIASES = {
+    "ドレフィン": "ドレフォン",
+    "シスターミニスター": "シニスターミニスター",
+    "ビックアーサー": "ビッグアーサー",
+    "スワーブリチャード": "スワーヴリチャード",
+    "マイルドユアビスケッツ": "マインドユアビスケッツ",
+}
+
+
+def normalize_sire_name(name):
+    """種牡馬名の表記揺れを統一する。"""
+    normalized = str(name or "").strip()
+    for old, new in SIRE_NAME_ALIASES.items():
+        normalized = normalized.replace(old, new)
+    return normalized
+
+
+def normalize_sex_code(sex):
+    """性別表記を牡・牝・セへ統一する。"""
+    return "セ" if sex in ("騸", "セ") else sex
+
+
+def calculate_detailed_lineage_adjustment(
+    course, sire, sex, body_weight, horse_number, style, track_condition
+):
+    """コース事典2の父馬＋条件を厳格判定する。
+
+    条件付きルールは、性別・馬体重・馬番範囲・脚質・馬場状態を
+    すべて満たした場合だけ適用する。同一コース・同一父馬で
+    複数ルールに一致しても二重加点せず、最大1件だけ採用する。
+    """
+    rules = COURSE_LINEAGE_RULES.get(course, [])
+    if not rules:
+        return 0.0, []
+
+    normalized_sire = normalize_sire_name(sire)
+    normalized_sex = normalize_sex_code(sex)
+    gate = safe_int_convert(horse_number, 0)
+    matched = []
+
+    for rule in rules:
+        target_sire = normalize_sire_name(rule.get("sire", ""))
+        if not normalized_sire or not target_sire:
+            continue
+        if target_sire not in normalized_sire and normalized_sire not in target_sire:
+            continue
+
+        allowed_sex = rule.get("sex")
+        if allowed_sex and normalized_sex not in allowed_sex:
+            continue
+
+        if rule.get("weight_min") is not None:
+            if not body_weight or body_weight < rule["weight_min"]:
+                continue
+        if rule.get("weight_max") is not None:
+            if not body_weight or body_weight > rule["weight_max"]:
+                continue
+
+        if rule.get("gate_min") is not None and gate < rule["gate_min"]:
+            continue
+        if rule.get("gate_max") is not None and gate > rule["gate_max"]:
+            continue
+
+        allowed_styles = rule.get("styles")
+        if allowed_styles and style not in allowed_styles:
+            continue
+
+        allowed_conditions = rule.get("conditions")
+        if allowed_conditions and track_condition not in allowed_conditions:
+            continue
+
+        details = []
+        if allowed_sex:
+            details.append("性別=" + "/".join(allowed_sex))
+        if rule.get("weight_min") is not None:
+            details.append(f"馬体重{rule['weight_min']}kg以上")
+        if rule.get("weight_max") is not None:
+            details.append(f"馬体重{rule['weight_max']}kg以下")
+        if rule.get("gate_min") is not None or rule.get("gate_max") is not None:
+            details.append(f"馬番{rule.get('gate_min', 1)}～{rule.get('gate_max', 18)}")
+        if allowed_styles:
+            details.append("脚質=" + "/".join(allowed_styles))
+        if allowed_conditions:
+            details.append("馬場=" + "/".join(allowed_conditions))
+
+        matched.append((float(rule.get("score", 5.0)), target_sire, details))
+
+    if not matched:
+        return 0.0, []
+
+    score, target_sire, details = max(matched, key=lambda item: item[0])
+    condition_text = "・".join(details)
+    reason = f"コース事典2：{target_sire}"
+    if condition_text:
+        reason += f"（{condition_text}）"
+    reason += f" +{score:.1f}"
+    return score, [reason]
+
 # --- 🛰️ 当日環境設定エリア ---
 st.header("🛰️ 当日のレース環境")
-env_cols = st.columns(4)
+env_cols = st.columns(6)
 with env_cols[0]:
     saved_course = st.session_state["loaded_data"].get("course", "(未選択)")
     sel_course = st.selectbox("🗺️ レースコースを選択:", ["(未選択)"] + list(COURSE_MASTER.keys()), index=(["(未選択)"] + list(COURSE_MASTER.keys())).index(saved_course) if saved_course in COURSE_MASTER else 0)
@@ -1105,6 +1539,10 @@ with env_cols[2]:
     saved_race_class = st.session_state["loaded_data"].get("race_class", "3勝クラス以下")
     race_class = st.selectbox("🏆 レース格（クラス）:", ["G1", "G2/G3", "オープン/L", "3勝クラス以下"], index=["G1", "G2/G3", "オープン/L", "3勝クラス以下"].index(saved_race_class))
 with env_cols[3]:
+    track_bias = st.selectbox("🧭 当日の馬場バイアス:", ["フラット", "内・前有利", "外・差し有利"])
+with env_cols[4]:
+    race_month = st.selectbox("📅 開催月:", list(range(1, 13)), index=date.today().month - 1)
+with env_cols[5]:
     total_budget = st.number_input("💰 このレースの想定軍資金 (円):", min_value=100, max_value=100000, value=5000, step=100)
 
 auto_track, auto_dist, good_blood_list, course_note = "選択なし", "選択なし", [], ""
@@ -1548,13 +1986,14 @@ ACTIVE_LEARNING_WEIGHTS = load_learning_weights()
 calculated_results = []
 for item in row_tmp_data:
     num, name, pop, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, custom_note, sel_track, sel_style, sel_frame, sel_dist_change, sel_plus1, sel_plus2, score_cell = item
+    sex_age, sex, age, body_change = extract_sex_age_and_change(custom_note)
     
     score = 0.0
     final_apt = "C"
     score_breakdown = {
         "指数": 0.0, "斤量": 0.0, "馬体重": 0.0, "格・斤量価値": 0.0,
         "馬番・枠": 0.0, "血統・コース": 0.0, "脚質・距離": 0.0,
-        "騎手補正": 0.0, "人気補正": 0.0, "展開補正": 0.0, "道悪補正": 0.0
+        "騎手補正": 0.0, "人気補正": 0.0, "展開補正": 0.0, "道悪補正": 0.0, "馬場バイアス": 0.0, "性齢・馬体増減": 0.0
     }
     evaluation_reasons = []
     learning_adjustment = 0.0
@@ -1690,24 +2129,24 @@ for item in row_tmp_data:
 
         # コース事典との連動補正
         if sel_course != "(未選択)":
-            detected_lineages = auto_detect_lineage(sire)
-            lineage_matched = False
-            for target in good_blood_list:
-                if target in sire or (sire and sire in target):
-                    lineage_matched = True
-                for detected in detected_lineages:
-                    if target in detected or detected in target:
-                        lineage_matched = True
-            if lineage_matched:
-                horse_base_score += 5.0
-                score_breakdown["血統・コース"] += 5.0
-                evaluation_reasons.append("コース好相性血統で +5.0")
-            
-            if sire and (sire in course_note):
-                horse_base_score += 3.0
-                score_breakdown["血統・コース"] += 3.0
-                evaluation_reasons.append("コース注記に父馬が該当して +3.0")
-                
+            # コース事典2に未収録のコースだけ、従来の汎用血統判定を使用する。
+            # 収録コースは後段の厳格ルールで判定し、二重加点を防止する。
+            if sel_course not in COURSE_LINEAGE_RULES:
+                detected_lineages = auto_detect_lineage(sire)
+                lineage_matched = any(
+                    lineage_matches_course_target(sire, target)
+                    for target in good_blood_list
+                )
+                if lineage_matched:
+                    horse_base_score += 5.0
+                    score_breakdown["血統・コース"] += 5.0
+                    evaluation_reasons.append("コース好相性血統で +5.0")
+
+                if sire and (sire in course_note):
+                    horse_base_score += 3.0
+                    score_breakdown["血統・コース"] += 3.0
+                    evaluation_reasons.append("コース注記に父馬が該当して +3.0")
+
             fav_style = COURSE_MASTER[sel_course].get("fav_style", "")
             if sel_style in fav_style and sel_style != "選択なし":
                 horse_base_score += 3.0
@@ -1749,19 +2188,41 @@ for item in row_tmp_data:
             score_breakdown["脚質・距離"] += 3.0
             evaluation_reasons.append("先行力と前半3Fを評価して +3.0") 
         
-        pop_penalty_factor = 0.7
-        if pop >= 10:
-            pop_penalty_factor = 0.95
-            
+        # 性別・年齢・馬体重増減の厳格補正
+        sex_body_adjustment, sex_body_reasons = calculate_sex_age_body_adjustment(
+            sex, age, body_change, race_month, race_class
+        )
+        horse_base_score += sex_body_adjustment
+        score_breakdown["性齢・馬体増減"] += sex_body_adjustment
+        evaluation_reasons.extend(sex_body_reasons)
+
+        # コース事典2.xlsxの厳格血統判定
+        # Excel収録コースはこの判定を正本とし、父・性別・馬体重・馬番・脚質・馬場を照合する。
+        detailed_lineage_adjustment, detailed_lineage_reasons = calculate_detailed_lineage_adjustment(
+            sel_course, sire, sex, wgh, num, sel_style, track_condition
+        )
+        horse_base_score += detailed_lineage_adjustment
+        score_breakdown["血統・コース"] += detailed_lineage_adjustment
+        evaluation_reasons.extend(detailed_lineage_reasons)
+
+        # 当日のリアルタイム馬場バイアス
+        bias_adjustment, bias_reasons = calculate_track_bias_adjustment(
+            track_bias, sel_frame, sel_style
+        )
+        horse_base_score += bias_adjustment
+        score_breakdown["馬場バイアス"] += bias_adjustment
+        evaluation_reasons.extend(bias_reasons)
+
+        # 人気は能力スコアから完全に除外。人気補正は妙味スコア専用とする。
         jockey_effect = horse_base_score * (mitigated_jockey_rate - 1.0)
-        popularity_effect = -(pop * pop_penalty_factor)
+        popularity_effect = 0.0
         score_breakdown["騎手補正"] = round(jockey_effect, 2)
-        score_breakdown["人気補正"] = round(popularity_effect, 2)
+        score_breakdown["人気補正"] = 0.0
         if jockey_effect >= 1.0:
             evaluation_reasons.append(f"騎手適性で +{jockey_effect:.1f}")
         elif jockey_effect <= -1.0:
             evaluation_reasons.append(f"騎手適性で {jockey_effect:.1f}")
-        score = (horse_base_score * mitigated_jockey_rate) + popularity_effect
+        score = horse_base_score * mitigated_jockey_rate
         
         if sel_style in pace_bonus:
             score += pace_bonus[sel_style]
@@ -1802,11 +2263,16 @@ for item in row_tmp_data:
             score, score_breakdown, evaluation_reasons
         )
             
+    # 妙味スコアは能力値とは別軸。人気薄ほど上げるが能力順位には影響させない。
+    value_score = score + max(0, pop - 1) * 0.8 if name.strip() else 0.0
+
     if name.strip() != "":
         score_cell.write(f"**{score:.2f}**")
         calculated_results.append({
-            "馬番": num, "馬名": name, "最終スコア": score, "人気": pop, "斤量": wgt, "馬体重": wgh,
-            "父馬": sire, "重道悪適性": final_apt, "騎手": jock,
+            "馬番": num, "馬名": name, "能力スコア": score, "妙味スコア": value_score, "最終スコア": score, "人気": pop, "斤量": wgt, "馬体重": wgh,
+            "父馬": sire,
+            "父系統": " / ".join([x for x in auto_detect_lineage(sire) if x != normalize_sire_name(sire)]) or "個別判定",
+            "性齢": sex_age, "馬体重増減": body_change, "重道悪適性": final_apt, "騎手": jock,
             "戦略メモ": j_data.get("note", "") if jock != "(未選択)" else "",
             "評価理由": evaluation_reasons,
             "得点内訳": score_breakdown,
@@ -2054,7 +2520,7 @@ def save_prediction_record(res_df, course, budget):
     snapshot_columns = [
         col for col in [
             "馬番", "馬名", "AI評価", "AI点", "信頼度", "人気", "斤量",
-            "馬体重", "父馬", "最終スコア", "騎手", "重道悪適性",
+            "馬体重", "馬体重増減", "性齢", "父馬", "父系統", "能力スコア", "妙味スコア", "騎手", "重道悪適性",
             "評価理由", "得点内訳", "学習補正", "適用学習倍率"
         ] if col in res_df.columns
     ]
@@ -2270,7 +2736,7 @@ if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primar
             eval_cols[1].metric("AI点", f"{top_result['AI点']:.1f}点")
             eval_cols[2].metric("信頼度", f"{int(top_result['信頼度'])}%")
             eval_cols[3].metric("星評価", top_result["星評価"])
-            st.caption("※AI点と信頼度は、このレースに出走する馬同士を比較した相対評価です。勝率を直接示す数値ではありません。")
+            st.caption("※AI点・能力スコアは人気を使わず算出します。妙味スコアだけが人気を利用し、買い目候補の抽出に使います。")
 
             # Ver1.08 AIコメント自動生成
             st.subheader("💬 AI総合コメント")
@@ -2329,13 +2795,14 @@ if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primar
                     )
 
             st.dataframe(
-                res_df[["印", "馬番", "馬名", "AI評価", "AI点", "信頼度", "星評価", "人気", "斤量", "馬体重", "父馬", "最終スコア", "騎手", "重道悪適性"]],
+                res_df[["印", "馬番", "馬名", "AI評価", "AI点", "信頼度", "星評価", "人気", "斤量", "馬体重", "馬体重増減", "性齢", "父馬", "父系統", "能力スコア", "妙味スコア", "騎手", "重道悪適性"]],
                 use_container_width=True,
                 hide_index=True,
                 column_config={
                     "AI点": st.column_config.NumberColumn(format="%.1f点"),
                     "信頼度": st.column_config.NumberColumn(format="%d%%"),
-                    "最終スコア": st.column_config.NumberColumn(format="%.2f"),
+                    "能力スコア": st.column_config.NumberColumn(format="%.2f"),
+                    "妙味スコア": st.column_config.NumberColumn(format="%.2f"),
                 },
             )
             
