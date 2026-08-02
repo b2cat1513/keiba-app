@@ -1643,4 +1643,11 @@ if st.session_state["history_log"]:
     tot_return = log_df["回収額"].sum()
     recovery_rate = (tot_return / tot_invest * 100) if tot_invest > 0 else 0
     
-    st.metric("累計回収率", f"{recovery_rate:.1f}%", delta=f"{tot
+    recovery_text = f"{recovery_rate:.1f}%"
+    profit_loss = int(tot_return - tot_invest)
+    profit_loss_text = f"{profit_loss:,}円"
+    st.metric(
+        "累計回収率",
+        recovery_text,
+        delta=profit_loss_text,
+    )
