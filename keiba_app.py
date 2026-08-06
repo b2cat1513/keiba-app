@@ -4,6 +4,7 @@ import json
 import urllib.parse
 import base64
 import re
+import math
 import sqlite3
 import uuid
 from datetime import datetime, date
@@ -13,8 +14,8 @@ from streamlit.components.v1 import html
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.12", layout="wide")
-st.title("🏆 ジェニーAI予想ver1.12 (ジョッキー条件自動判定・特記事項入力廃止版)")
+st.set_page_config(page_title="ジェニーAI予想ver1.13.1", layout="wide")
+st.title("🏆 ジェニーAI予想ver1.13.1 (単勝オッズ統合・AI市場確率ブレンド版)")
 
 # 🛠️ スマホ向け：データを極限まで縮小・Base64圧縮する関数
 def encode_for_mobile(data_dict):
@@ -1137,16 +1138,46 @@ def parse_netkeiba_multi_line(raw_text):
 
 
 def parse_umanity_multi_line(raw_text):
-    """ウマニティの出馬表・U指数ページから馬番、馬名、指数を抽出する。"""
+    """ウマニティの出馬表・U指数ページから馬番、馬名、指数を抽出する。
+
+    対応形式:
+    1) 馬番 → 馬名 → U指数
+    2) 馬名 → 騎手 → U指数 → 馬番（スマホ画面コピーで多い形式）
+    3) 1行内に馬番・馬名・U指数が並ぶ形式
+    """
     text = normalize_copied_text(raw_text)
     if not text:
         return []
 
     results = {}
-    lines = text.splitlines()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
 
     def valid_index(value):
         return 20.0 <= value <= 200.0
+
+    def clean_index_token(line):
+        """98.0Q / 95.16 / 96.76 のようなOCR混在行から指数だけを抽出する。"""
+        compact = re.sub(r"\s+", "", str(line or ""))
+        match = re.match(r"^(\d{2,3}(?:\.\d{1,3})?)(?:[^0-9.].*)?$", compact)
+        if not match:
+            return None
+        try:
+            value = float(match.group(1))
+        except ValueError:
+            return None
+        return value if valid_index(value) else None
+
+    def extract_name_from_horse_line(line):
+        """『馬名 牡4 美|厩舎 オッズ』形式から馬名を抽出する。"""
+        normalized = re.sub(r"\s+", " ", str(line or "")).strip()
+        # 性齢の直前までを馬名として取得
+        match = re.match(
+            rf"^(?P<name>{HORSE_NAME_PATTERN})\s+(?:{SEX_AGE_PATTERN})(?:\s|$)",
+            normalized,
+        )
+        if match:
+            return normalize_horse_name(match.group("name"))
+        return ""
 
     def add_result(gate, name="", u_index=None):
         try:
@@ -1167,14 +1198,16 @@ def parse_umanity_multi_line(raw_text):
             if valid_index(value):
                 results[gate]["u_index"] = value
 
+    # 既存の「馬番 → 馬名 → 指数」形式
     pattern1 = re.compile(
-        rf"(?:^|\s)(?P<gate>\d{{1,2}})\s+(?P<name>{HORSE_NAME_PATTERN}).{{0,80}}?"
+        rf"(?:^|\s)(?P<gate>\d{{1,2}})\s+(?P<name>{HORSE_NAME_PATTERN}).{{0,100}}?"
         rf"(?:U指数|Ｕ指数|指数)?\s*[:：]?\s*(?P<index>\d{{2,3}}(?:\.\d+)?)(?:\s|$)",
         re.IGNORECASE,
     )
     for match in pattern1.finditer(text):
         add_result(match.group("gate"), match.group("name"), match.group("index"))
 
+    # 既存の「指数 → 馬番 → 馬名」形式
     pattern2 = re.compile(
         rf"(?:^|\s)(?:U指数|Ｕ指数|指数)?\s*[:：]?\s*(?P<index>\d{{2,3}}(?:\.\d+)?)\s+"
         rf"(?P<gate>\d{{1,2}})\s+(?P<name>{HORSE_NAME_PATTERN})(?:\s|$)",
@@ -1183,10 +1216,23 @@ def parse_umanity_multi_line(raw_text):
     for match in pattern2.finditer(text):
         add_result(match.group("gate"), match.group("name"), match.group("index"))
 
+    # 行単位の状態管理。スマホコピーの
+    # 馬名 → 騎手 → U指数 → 馬番
+    # に対応する。
     pending_gate = None
     pending_name = ""
+    pending_index = None
+
+    ignored_exact = {
+        "VIP", "NO PHOTO", "New!", "ニュース", "レース", "新出馬表",
+        "みんなの人気", "ブリンカー", "ローテ", "オッズ",
+    }
 
     for line in lines:
+        if line in ignored_exact:
+            continue
+
+        # 1行完結: 1 馬名 98.0
         match = re.fullmatch(
             rf"(?P<gate>\d{{1,2}})\s+(?P<name>{HORSE_NAME_PATTERN}).*?(?P<index>\d{{2,3}}(?:\.\d+)?)",
             line,
@@ -1197,50 +1243,73 @@ def parse_umanity_multi_line(raw_text):
                 add_result(match.group("gate"), match.group("name"), value)
                 pending_gate = None
                 pending_name = ""
+                pending_index = None
                 continue
 
-        match = re.fullmatch(rf"(?P<gate>\d{{1,2}})\s+(?P<name>{HORSE_NAME_PATTERN})", line)
-        if match:
-            pending_gate = int(match.group("gate"))
-            pending_name = match.group("name")
-            add_result(pending_gate, pending_name)
+        # 馬名 + 性齢を含む本体行
+        horse_name = extract_name_from_horse_line(line)
+        if horse_name:
+            pending_name = horse_name
+            # 新しい馬へ移ったので、未確定の指数だけは破棄
+            pending_index = None
             continue
 
-        match = re.fullmatch(r"(\d{1,2})", line)
+        # U指数ラベル付き
+        match = re.search(
+            r"(?:U指数|Ｕ指数|指数)\s*[:：]?\s*(\d{2,3}(?:\.\d+)?)",
+            line,
+            re.IGNORECASE,
+        )
         if match:
-            possible_gate = int(match.group(1))
+            value = float(match.group(1))
+            if valid_index(value):
+                if pending_gate is not None:
+                    add_result(pending_gate, pending_name, value)
+                    pending_gate = None
+                    pending_name = ""
+                else:
+                    pending_index = value
+            continue
+
+        # 数字だけの行。指数が先に来ていれば、この数字は馬番。
+        gate_match = re.fullmatch(r"(\d{1,2})", line)
+        if gate_match:
+            possible_gate = int(gate_match.group(1))
             if 1 <= possible_gate <= 18:
-                pending_gate = possible_gate
+                if pending_index is not None:
+                    add_result(possible_gate, pending_name, pending_index)
+                    pending_name = ""
+                    pending_index = None
+                    pending_gate = None
+                else:
+                    pending_gate = possible_gate
+                continue
+
+        # ラベルなしの指数行。末尾のQや6などOCRノイズを許容。
+        value = clean_index_token(line)
+        if value is not None:
+            if pending_gate is not None:
+                add_result(pending_gate, pending_name, value)
+                pending_gate = None
                 pending_name = ""
+                pending_index = None
+            else:
+                pending_index = value
             continue
 
-        if pending_gate is not None and re.fullmatch(HORSE_NAME_PATTERN, line) and not re.fullmatch(SEX_AGE_PATTERN, line):
-            pending_name = line
+        # 馬番が先に来るコピー形式で、次の単独馬名を取得
+        if (
+            pending_gate is not None
+            and re.fullmatch(HORSE_NAME_PATTERN, line)
+            and not re.fullmatch(SEX_AGE_PATTERN, line)
+        ):
+            pending_name = normalize_horse_name(line)
             add_result(pending_gate, pending_name)
-            continue
-
-        match = re.search(r"(?:U指数|Ｕ指数|指数)\s*[:：]?\s*(\d{2,3}(?:\.\d+)?)", line, re.IGNORECASE)
-        if match and pending_gate is not None:
-            value = float(match.group(1))
-            if valid_index(value):
-                add_result(pending_gate, pending_name, value)
-                pending_gate = None
-                pending_name = ""
-            continue
-
-        match = re.fullmatch(r"(\d{2,3}\.\d+)", line)
-        if match and pending_gate is not None:
-            value = float(match.group(1))
-            if valid_index(value):
-                add_result(pending_gate, pending_name, value)
-                pending_gate = None
-                pending_name = ""
 
     return sorted(
         [item for item in results.values() if item.get("u_index") is not None],
         key=lambda item: item["gate"],
     )
-
 
 def safe_int_convert(value, default=0):
     """馬番等の安全な数値変換関数"""
@@ -1680,6 +1749,25 @@ with env_cols[3]:
     track_bias = st.selectbox("🧭 当日の馬場バイアス:", ["フラット", "内・前有利", "外・差し有利"])
 with env_cols[4]:
     race_month = st.selectbox("📅 開催月:", list(range(1, 13)), index=date.today().month - 1)
+
+    with st.expander("📈 単勝オッズ統合設定", expanded=False):
+        market_weight = st.slider(
+            "市場（単勝オッズ）の比率",
+            min_value=0.0, max_value=0.50, value=0.30, step=0.05,
+            help="的中率重視では0.25〜0.35が目安。上げすぎると人気順に近づきます。",
+        )
+        ai_weight = round(1.0 - market_weight, 2)
+        probability_temperature = st.slider(
+            "AI勝率変換の温度",
+            min_value=5.0, max_value=20.0, value=10.0, step=0.5,
+            help="小さいほど能力上位へ勝率が集中し、大きいほど均等になります。",
+        )
+        market_smoothing = st.slider(
+            "市場確率の平滑化",
+            min_value=0.0, max_value=0.30, value=0.15, step=0.05,
+            help="過剰人気の影響を弱めます。",
+        )
+        st.caption(f"現在の統合比率：AI {ai_weight:.0%} ／ 市場 {market_weight:.0%}")
 with env_cols[5]:
     total_budget = st.number_input("💰 このレースの想定軍資金 (円):", min_value=100, max_value=100000, value=5000, step=100)
 
@@ -1818,6 +1906,7 @@ with tab_um:
                             "jock": "その他（自由手入力）",
                             "sel_frame": calculate_frame_position(gate),
                             "pop": 10,
+                            "win_odds": 0.0,
                             "idx": u_index,
                             "l3f": 35.0,
                             "sire": "",
@@ -1847,9 +1936,9 @@ st.divider()
 # ==========================================
 st.write("### 📝 出馬表データ入力")
 
-c_widths = [0.55, 1.25, 0.55, 0.60, 0.60, 0.65, 0.60, 1.15, 0.55, 1.05, 1.05, 1.00, 1.00, 1.10, 0.70, 0.75, 0.75, 0.80, 0.75]
+c_widths = [0.55, 1.20, 0.52, 0.65, 0.60, 0.58, 0.63, 0.58, 1.10, 0.52, 1.00, 1.00, 0.95, 0.95, 1.05, 0.68, 0.72, 0.72, 0.78, 0.72]
 cols = st.columns(c_widths)
-headers = ["馬番", "馬名", "人気", "指数", "斤量", "馬体重", "前3F", "父馬", "道悪", "今回騎手", "前走騎手", "厩舎", "馬主", "手入力メモ", "馬場", "脚質", "枠有利", "前走距離", "最終スコア"]
+headers = ["馬番", "馬名", "人気", "単勝", "指数", "斤量", "馬体重", "前3F", "父馬", "道悪", "今回騎手", "前走騎手", "厩舎", "馬主", "手入力メモ", "馬場", "脚質", "枠有利", "前走距離", "能力値"]
 for col, h in zip(cols, headers):
     col.write(f"**{h}**")
 
@@ -1864,25 +1953,30 @@ for i in range(1, 19):
     num = c[0].text_input(f"num_{i}", value=s_row.get("num", str(i)), label_visibility="collapsed")
     name = c[1].text_input(f"name_{i}", value=s_row.get("name", ""), label_visibility="collapsed")
     pop = c[2].number_input(f"pop_{i}", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), label_visibility="collapsed")
-    idx = c[3].number_input(f"idx_{i}", value=float(s_row.get("idx", 0.0)), step=0.1, label_visibility="collapsed")
-    wgt = c[4].number_input(f"wgt_{i}", min_value=48.0, max_value=62.0, value=float(s_row.get("wgt", 56.0)), step=0.5, label_visibility="collapsed")
-    wgh = c[5].number_input(f"wgh_{i}", min_value=350, max_value=600, value=int(s_row.get("wgh", 480)), step=2, label_visibility="collapsed")
-    l3f = c[6].number_input(f"l3f_{i}", value=float(s_row.get("l3f", 35.0)), step=0.1, label_visibility="collapsed")
-    sire = c[7].text_input(f"sire_{i}", value=s_row.get("sire", ""), label_visibility="collapsed", placeholder="父馬")
-    has_heavy_record = c[8].checkbox(f"rec_{i}", value=s_row.get("heavy_record", False), label_visibility="collapsed")
+    win_odds = c[3].number_input(
+        f"win_odds_{i}", min_value=0.0, max_value=999.9,
+        value=float(s_row.get("win_odds", 0.0) or 0.0), step=0.1,
+        label_visibility="collapsed", help="未入力は0.0",
+    )
+    idx = c[4].number_input(f"idx_{i}", value=float(s_row.get("idx", 0.0)), step=0.1, label_visibility="collapsed")
+    wgt = c[5].number_input(f"wgt_{i}", min_value=48.0, max_value=62.0, value=float(s_row.get("wgt", 56.0)), step=0.5, label_visibility="collapsed")
+    wgh = c[6].number_input(f"wgh_{i}", min_value=350, max_value=600, value=int(s_row.get("wgh", 480)), step=2, label_visibility="collapsed")
+    l3f = c[7].number_input(f"l3f_{i}", value=float(s_row.get("l3f", 35.0)), step=0.1, label_visibility="collapsed")
+    sire = c[8].text_input(f"sire_{i}", value=s_row.get("sire", ""), label_visibility="collapsed", placeholder="父馬")
+    has_heavy_record = c[9].checkbox(f"rec_{i}", value=s_row.get("heavy_record", False), label_visibility="collapsed")
 
     jock_list = sorted([k for k in JOCKEY_MASTER.keys() if k != "その他（自由手入力）"]) + ["その他（自由手入力）"]
     jockey_options = ["(未選択)"] + jock_list
     saved_jockey = normalize_jockey_name(s_row.get("jock", "(未選択)"))
-    jock = c[9].selectbox(f"jock_{i}", jockey_options, index=jockey_options.index(saved_jockey) if saved_jockey in jockey_options else 0, label_visibility="collapsed")
+    jock = c[10].selectbox(f"jock_{i}", jockey_options, index=jockey_options.index(saved_jockey) if saved_jockey in jockey_options else 0, label_visibility="collapsed")
 
     saved_previous = normalize_jockey_name(s_row.get("previous_jockey", "(未選択)"))
-    previous_jockey = c[10].selectbox(f"previous_jockey_{i}", jockey_options, index=jockey_options.index(saved_previous) if saved_previous in jockey_options else 0, label_visibility="collapsed")
-    trainer = c[11].selectbox(f"trainer_{i}", TRAINER_OPTIONS, index=TRAINER_OPTIONS.index(s_row.get("trainer")) if s_row.get("trainer") in TRAINER_OPTIONS else 0, label_visibility="collapsed")
-    owner = c[12].selectbox(f"owner_{i}", OWNER_OPTIONS, index=OWNER_OPTIONS.index(s_row.get("owner")) if s_row.get("owner") in OWNER_OPTIONS else 0, label_visibility="collapsed")
-    custom_note = c[13].text_input(f"custom_note_{i}", value=s_row.get("custom_note", ""), label_visibility="collapsed", placeholder="性齢・特徴メモ")
-    sel_track = c[14].selectbox(f"track_{i}", ["選択なし", "芝", "ダート"], index=["選択なし", "芝", "ダート"].index(s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")), label_visibility="collapsed")
-    sel_style = c[15].selectbox(f"style_{i}", ["選択なし", "逃げ", "先行", "差し", "追い込み"], index=["選択なし", "逃げ", "先行", "差し", "追い込み"].index(s_row.get("sel_style", "選択なし")), label_visibility="collapsed")
+    previous_jockey = c[11].selectbox(f"previous_jockey_{i}", jockey_options, index=jockey_options.index(saved_previous) if saved_previous in jockey_options else 0, label_visibility="collapsed")
+    trainer = c[12].selectbox(f"trainer_{i}", TRAINER_OPTIONS, index=TRAINER_OPTIONS.index(s_row.get("trainer")) if s_row.get("trainer") in TRAINER_OPTIONS else 0, label_visibility="collapsed")
+    owner = c[13].selectbox(f"owner_{i}", OWNER_OPTIONS, index=OWNER_OPTIONS.index(s_row.get("owner")) if s_row.get("owner") in OWNER_OPTIONS else 0, label_visibility="collapsed")
+    custom_note = c[14].text_input(f"custom_note_{i}", value=s_row.get("custom_note", ""), label_visibility="collapsed", placeholder="性齢・特徴メモ")
+    sel_track = c[15].selectbox(f"track_{i}", ["選択なし", "芝", "ダート"], index=["選択なし", "芝", "ダート"].index(s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")), label_visibility="collapsed")
+    sel_style = c[16].selectbox(f"style_{i}", ["選択なし", "逃げ", "先行", "差し", "追い込み"], index=["選択なし", "逃げ", "先行", "差し", "追い込み"].index(s_row.get("sel_style", "選択なし")), label_visibility="collapsed")
 
     if name and sel_style in style_counts:
         style_counts[sel_style] += 1
@@ -1890,17 +1984,17 @@ for i in range(1, 19):
     f_opts = ["選択なし", "内枠", "外枠"]
     num_int = safe_int_convert(num, i)
     f_def_idx = 1 if num_int <= 8 else (2 if num_int >= 13 else 0)
-    sel_frame = c[16].selectbox(f"frame_{i}", f_opts, index=f_opts.index(s_row.get("sel_frame", f_opts[f_def_idx])), label_visibility="collapsed")
-    sel_dist_change = c[17].selectbox(f"dist_change_{i}", ["同距離", "距離短縮", "距離延長"], index=["同距離", "距離短縮", "距離延長"].index(s_row.get("sel_dist_change", "同距離")), label_visibility="collapsed")
+    sel_frame = c[17].selectbox(f"frame_{i}", f_opts, index=f_opts.index(s_row.get("sel_frame", f_opts[f_def_idx])), label_visibility="collapsed")
+    sel_dist_change = c[18].selectbox(f"dist_change_{i}", ["同距離", "距離短縮", "距離延長"], index=["同距離", "距離短縮", "距離延長"].index(s_row.get("sel_dist_change", "同距離")), label_visibility="collapsed")
 
     current_inputs["rows"][str(i)] = {
-        "num": num, "name": name, "pop": pop, "idx": idx, "wgt": wgt, "wgh": wgh, "l3f": l3f, "sire": sire, "heavy_record": has_heavy_record,
+        "num": num, "name": name, "pop": pop, "win_odds": win_odds, "idx": idx, "wgt": wgt, "wgh": wgh, "l3f": l3f, "sire": sire, "heavy_record": has_heavy_record,
         "jock": jock, "previous_jockey": previous_jockey, "trainer": trainer, "owner": owner,
         "custom_note": custom_note, "sel_track": sel_track, "sel_style": sel_style,
         "sel_frame": sel_frame, "sel_dist_change": sel_dist_change
     }
 
-    row_tmp_data.append((num, name, pop, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, previous_jockey, trainer, owner, custom_note, sel_track, sel_style, sel_frame, sel_dist_change, c[18]))
+    row_tmp_data.append((num, name, pop, win_odds, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, previous_jockey, trainer, owner, custom_note, sel_track, sel_style, sel_frame, sel_dist_change, c[19]))
 
 # ==========================================
 # 🏁 4. 展開（ペース）AI自動予測
@@ -2121,7 +2215,7 @@ ACTIVE_LEARNING_WEIGHTS = load_learning_weights()
 # ==========================================
 calculated_results = []
 for item in row_tmp_data:
-    num, name, pop, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, previous_jockey, trainer, owner, custom_note, sel_track, sel_style, sel_frame, sel_dist_change, score_cell = item
+    num, name, pop, win_odds, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, previous_jockey, trainer, owner, custom_note, sel_track, sel_style, sel_frame, sel_dist_change, score_cell = item
     sex_age, sex, age, body_change = extract_sex_age_and_change(custom_note)
     
     score = 0.0
@@ -2414,7 +2508,7 @@ for item in row_tmp_data:
     if name.strip() != "":
         score_cell.write(f"**{score:.2f}**")
         calculated_results.append({
-            "馬番": num, "馬名": name, "能力スコア": score, "妙味スコア": value_score, "最終スコア": score, "人気": pop, "斤量": wgt, "馬体重": wgh,
+            "馬番": num, "馬名": name, "能力スコア": score, "妙味スコア": value_score, "最終スコア": score, "人気": pop, "単勝オッズ": win_odds, "斤量": wgt, "馬体重": wgh,
             "父馬": sire,
             "父系統": " / ".join([x for x in auto_detect_lineage(sire) if x != normalize_sire_name(sire)]) or "個別判定",
             "性齢": sex_age, "馬体重増減": body_change, "重道悪適性": final_apt, "騎手": jock,
@@ -2860,13 +2954,81 @@ with save_cols[1]:
     st.caption("※アプリをWebに公開した後は、その公開サイトのURLの直後に `?data=...` を付与することでお気に入りから直接復元できます。")
 
 # ==========================================
+# 📈 Ver1.13 単勝オッズ・市場確率統合
+# ==========================================
+def _softmax_probability(values, temperature=10.0):
+    series = pd.to_numeric(values, errors="coerce").fillna(0.0).astype(float)
+    if series.empty:
+        return series
+    temperature = max(float(temperature), 0.1)
+    max_value = float(series.max())
+    exp_values = series.map(lambda value: math.exp((float(value) - max_value) / temperature))
+    total = float(exp_values.sum())
+    if total <= 0 or not math.isfinite(total):
+        return pd.Series([1.0 / len(series)] * len(series), index=series.index)
+    return exp_values / total
+
+
+def _market_probability(odds_values, smoothing=0.15):
+    odds = pd.to_numeric(odds_values, errors="coerce")
+    valid = odds.notna() & (odds > 1.0)
+    inverse = pd.Series(0.0, index=odds.index, dtype=float)
+    inverse.loc[valid] = 1.0 / odds.loc[valid]
+    total = float(inverse.sum())
+    if total <= 0:
+        return None
+    probability = inverse / total
+    smoothing = min(max(float(smoothing), 0.0), 0.50)
+    uniform = 1.0 / len(probability)
+    return probability * (1.0 - smoothing) + uniform * smoothing
+
+
+def add_odds_blended_probability(result_df, ai_weight=0.70, market_weight=0.30, temperature=10.0, smoothing=0.15):
+    """能力値と単勝市場を確率化し、的中率重視の統合勝率を作る。"""
+    df = result_df.copy()
+    ai_prob = _softmax_probability(df["能力スコア"], temperature)
+    market_prob = _market_probability(df.get("単勝オッズ", pd.Series(index=df.index, dtype=float)), smoothing)
+
+    if market_prob is None:
+        blended = ai_prob
+        used_market_weight = 0.0
+    else:
+        ai_weight = max(float(ai_weight), 0.0)
+        market_weight = max(float(market_weight), 0.0)
+        total_weight = ai_weight + market_weight
+        if total_weight <= 0:
+            ai_weight, market_weight, total_weight = 1.0, 0.0, 1.0
+        ai_weight /= total_weight
+        market_weight /= total_weight
+        blended = ai_prob * ai_weight + market_prob * market_weight
+        blended = blended / blended.sum()
+        used_market_weight = market_weight
+
+    odds = pd.to_numeric(df.get("単勝オッズ"), errors="coerce")
+    df["AI勝率"] = (ai_prob * 100.0).round(1)
+    df["市場勝率"] = ((market_prob * 100.0).round(1) if market_prob is not None else 0.0)
+    df["統合勝率"] = (blended * 100.0).round(1)
+    df["期待値指数"] = (blended * odds.where(odds > 1.0, 0.0)).round(2)
+    df["オッズ反映率"] = round(used_market_weight * 100.0)
+    df["能力順位"] = df["能力スコア"].rank(method="min", ascending=False).astype(int)
+    df["妙味判定"] = df["期待値指数"].apply(
+        lambda value: "狙い目" if value >= 1.10 else ("適正" if value >= 0.90 else "割高")
+    )
+    return df.sort_values(["統合勝率", "能力スコア"], ascending=[False, False]).reset_index(drop=True)
+
+# ==========================================
 # 🏆 ランキング生成 & 買い目自動生成
 # ==========================================
 if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primary", use_container_width=True):
     if calculated_results:
         res_df = pd.DataFrame(calculated_results)
-        res_df = res_df[res_df["馬名"] != ""].sort_values(by="最終スコア", ascending=False)
+        res_df = res_df[res_df["馬名"] != ""].sort_values(by="能力スコア", ascending=False)
         res_df = add_ai_overall_evaluation(res_df)
+        res_df = add_odds_blended_probability(
+            res_df,
+            ai_weight=ai_weight, market_weight=market_weight,
+            temperature=probability_temperature, smoothing=market_smoothing,
+        )
         res_df = add_ai_comments(res_df)
         
         if not res_df.empty:
@@ -2878,12 +3040,14 @@ if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primar
             top_result = res_df.iloc[0]
             st.header(f"🎯 本命馬: {top_result['印']} {top_result['馬名']} ({top_result['騎手']})")
 
-            eval_cols = st.columns(4)
+            eval_cols = st.columns(6)
             eval_cols[0].metric("AI総合評価", top_result["AI評価"])
             eval_cols[1].metric("AI点", f"{top_result['AI点']:.1f}点")
-            eval_cols[2].metric("信頼度", f"{int(top_result['信頼度'])}%")
-            eval_cols[3].metric("星評価", top_result["星評価"])
-            st.caption("※AI点・能力スコアは人気を使わず算出します。妙味スコアだけが人気を利用し、買い目候補の抽出に使います。")
+            eval_cols[2].metric("統合勝率", f"{top_result['統合勝率']:.1f}%")
+            eval_cols[3].metric("AI勝率", f"{top_result['AI勝率']:.1f}%")
+            eval_cols[4].metric("市場勝率", f"{top_result['市場勝率']:.1f}%")
+            eval_cols[5].metric("期待値指数", f"{top_result['期待値指数']:.2f}")
+            st.caption("※能力スコアは人気・オッズを使いません。本命順位のみAI勝率と市場勝率を統合し、期待値指数は回収率候補の参考として分離表示します。")
 
             # Ver1.08 AIコメント自動生成
             st.subheader("💬 AI総合コメント")
@@ -2942,12 +3106,17 @@ if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primar
                     )
 
             st.dataframe(
-                res_df[["印", "馬番", "馬名", "AI評価", "AI点", "信頼度", "星評価", "人気", "斤量", "馬体重", "馬体重増減", "性齢", "父馬", "父系統", "能力スコア", "妙味スコア", "騎手", "重道悪適性"]],
+                res_df[["印", "馬番", "馬名", "能力順位", "AI評価", "AI点", "統合勝率", "AI勝率", "市場勝率", "単勝オッズ", "期待値指数", "妙味判定", "人気", "斤量", "馬体重", "馬体重増減", "性齢", "父馬", "父系統", "能力スコア", "妙味スコア", "騎手", "重道悪適性"]],
                 use_container_width=True,
                 hide_index=True,
                 column_config={
                     "AI点": st.column_config.NumberColumn(format="%.1f点"),
                     "信頼度": st.column_config.NumberColumn(format="%d%%"),
+                    "統合勝率": st.column_config.NumberColumn(format="%.1f%%"),
+                    "AI勝率": st.column_config.NumberColumn(format="%.1f%%"),
+                    "市場勝率": st.column_config.NumberColumn(format="%.1f%%"),
+                    "単勝オッズ": st.column_config.NumberColumn(format="%.1f倍"),
+                    "期待値指数": st.column_config.NumberColumn(format="%.2f"),
                     "能力スコア": st.column_config.NumberColumn(format="%.2f"),
                     "妙味スコア": st.column_config.NumberColumn(format="%.2f"),
                 },
