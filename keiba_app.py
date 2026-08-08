@@ -9,6 +9,7 @@ import sqlite3
 import uuid
 import io
 import difflib
+import shutil
 from datetime import datetime, date
 from pathlib import Path
 from streamlit.components.v1 import html
@@ -23,8 +24,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.14.1", layout="wide")
-st.title("🏆 ジェニーAI予想ver1.14.2 (netkeiba脚質表示OCR対応版)")
+st.set_page_config(page_title="ジェニーAI予想ver1.14.3", layout="wide")
+st.title("🏆 ジェニーAI予想ver1.14.3 (画像アップロード診断・OCR安定化版)")
 
 # 🛠️ スマホ向け：データを極限まで縮小・Base64圧縮する関数
 def encode_for_mobile(data_dict):
@@ -1777,22 +1778,65 @@ def _prepare_ocr_image(image):
     return gray.filter(ImageFilter.SHARPEN)
 
 
+def get_ocr_environment_status():
+    """画像アップロードとOCR環境を個別に診断する。"""
+    status = {
+        "pillow_import": False,
+        "pytesseract_import": False,
+        "tesseract_command": shutil.which("tesseract") or "",
+        "languages": [],
+        "error": "",
+    }
+    try:
+        from PIL import Image as _PILImage
+        status["pillow_import"] = _PILImage is not None
+    except Exception as exc:
+        status["error"] = f"Pillow読込エラー: {exc}"
+        return status
+    try:
+        import pytesseract as _pytesseract
+        status["pytesseract_import"] = True
+        if status["tesseract_command"]:
+            try:
+                status["languages"] = _pytesseract.get_languages(config="")
+            except Exception as exc:
+                status["error"] = f"言語確認エラー: {exc}"
+    except Exception as exc:
+        status["error"] = f"pytesseract読込エラー: {exc}"
+    return status
+
+
 def extract_text_from_screenshot(uploaded_file):
     if not OCR_AVAILABLE:
-        raise RuntimeError("OCRライブラリが利用できません。pytesseract と Pillow を追加してください。")
-    image = Image.open(io.BytesIO(uploaded_file.getvalue()))
+        raise RuntimeError("Python側のOCRライブラリを読み込めません。requirements.txtを確認してください。")
+
+    raw_bytes = uploaded_file.getvalue()
+    if not raw_bytes:
+        raise ValueError(f"{uploaded_file.name}: ファイル内容が空です。")
+
+    try:
+        image = Image.open(io.BytesIO(raw_bytes))
+        image.load()
+    except Exception as exc:
+        raise ValueError(f"{uploaded_file.name}: 画像として開けませんでした ({exc})") from exc
+
     prepared = _prepare_ocr_image(image)
     texts = []
+    errors = []
     for psm in (6, 11):
         try:
-            texts.append(pytesseract.image_to_string(
+            text = pytesseract.image_to_string(
                 prepared, lang="jpn+eng", config=f"--oem 3 --psm {psm}"
-            ))
-        except Exception:
-            pass
+            )
+            if text.strip():
+                texts.append(text)
+        except Exception as exc:
+            errors.append(str(exc))
+
     if not texts:
-        return ""
-    # 馬名・数字を多く含む結果を採用
+        detail = errors[-1] if errors else "OCR結果が空でした"
+        raise RuntimeError(f"{uploaded_file.name}: OCRに失敗しました ({detail})")
+
     return max(texts, key=lambda t: len(re.findall(r"[一-龥ぁ-んァ-ヶーA-Za-z0-9]", t)))
 
 
@@ -2384,59 +2428,109 @@ with tab_um:
                 st.rerun()
 
 with tab_img:
-    st.write("画像入力は2系統に分けています。最初に提示された縮小版の詳細出馬表画像は使用しません。")
-    st.caption("ウマニティ画像からU指数・今回騎手・斤量、netkeibaプロフィール画像から父馬・厩舎・馬主・表示脚質、過去走画像から前5走上がり平均を取得します。")
+    st.write("画像入力は2系統です。ウマニティ画像とnetkeiba画像をそれぞれ指定してください。")
+    st.caption("アップロード、画像読込、OCR実行を別々に診断します。最初の縮小版詳細画像は使用しません。")
+
+    ocr_status = get_ocr_environment_status()
+    with st.expander("🩺 OCR環境診断", expanded=not OCR_AVAILABLE):
+        st.write(f"Pillow: {'✅' if ocr_status['pillow_import'] else '❌'}")
+        st.write(f"pytesseract: {'✅' if ocr_status['pytesseract_import'] else '❌'}")
+        st.write(f"Tesseract本体: {'✅ ' + ocr_status['tesseract_command'] if ocr_status['tesseract_command'] else '❌ 未検出'}")
+        langs = ocr_status.get("languages", [])
+        st.write(f"日本語データ(jpn): {'✅' if 'jpn' in langs else '❌'}")
+        if langs:
+            st.caption("利用可能言語: " + ", ".join(langs))
+        if ocr_status.get("error"):
+            st.error(ocr_status["error"])
+        if not (ocr_status['pillow_import'] and ocr_status['pytesseract_import'] and ocr_status['tesseract_command'] and 'jpn' in langs):
+            st.warning("Streamlit Cloudのリポジトリ直下に、正式名の requirements.txt と packages.txt が必要です。")
 
     umanity_images = st.file_uploader(
         "① ウマニティ画像（U指数・騎手・斤量）",
         type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True,
-        key="umanity_special_images",
+        key="umanity_special_images_v143",
     )
     netkeiba_profile_images = st.file_uploader(
         "② netkeibaプロフィール画像（父馬・厩舎・馬主・表示脚質）",
         type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True,
-        key="netkeiba_profile_images",
+        key="netkeiba_profile_images_v143",
     )
     netkeiba_history_images = st.file_uploader(
-        "③ netkeiba過去走画像（前5走上がり3F平均／脚質は補助推定）",
+        "③ netkeiba過去走画像（前5走上がり3F平均）",
         type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True,
-        key="netkeiba_history_images",
+        key="netkeiba_history_images_v143",
     )
 
     all_image_files = (umanity_images or []) + (netkeiba_profile_images or []) + (netkeiba_history_images or [])
-    if st.button("🔍 3種類の画像を解析", use_container_width=True, disabled=not all_image_files):
-        if not OCR_AVAILABLE:
-            st.error("OCRライブラリがありません。requirements.txt と packages.txt を確認してください。")
-        elif not umanity_images:
-            st.error("馬番と馬名を対応させるため、ウマニティ画像を最低1枚指定してください。")
+    if all_image_files:
+        st.success(f"画像アップロード成功：{len(all_image_files)}枚")
+        upload_rows = []
+        for uploaded in all_image_files:
+            upload_rows.append({
+                "ファイル名": uploaded.name,
+                "容量KB": round(len(uploaded.getvalue()) / 1024, 1),
+                "形式": uploaded.type or "不明",
+            })
+        st.dataframe(pd.DataFrame(upload_rows), use_container_width=True, hide_index=True)
+        with st.expander("アップロード画像を確認"):
+            for uploaded in all_image_files:
+                try:
+                    st.image(uploaded.getvalue(), caption=uploaded.name, width=320)
+                except Exception as exc:
+                    st.error(f"{uploaded.name}: プレビュー失敗 ({exc})")
+
+    if st.button("🔍 アップロード画像を解析", use_container_width=True, disabled=not all_image_files):
+        if not umanity_images:
+            st.error("馬番と馬名の基準にするため、ウマニティ画像を最低1枚指定してください。")
+        elif not OCR_AVAILABLE:
+            st.error("OCRライブラリを読み込めません。正式名のrequirements.txtを確認してください。")
+        elif not ocr_status.get("tesseract_command"):
+            st.error("Tesseract本体が見つかりません。正式名のpackages.txtをリポジトリ直下へ置いてください。")
+        elif "jpn" not in ocr_status.get("languages", []):
+            st.error("日本語OCRデータがありません。packages.txtへ tesseract-ocr-jpn を追加してください。")
         else:
             raw_texts = []
             umanity_records = []
             profile_records = []
             history_records = []
+            processing_errors = []
             with st.spinner("画像を解析しています…"):
                 for image_file in umanity_images:
-                    text = extract_text_from_screenshot(image_file)
-                    raw_texts.append((f"ウマニティ:{image_file.name}", text))
-                    umanity_records.extend(parse_umanity_screenshot_text(text))
+                    try:
+                        text = extract_text_from_screenshot(image_file)
+                        raw_texts.append((f"ウマニティ:{image_file.name}", text))
+                        umanity_records.extend(parse_umanity_screenshot_text(text))
+                    except Exception as exc:
+                        processing_errors.append(str(exc))
                 horse_gate_map = {
                     normalize_horse_name(r.get("馬名", "")): int(r["馬番"])
                     for r in umanity_records if r.get("馬名") and r.get("馬番")
                 }
                 for image_file in netkeiba_profile_images or []:
-                    text = extract_text_from_screenshot(image_file)
-                    raw_texts.append((f"netkeibaプロフィール:{image_file.name}", text))
-                    profile_records.extend(parse_netkeiba_profile_screenshot_text(text, horse_gate_map))
+                    try:
+                        text = extract_text_from_screenshot(image_file)
+                        raw_texts.append((f"netkeibaプロフィール:{image_file.name}", text))
+                        profile_records.extend(parse_netkeiba_profile_screenshot_text(text, horse_gate_map))
+                    except Exception as exc:
+                        processing_errors.append(str(exc))
                 for image_file in netkeiba_history_images or []:
-                    text = extract_text_from_screenshot(image_file)
-                    raw_texts.append((f"netkeiba過去走:{image_file.name}", text))
-                    history_records.extend(parse_netkeiba_history_screenshot_text(text, horse_gate_map))
+                    try:
+                        text = extract_text_from_screenshot(image_file)
+                        raw_texts.append((f"netkeiba過去走:{image_file.name}", text))
+                        history_records.extend(parse_netkeiba_history_screenshot_text(text, horse_gate_map))
+                    except Exception as exc:
+                        processing_errors.append(str(exc))
+
+            if processing_errors:
+                st.error("一部画像の処理に失敗しました。")
+                for message in processing_errors:
+                    st.code(message)
 
             merged = merge_source_records(umanity_records, profile_records, history_records)
             st.session_state["ocr_preview"] = merged
             st.session_state["ocr_raw_texts"] = raw_texts
             if not merged:
-                st.error("馬データを抽出できませんでした。文字が読める倍率で分割した画像を使用してください。")
+                st.error("馬データを抽出できませんでした。下のOCR原文を確認してください。")
             else:
                 st.success(f"{len(merged)}頭を抽出しました。確認表で修正してから反映してください。")
 
