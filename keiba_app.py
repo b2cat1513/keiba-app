@@ -2445,23 +2445,120 @@ with tab_img:
         if not (ocr_status['pillow_import'] and ocr_status['pytesseract_import'] and ocr_status['tesseract_command'] and 'jpn' in langs):
             st.warning("Streamlit Cloudのリポジトリ直下に、正式名の requirements.txt と packages.txt が必要です。")
 
-    umanity_images = st.file_uploader(
-        "① ウマニティ画像（U指数・騎手・斤量）",
-        type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True,
-        key="umanity_special_images_v143",
-    )
-    netkeiba_profile_images = st.file_uploader(
-        "② netkeibaプロフィール画像（父馬・厩舎・馬主・表示脚質）",
-        type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True,
-        key="netkeiba_profile_images_v143",
-    )
-    netkeiba_history_images = st.file_uploader(
-        "③ netkeiba過去走画像（前5走上がり3F平均）",
-        type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True,
-        key="netkeiba_history_images_v143",
+    # Android・スマホブラウザでは複数選択した画像が
+    # Streamlitへ戻らない場合があるため、1枚ずつ追加する方式にする。
+    from io import BytesIO
+
+    class QueuedUpload(BytesIO):
+        def __init__(self, data: bytes, name: str, mime_type: str = "image/jpeg"):
+            super().__init__(data)
+            self.name = name
+            self.type = mime_type
+
+        def getvalue(self):
+            return super().getvalue()
+
+    def _init_upload_queue(queue_key: str, counter_key: str):
+        if queue_key not in st.session_state:
+            st.session_state[queue_key] = []
+        if counter_key not in st.session_state:
+            st.session_state[counter_key] = 0
+
+    def _render_single_upload_queue(label: str, queue_key: str, counter_key: str):
+        _init_upload_queue(queue_key, counter_key)
+
+        uploaded = st.file_uploader(
+            label,
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=False,
+            key=f"{queue_key}_picker_{st.session_state[counter_key]}",
+            help="スマホでは1枚ずつ選び、「この画像を追加」を押してください。",
+        )
+
+        add_col, clear_col = st.columns(2)
+
+        with add_col:
+            if st.button(
+                "➕ この画像を追加",
+                key=f"{queue_key}_add",
+                use_container_width=True,
+                disabled=uploaded is None,
+            ):
+                file_bytes = uploaded.getvalue()
+                file_name = uploaded.name
+                duplicate = any(
+                    item["name"] == file_name and item["data"] == file_bytes
+                    for item in st.session_state[queue_key]
+                )
+                if duplicate:
+                    st.warning("同じ画像はすでに追加されています。")
+                else:
+                    st.session_state[queue_key].append({
+                        "name": file_name,
+                        "type": uploaded.type or "image/jpeg",
+                        "data": file_bytes,
+                    })
+                    st.success(f"{file_name} を追加しました。")
+                st.session_state[counter_key] += 1
+                st.rerun()
+
+        with clear_col:
+            if st.button(
+                "🗑 この種類を全削除",
+                key=f"{queue_key}_clear",
+                use_container_width=True,
+                disabled=not st.session_state[queue_key],
+            ):
+                st.session_state[queue_key] = []
+                st.session_state[counter_key] += 1
+                st.rerun()
+
+        queued = st.session_state[queue_key]
+
+        if queued:
+            st.caption(f"追加済み：{len(queued)}枚")
+            for idx, item in enumerate(queued):
+                preview_col, remove_col = st.columns([5, 1])
+                with preview_col:
+                    st.image(item["data"], caption=item["name"], width=260)
+                with remove_col:
+                    if st.button("削除", key=f"{queue_key}_remove_{idx}"):
+                        st.session_state[queue_key].pop(idx)
+                        st.rerun()
+
+        return [
+            QueuedUpload(item["data"], item["name"], item["type"])
+            for item in queued
+        ]
+
+    st.info(
+        "📱 スマホでは画像を1枚ずつ選択し、"
+        "選択後に必ず「➕ この画像を追加」を押してください。"
     )
 
-    all_image_files = (umanity_images or []) + (netkeiba_profile_images or []) + (netkeiba_history_images or [])
+    umanity_images = _render_single_upload_queue(
+        "① ウマニティ画像を1枚選択",
+        "umanity_image_queue_v145",
+        "umanity_image_counter_v145",
+    )
+
+    netkeiba_profile_images = _render_single_upload_queue(
+        "② netkeibaプロフィール画像を1枚選択",
+        "netkeiba_profile_queue_v145",
+        "netkeiba_profile_counter_v145",
+    )
+
+    netkeiba_history_images = _render_single_upload_queue(
+        "③ netkeiba過去走画像を1枚選択",
+        "netkeiba_history_queue_v145",
+        "netkeiba_history_counter_v145",
+    )
+
+    all_image_files = (
+        umanity_images
+        + netkeiba_profile_images
+        + netkeiba_history_images
+    )
     if all_image_files:
         st.success(f"画像アップロード成功：{len(all_image_files)}枚")
         upload_rows = []
