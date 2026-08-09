@@ -24,8 +24,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.14.3", layout="wide")
-st.title("🏆 ジェニーAI予想ver1.14.3 (画像アップロード診断・OCR安定化版)")
+st.set_page_config(page_title="ジェニーAI予想ver1.14.6", layout="wide")
+st.title("🏆 ジェニーAI予想ver1.14.6（スマホ画像アップロード修正版）")
 
 # 🛠️ スマホ向け：データを極限まで縮小・Base64圧縮する関数
 def encode_for_mobile(data_dict):
@@ -2445,23 +2445,112 @@ with tab_img:
         if not (ocr_status['pillow_import'] and ocr_status['pytesseract_import'] and ocr_status['tesseract_command'] and 'jpn' in langs):
             st.warning("Streamlit Cloudのリポジトリ直下に、正式名の requirements.txt と packages.txt が必要です。")
 
-    umanity_images = st.file_uploader(
-        "① ウマニティ画像（U指数・騎手・斤量）",
-        type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True,
-        key="umanity_special_images_v143",
-    )
-    netkeiba_profile_images = st.file_uploader(
-        "② netkeibaプロフィール画像（父馬・厩舎・馬主・表示脚質）",
-        type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True,
-        key="netkeiba_profile_images_v143",
-    )
-    netkeiba_history_images = st.file_uploader(
-        "③ netkeiba過去走画像（前5走上がり3F平均）",
-        type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True,
-        key="netkeiba_history_images_v143",
+    # Android版Chromeなどで複数選択した画像がStreamlitへ返らない場合があるため、
+    # 画像は1枚ずつ選択し、セッション内の一覧へ追加する方式にする。
+    class StoredUploadedFile:
+        """OCR関数へ渡せるUploadedFile互換オブジェクト。"""
+        def __init__(self, name, mime_type, data):
+            self.name = name
+            self.type = mime_type or "image/jpeg"
+            self._data = data
+
+        def getvalue(self):
+            return self._data
+
+    def render_mobile_image_queue(title, queue_key, picker_key):
+        if queue_key not in st.session_state:
+            st.session_state[queue_key] = []
+
+        st.markdown(f"#### {title}")
+
+        selected = st.file_uploader(
+            "画像を1枚選択",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=False,
+            key=picker_key,
+        )
+
+        if selected is not None:
+            selected_bytes = selected.getvalue()
+            st.success(f"選択済み：{selected.name}")
+            try:
+                st.image(selected_bytes, caption=selected.name, width=320)
+            except Exception as exc:
+                st.warning(f"プレビューできませんでした: {exc}")
+
+            if st.button(
+                "➕ この画像をアプリに追加",
+                key=f"{queue_key}_add",
+                type="primary",
+                use_container_width=True,
+            ):
+                duplicate = any(
+                    item["name"] == selected.name and item["data"] == selected_bytes
+                    for item in st.session_state[queue_key]
+                )
+                if duplicate:
+                    st.warning("この画像はすでに追加されています。")
+                else:
+                    st.session_state[queue_key].append({
+                        "name": selected.name,
+                        "type": selected.type or "image/jpeg",
+                        "data": selected_bytes,
+                    })
+                    st.success(f"{selected.name} を追加しました。")
+                    st.rerun()
+
+        stored = st.session_state[queue_key]
+
+        if stored:
+            st.caption(f"アプリに追加済み：{len(stored)}枚")
+            for index, item in enumerate(stored):
+                preview_col, delete_col = st.columns([5, 1])
+                with preview_col:
+                    st.image(item["data"], caption=item["name"], width=280)
+                with delete_col:
+                    if st.button("削除", key=f"{queue_key}_delete_{index}"):
+                        st.session_state[queue_key].pop(index)
+                        st.rerun()
+
+            if st.button(
+                "🗑️ この種類の画像をすべて削除",
+                key=f"{queue_key}_clear",
+                use_container_width=True,
+            ):
+                st.session_state[queue_key] = []
+                st.rerun()
+
+        return [
+            StoredUploadedFile(item["name"], item["type"], item["data"])
+            for item in stored
+        ]
+
+    st.info(
+        "📱 画像を1枚選んだあと、プレビューを確認してから "
+        "「➕ この画像をアプリに追加」を押してください。"
     )
 
-    all_image_files = (umanity_images or []) + (netkeiba_profile_images or []) + (netkeiba_history_images or [])
+    umanity_images = render_mobile_image_queue(
+        "① ウマニティ画像（U指数・騎手・斤量）",
+        "umanity_images_mobile_queue",
+        "umanity_image_single_picker",
+    )
+    netkeiba_profile_images = render_mobile_image_queue(
+        "② netkeibaプロフィール画像（父馬・厩舎・馬主・表示脚質）",
+        "netkeiba_profile_mobile_queue",
+        "netkeiba_profile_single_picker",
+    )
+    netkeiba_history_images = render_mobile_image_queue(
+        "③ netkeiba過去走画像（前5走上がり3F平均）",
+        "netkeiba_history_mobile_queue",
+        "netkeiba_history_single_picker",
+    )
+
+    all_image_files = (
+        umanity_images
+        + netkeiba_profile_images
+        + netkeiba_history_images
+    )
     if all_image_files:
         st.success(f"画像アップロード成功：{len(all_image_files)}枚")
         upload_rows = []
