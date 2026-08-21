@@ -2622,7 +2622,11 @@ with tab_img:
                 st.error("馬データを抽出できませんでした。下のOCR原文を確認してください。")
             else:
                 st.success(f"{len(merged)}頭を抽出しました。確認表で修正してから反映してください。")
-
+if st.session_state.get("ocr_raw_texts"):
+    with st.expander("OCR原文を確認（読み取り調整用）", expanded=True):
+        for filename, raw in st.session_state.get("ocr_raw_texts", []):
+            st.markdown(f"**{filename}**")
+            st.code(raw[:10000])
     if st.session_state.get("ocr_preview"):
         preview_df = pd.DataFrame(st.session_state["ocr_preview"])
         edited_df = st.data_editor(
@@ -2648,10 +2652,8 @@ with tab_img:
             st.session_state.pop("ocr_raw_texts", None)
             st.rerun()
 
-        with st.expander("OCR原文を確認（読み取り調整用）"):
-            for filename, raw in st.session_state.get("ocr_raw_texts", []):
-                st.markdown(f"**{filename}**")
-                st.code(raw[:10000])
+        
+        
 
 st.divider()
 
