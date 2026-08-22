@@ -24,8 +24,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.14.6", layout="wide")
-st.title("🏆 ジェニーAI予想ver1.14.6（スマホ画像アップロード修正版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.14.7", layout="wide")
+st.title("🏆 ジェニーAI予想ver1.14.7（画像OCR分離解析版）")
 
 # 🛠️ スマホ向け：データを極限まで縮小・Base64圧縮する関数
 def encode_for_mobile(data_dict):
@@ -2474,8 +2474,8 @@ with tab_um:
                 st.rerun()
 
 with tab_img:
-    st.write("画像入力は2系統です。ウマニティ画像とnetkeiba画像をそれぞれ指定してください。")
-    st.caption("アップロード、画像読込、OCR実行を別々に診断します。最初の縮小版詳細画像は使用しません。")
+    st.write("画像入力は3系統です。ウマニティ・netkeibaプロフィール・netkeiba過去走を別々にOCRします。")
+    st.caption("一度に全部を解析せず、各画像のOCR結果を確認してから最後に統合します。既存の出馬表データは、読み取れなかった項目では上書きしません。")
 
     ocr_status = get_ocr_environment_status()
     with st.expander("🩺 OCR環境診断", expanded=not OCR_AVAILABLE):
@@ -2491,31 +2491,20 @@ with tab_img:
         if not (ocr_status['pillow_import'] and ocr_status['pytesseract_import'] and ocr_status['tesseract_command'] and 'jpn' in langs):
             st.warning("Streamlit Cloudのリポジトリ直下に、正式名の requirements.txt と packages.txt が必要です。")
 
-    # Android版Chromeなどで複数選択した画像がStreamlitへ返らない場合があるため、
-    # 画像は1枚ずつ選択し、セッション内の一覧へ追加する方式にする。
     class StoredUploadedFile:
         """OCR関数へ渡せるUploadedFile互換オブジェクト。"""
         def __init__(self, name, mime_type, data):
             self.name = name
             self.type = mime_type or "image/jpeg"
             self._data = data
-
         def getvalue(self):
             return self._data
 
     def render_mobile_image_queue(title, queue_key, picker_key):
         if queue_key not in st.session_state:
             st.session_state[queue_key] = []
-
         st.markdown(f"#### {title}")
-
-        selected = st.file_uploader(
-            "画像を1枚選択",
-            type=["png", "jpg", "jpeg", "webp"],
-            accept_multiple_files=False,
-            key=picker_key,
-        )
-
+        selected = st.file_uploader("画像を1枚選択", type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=False, key=picker_key)
         if selected is not None:
             selected_bytes = selected.getvalue()
             st.success(f"選択済み：{selected.name}")
@@ -2523,30 +2512,15 @@ with tab_img:
                 st.image(selected_bytes, caption=selected.name, width=320)
             except Exception as exc:
                 st.warning(f"プレビューできませんでした: {exc}")
-
-            if st.button(
-                "➕ この画像をアプリに追加",
-                key=f"{queue_key}_add",
-                type="primary",
-                use_container_width=True,
-            ):
-                duplicate = any(
-                    item["name"] == selected.name and item["data"] == selected_bytes
-                    for item in st.session_state[queue_key]
-                )
+            if st.button("➕ この画像をアプリに追加", key=f"{queue_key}_add", type="primary", use_container_width=True):
+                duplicate = any(item["name"] == selected.name and item["data"] == selected_bytes for item in st.session_state[queue_key])
                 if duplicate:
                     st.warning("この画像はすでに追加されています。")
                 else:
-                    st.session_state[queue_key].append({
-                        "name": selected.name,
-                        "type": selected.type or "image/jpeg",
-                        "data": selected_bytes,
-                    })
+                    st.session_state[queue_key].append({"name": selected.name, "type": selected.type or "image/jpeg", "data": selected_bytes})
                     st.success(f"{selected.name} を追加しました。")
                     st.rerun()
-
         stored = st.session_state[queue_key]
-
         if stored:
             st.caption(f"アプリに追加済み：{len(stored)}枚")
             for index, item in enumerate(stored):
@@ -2557,124 +2531,142 @@ with tab_img:
                     if st.button("削除", key=f"{queue_key}_delete_{index}"):
                         st.session_state[queue_key].pop(index)
                         st.rerun()
-
-            if st.button(
-                "🗑️ この種類の画像をすべて削除",
-                key=f"{queue_key}_clear",
-                use_container_width=True,
-            ):
+            if st.button("🗑️ この種類の画像をすべて削除", key=f"{queue_key}_clear", use_container_width=True):
                 st.session_state[queue_key] = []
                 st.rerun()
+        return [StoredUploadedFile(item["name"], item["type"], item["data"]) for item in stored]
 
-        return [
-            StoredUploadedFile(item["name"], item["type"], item["data"])
-            for item in stored
-        ]
-
-    st.info(
-        "📱 画像を1枚選んだあと、プレビューを確認してから "
-        "「➕ この画像をアプリに追加」を押してください。"
-    )
-
-    umanity_images = render_mobile_image_queue(
-        "① ウマニティ画像（U指数・騎手・斤量）",
-        "umanity_images_mobile_queue",
-        "umanity_image_single_picker",
-    )
-    netkeiba_profile_images = render_mobile_image_queue(
-        "② netkeibaプロフィール画像（父馬・厩舎・馬主・表示脚質）",
-        "netkeiba_profile_mobile_queue",
-        "netkeiba_profile_single_picker",
-    )
-    netkeiba_history_images = render_mobile_image_queue(
-        "③ netkeiba過去走画像（前5走上がり3F平均）",
-        "netkeiba_history_mobile_queue",
-        "netkeiba_history_single_picker",
-    )
-
-    all_image_files = (
-        umanity_images
-        + netkeiba_profile_images
-        + netkeiba_history_images
-    )
-    if all_image_files:
-        st.success(f"画像アップロード成功：{len(all_image_files)}枚")
-        upload_rows = []
-        for uploaded in all_image_files:
-            upload_rows.append({
-                "ファイル名": uploaded.name,
-                "容量KB": round(len(uploaded.getvalue()) / 1024, 1),
-                "形式": uploaded.type or "不明",
-            })
-        st.dataframe(pd.DataFrame(upload_rows), use_container_width=True, hide_index=True)
-        with st.expander("アップロード画像を確認"):
-            for uploaded in all_image_files:
-                try:
-                    st.image(uploaded.getvalue(), caption=uploaded.name, width=320)
-                except Exception as exc:
-                    st.error(f"{uploaded.name}: プレビュー失敗 ({exc})")
-
-    if st.button("🔍 アップロード画像を解析", use_container_width=True, disabled=not all_image_files):
-        if not umanity_images:
-            st.error("馬番と馬名の基準にするため、ウマニティ画像を最低1枚指定してください。")
-        elif not OCR_AVAILABLE:
-            st.error("OCRライブラリを読み込めません。正式名のrequirements.txtを確認してください。")
-        elif not ocr_status.get("tesseract_command"):
-            st.error("Tesseract本体が見つかりません。正式名のpackages.txtをリポジトリ直下へ置いてください。")
-        elif "jpn" not in ocr_status.get("languages", []):
+    def ocr_ready():
+        if not OCR_AVAILABLE:
+            st.error("OCRライブラリを読み込めません。requirements.txtを確認してください。")
+            return False
+        if not ocr_status.get("tesseract_command"):
+            st.error("Tesseract本体が見つかりません。packages.txtをリポジトリ直下へ置いてください。")
+            return False
+        if "jpn" not in ocr_status.get("languages", []):
             st.error("日本語OCRデータがありません。packages.txtへ tesseract-ocr-jpn を追加してください。")
-        else:
-            raw_texts = []
-            umanity_records = []
-            profile_records = []
-            history_records = []
-            processing_errors = []
-            with st.spinner("画像を解析しています…"):
+            return False
+        return True
+
+    def current_horse_gate_map():
+        result = {}
+        # 最優先は今回のウマニティOCR結果
+        for r in st.session_state.get("ocr_umanity_records", []):
+            if r.get("馬名") and r.get("馬番"):
+                result[normalize_horse_name(r["馬名"])] = int(r["馬番"])
+        # 既存の出馬表も補助基準にする
+        for key, row in st.session_state.get("loaded_data", {}).get("rows", {}).items():
+            name = normalize_horse_name(row.get("name", ""))
+            try:
+                gate = int(row.get("num") or key)
+            except Exception:
+                continue
+            if name and 1 <= gate <= 18:
+                result.setdefault(name, gate)
+        return result
+
+    st.info("📱 画像を1枚選び『➕ この画像をアプリに追加』→ その種類の『OCR解析』の順で進めてください。")
+
+    umanity_images = render_mobile_image_queue("① ウマニティ画像（馬番・馬名・U指数・騎手・斤量）", "umanity_images_mobile_queue", "umanity_image_single_picker")
+    if st.button("🔍 ① ウマニティだけOCR解析", use_container_width=True, disabled=not umanity_images):
+        if ocr_ready():
+            records, raws, errors = [], [], []
+            with st.spinner("ウマニティ画像を解析しています…"):
                 for image_file in umanity_images:
                     try:
                         text = extract_text_from_screenshot(image_file)
-                        raw_texts.append((f"ウマニティ:{image_file.name}", text))
-                        umanity_records.extend(parse_umanity_screenshot_text(text))
+                        raws.append((f"ウマニティ:{image_file.name}", text))
+                        records.extend(parse_umanity_screenshot_text(text))
                     except Exception as exc:
-                        processing_errors.append(str(exc))
-                horse_gate_map = {
-                    normalize_horse_name(r.get("馬名", "")): int(r["馬番"])
-                    for r in umanity_records if r.get("馬名") and r.get("馬番")
-                }
-                for image_file in netkeiba_profile_images or []:
-                    try:
-                        text = extract_text_from_screenshot(image_file)
-                        raw_texts.append((f"netkeibaプロフィール:{image_file.name}", text))
-                        profile_records.extend(parse_netkeiba_profile_screenshot_text(text, horse_gate_map))
-                    except Exception as exc:
-                        processing_errors.append(str(exc))
-                for image_file in netkeiba_history_images or []:
-                    try:
-                        text = extract_text_from_screenshot(image_file)
-                        raw_texts.append((f"netkeiba過去走:{image_file.name}", text))
-                        history_records.extend(parse_netkeiba_history_screenshot_text(text, horse_gate_map))
-                    except Exception as exc:
-                        processing_errors.append(str(exc))
-
-            if processing_errors:
-                st.error("一部画像の処理に失敗しました。")
-                for message in processing_errors:
-                    st.code(message)
-
-            merged = merge_source_records(umanity_records, profile_records, history_records)
-            st.session_state["ocr_preview"] = merged
-            st.session_state["ocr_raw_texts"] = raw_texts
-            if not merged:
-                st.error("馬データを抽出できませんでした。下のOCR原文を確認してください。")
+                        errors.append(str(exc))
+            st.session_state["ocr_umanity_records"] = records
+            st.session_state["ocr_umanity_raw"] = raws
+            if errors:
+                for e in errors: st.error(e)
+            if records:
+                st.success(f"ウマニティから {len(records)}頭を抽出しました。")
             else:
-                st.success(f"{len(merged)}頭を抽出しました。確認表で修正してから反映してください。")
-if st.session_state.get("ocr_raw_texts"):
-    with st.expander("OCR原文を確認（読み取り調整用）", expanded=True):
-        for filename, raw in st.session_state.get("ocr_raw_texts", []):
-            st.markdown(f"**{filename}**")
-            st.code(raw[:10000])
-    if st.session_state.get("ocr_preview"):
-        preview_df = pd.DataFrame(st.session_state["ocr_preview"])
+                st.error("ウマニティから馬番・馬名を抽出できませんでした。OCR原文を確認してください。")
+
+    if st.session_state.get("ocr_umanity_raw"):
+        with st.expander("① ウマニティ OCR原文", expanded=not st.session_state.get("ocr_umanity_records")):
+            for filename, raw in st.session_state["ocr_umanity_raw"]:
+                st.markdown(f"**{filename}**")
+                st.code(raw[:10000])
+    if st.session_state.get("ocr_umanity_records"):
+        st.dataframe(pd.DataFrame(st.session_state["ocr_umanity_records"]), use_container_width=True, hide_index=True)
+
+    st.divider()
+    netkeiba_profile_images = render_mobile_image_queue("② netkeibaプロフィール画像（父馬・厩舎・馬主・表示脚質）", "netkeiba_profile_mobile_queue", "netkeiba_profile_single_picker")
+    if st.button("🔍 ② netkeibaプロフィールだけOCR解析", use_container_width=True, disabled=not netkeiba_profile_images):
+        if ocr_ready():
+            horse_gate_map = current_horse_gate_map()
+            if not horse_gate_map:
+                st.error("馬名と馬番の基準がありません。先に①ウマニティを解析するか、出馬表へ馬番・馬名を入力してください。")
+            else:
+                records, raws, errors = [], [], []
+                with st.spinner("netkeibaプロフィール画像を解析しています…"):
+                    for image_file in netkeiba_profile_images:
+                        try:
+                            text = extract_text_from_screenshot(image_file)
+                            raws.append((f"netkeibaプロフィール:{image_file.name}", text))
+                            records.extend(parse_netkeiba_profile_screenshot_text(text, horse_gate_map))
+                        except Exception as exc:
+                            errors.append(str(exc))
+                st.session_state["ocr_profile_records"] = records
+                st.session_state["ocr_profile_raw"] = raws
+                if errors:
+                    for e in errors: st.error(e)
+                st.success(f"netkeibaプロフィールから {len(records)}頭を抽出しました。" if records else "プロフィールOCRは完了しましたが、馬名一致データを抽出できませんでした。")
+
+    if st.session_state.get("ocr_profile_raw"):
+        with st.expander("② netkeibaプロフィール OCR原文", expanded=False):
+            for filename, raw in st.session_state["ocr_profile_raw"]:
+                st.markdown(f"**{filename}**")
+                st.code(raw[:10000])
+    if st.session_state.get("ocr_profile_records"):
+        st.dataframe(pd.DataFrame(st.session_state["ocr_profile_records"]), use_container_width=True, hide_index=True)
+
+    st.divider()
+    netkeiba_history_images = render_mobile_image_queue("③ netkeiba過去走画像（前5走上がり3F平均・脚質補助）", "netkeiba_history_mobile_queue", "netkeiba_history_single_picker")
+    if st.button("🔍 ③ netkeiba過去走だけOCR解析", use_container_width=True, disabled=not netkeiba_history_images):
+        if ocr_ready():
+            horse_gate_map = current_horse_gate_map()
+            if not horse_gate_map:
+                st.error("馬名と馬番の基準がありません。先に①ウマニティを解析するか、出馬表へ馬番・馬名を入力してください。")
+            else:
+                records, raws, errors = [], [], []
+                with st.spinner("netkeiba過去走画像を解析しています…"):
+                    for image_file in netkeiba_history_images:
+                        try:
+                            text = extract_text_from_screenshot(image_file)
+                            raws.append((f"netkeiba過去走:{image_file.name}", text))
+                            records.extend(parse_netkeiba_history_screenshot_text(text, horse_gate_map))
+                        except Exception as exc:
+                            errors.append(str(exc))
+                st.session_state["ocr_history_records"] = records
+                st.session_state["ocr_history_raw"] = raws
+                if errors:
+                    for e in errors: st.error(e)
+                st.success(f"netkeiba過去走から {len(records)}頭を抽出しました。" if records else "過去走OCRは完了しましたが、馬名一致データを抽出できませんでした。")
+
+    if st.session_state.get("ocr_history_raw"):
+        with st.expander("③ netkeiba過去走 OCR原文", expanded=False):
+            for filename, raw in st.session_state["ocr_history_raw"]:
+                st.markdown(f"**{filename}**")
+                st.code(raw[:10000])
+    if st.session_state.get("ocr_history_records"):
+        st.dataframe(pd.DataFrame(st.session_state["ocr_history_records"]), use_container_width=True, hide_index=True)
+
+    st.divider()
+    merged = merge_source_records(
+        st.session_state.get("ocr_umanity_records", []),
+        st.session_state.get("ocr_profile_records", []),
+        st.session_state.get("ocr_history_records", []),
+    )
+    if merged:
+        st.markdown("### ✅ ④ 3種類の結果を統合して確認")
+        preview_df = pd.DataFrame(merged)
         edited_df = st.data_editor(
             preview_df, hide_index=True, use_container_width=True, num_rows="fixed",
             column_config={
@@ -2683,20 +2675,20 @@ if st.session_state.get("ocr_raw_texts"):
                 "斤量": st.column_config.NumberColumn(format="%.1f"),
                 "上がり3F平均": st.column_config.NumberColumn(format="%.2f"),
                 "上がり取得数": st.column_config.NumberColumn(min_value=0, max_value=5, step=1),
-            },
-            key="ocr_preview_editor",
+            }, key="ocr_preview_editor_v147",
         )
-        st.caption("上がり取得数が5未満の場合は、表示範囲不足またはOCR漏れがあります。平均値を確認してから反映してください。")
+        st.caption("netkeiba表示脚質を最優先し、表示脚質が取れない場合だけ過去走から推定します。上がり取得数が5未満なら画像範囲またはOCR漏れを確認してください。")
         c1, c2 = st.columns(2)
         if c1.button("✅ 確認した内容を出馬表へ反映", type="primary", use_container_width=True):
             apply_specialized_image_records(edited_df.to_dict("records"), auto_track)
-            st.session_state.pop("ocr_preview", None)
-            st.success("画像の内容を出馬表へ反映しました。馬体重・増減・人気・単勝は変更していません。")
+            st.success("確認済みデータを出馬表へ反映しました。読み取れなかった項目は既存値を維持します。")
             st.rerun()
-        if c2.button("🗑️ 解析結果を破棄", use_container_width=True):
-            st.session_state.pop("ocr_preview", None)
-            st.session_state.pop("ocr_raw_texts", None)
+        if c2.button("🗑️ OCR解析結果をすべて破棄", use_container_width=True):
+            for k in ["ocr_umanity_records", "ocr_umanity_raw", "ocr_profile_records", "ocr_profile_raw", "ocr_history_records", "ocr_history_raw"]:
+                st.session_state.pop(k, None)
             st.rerun()
+    else:
+        st.caption("①〜③のどれかを解析すると、ここに統合確認表が表示されます。")
 
         
         
