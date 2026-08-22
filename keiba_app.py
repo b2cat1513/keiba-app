@@ -1808,7 +1808,9 @@ def get_ocr_environment_status():
 
 def extract_text_from_screenshot(uploaded_file):
     if not OCR_AVAILABLE:
-        raise RuntimeError("Python側のOCRライブラリを読み込めません。requirements.txtを確認してください。")
+        raise RuntimeError(
+            "Python側のOCRライブラリを読み込めません。requirements.txtを確認してください。"
+        )
 
     raw_bytes = uploaded_file.getvalue()
     if not raw_bytes:
@@ -1818,27 +1820,71 @@ def extract_text_from_screenshot(uploaded_file):
         image = Image.open(io.BytesIO(raw_bytes))
         image.load()
     except Exception as exc:
-        raise ValueError(f"{uploaded_file.name}: 画像として開けませんでした ({exc})") from exc
+        raise ValueError(
+            f"{uploaded_file.name}: 画像として開けませんでした ({exc})"
+        ) from exc
 
     prepared = _prepare_ocr_image(image)
-    texts = []
+
+    # 複数のOCRパターンを試して、最も情報量の多い結果を採用
+    candidates = []
     errors = []
-    for psm in (6, 11):
+
+    configs = [
+        "--oem 3 --psm 6",
+        "--oem 3 --psm 11",
+        "--oem 3 --psm 4",
+    ]
+
+    for config in configs:
         try:
             text = pytesseract.image_to_string(
-                prepared, lang="jpn+eng", config=f"--oem 3 --psm {psm}"
+                prepared,
+                lang="jpn+eng",
+                config=config,
             )
-            if text.strip():
-                texts.append(text)
+
+            if text and text.strip():
+                cleaned = text.replace("\x0c", "").strip()
+                candidates.append(cleaned)
+
         except Exception as exc:
             errors.append(str(exc))
 
-    if not texts:
+    if not candidates:
         detail = errors[-1] if errors else "OCR結果が空でした"
-        raise RuntimeError(f"{uploaded_file.name}: OCRに失敗しました ({detail})")
+        raise RuntimeError(
+            f"{uploaded_file.name}: OCRに失敗しました ({detail})"
+        )
 
-    return max(texts, key=lambda t: len(re.findall(r"[一-龥ぁ-んァ-ヶーA-Za-z0-9]", t)))
+    def score_text(text):
+        # 日本語・英数字・競馬データとして使えそうな記号を評価
+        useful_chars = re.findall(
+            r"[一-龥ぁ-んァ-ヶA-Za-z0-9０-９.%+\-()（）]",
+            text,
+        )
 
+        # 馬番、斤量、人気、オッズらしい情報があれば加点
+        bonus = 0
+
+        if re.search(r"\b[1-9]|1[0-8]\b", text):
+            bonus += 20
+
+        if re.search(r"\d{2}\.\d", text):
+            bonus += 20
+
+        if re.search(r"\d+\.\d+倍", text):
+            bonus += 30
+
+        if re.search(r"\d+人気", text):
+            bonus += 30
+
+        if re.search(r"\d{2}\.\d", text):
+            bonus += 10
+
+        return len(useful_chars) + bonus
+
+    return max(candidates, key=score_text)
 
 def _parse_sex_age(text):
     m = re.search(r"([牡牝セ騸])\s*(\d{1,2})", text)
