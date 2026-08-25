@@ -1939,7 +1939,29 @@ def parse_umanity_screenshot_text(text):
             "人気": None, "U指数": u_index, "取得元": "ウマニティ画像",
         })
     return records
+def merge_umanity_records(record_groups):
+    merged = {}
 
+    for records in record_groups:
+        for rec in records:
+            horse_no = rec.get("馬番")
+            if horse_no is None:
+                continue
+
+            if horse_no not in merged:
+                merged[horse_no] = rec.copy()
+                continue
+
+            base = merged[horse_no]
+
+            for key, value in rec.items():
+                if value in [None, "", "未選択"]:
+                    continue
+
+                if base.get(key) in [None, "", "未選択"]:
+                    base[key] = value
+
+    return [merged[k] for k in sorted(merged)]
 
 def parse_jra_odds_screenshot_text(text):
     """JRAオッズ画面から馬番・馬名・性齢・騎手・斤量・単勝・人気を抽出。"""
@@ -2570,15 +2592,23 @@ with tab_img:
     umanity_images = render_mobile_image_queue("① ウマニティ画像（馬番・馬名・U指数・騎手・斤量）", "umanity_images_mobile_queue", "umanity_image_single_picker")
     if st.button("🔍 ① ウマニティだけOCR解析", use_container_width=True, disabled=not umanity_images):
         if ocr_ready():
-            records, raws, errors = [], [], []
+            record_groups, raws, errors = [], [], []
+
             with st.spinner("ウマニティ画像を解析しています…"):
                 for image_file in umanity_images:
                     try:
                         text = extract_text_from_screenshot(image_file)
                         raws.append((f"ウマニティ:{image_file.name}", text))
-                        records.extend(parse_umanity_screenshot_text(text))
+
+                        parsed_records = parse_umanity_screenshot_text(text)
+                        if parsed_records:
+                            record_groups.append(parsed_records)
+
                     except Exception as exc:
                         errors.append(str(exc))
+
+            records = merge_umanity_records(record_groups)
+
             st.session_state["ocr_umanity_records"] = records
             st.session_state["ocr_umanity_raw"] = raws
             if errors:
