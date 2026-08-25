@@ -2058,7 +2058,7 @@ def parse_umanity_screenshot_text(text):
             if re.fullmatch(r"[\d.]+", token):
                 continue
 
-            return _normalize_horse_name(token)
+            return token
 
         return ""
 
