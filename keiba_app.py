@@ -24,8 +24,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.16.0", layout="wide")
-st.title("🏆 ジェニーAI予想ver1.16.5（騎手姓アンカー強化OCR版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.16.7", layout="wide")
+st.title("🏆 ジェニーAI予想ver1.16.7（ウマニティ全頭救済OCR版）")
 
 # 🛠️ スマホ向け：データを極限まで縮小・Base64圧縮する関数
 def encode_for_mobile(data_dict):
@@ -2339,16 +2339,81 @@ def parse_umanity_screenshot_image(uploaded_file, raw_text=""):
                 except Exception:
                     u_index = None
 
+        # Ver1.16.7: 1項目のOCR失敗だけで「その馬ごと消す」のをやめる。
+        # 旧版は馬名またはU指数が1つ欠けると continue していたため、
+        # 8頭画像でも6頭・7頭に減る主因になっていた。
+        # まず同じ行の広めOCRと全体OCR(fallback)から欠損項目を救済する。
+        rescue_row_text = ""
         if not name or u_index is None:
-            continue
+            rescue_row_text = _ocr_crop(
+                (int(w * 0.08), max(0, y1 - int(rh * 0.06)), w, min(h, y2 + int(rh * 0.06))),
+                lang="jpn+eng", psm=11
+            )
 
-        combined = "\n".join([main_text, detail_text] + jockey_ocr_texts)
+        if not name:
+            name = _extract_name(rescue_row_text)
+
+        if u_index is None:
+            u_index = _extract_u(rescue_row_text)
+
+        # 画面全体OCRの旧解析結果を「同じ馬番/同じ行」の救済専用に使う。
+        # 新方式の値を上書きせず、空欄だけ補完する。
+        expected_gate_for_rescue = gate if gate is not None else (row_idx + 1)
+        legacy_rec = None
+        if legacy_fallback:
+            for rr in legacy_fallback:
+                try:
+                    if int(rr.get("馬番") or -1) == int(expected_gate_for_rescue):
+                        legacy_rec = rr
+                        break
+                except Exception:
+                    pass
+            if legacy_rec is None and row_idx < len(legacy_fallback):
+                legacy_rec = legacy_fallback[row_idx]
+
+        if legacy_rec:
+            if not name:
+                name = str(legacy_rec.get("馬名") or "").strip()
+            if u_index is None:
+                try:
+                    lv = legacy_rec.get("U指数")
+                    if lv is not None and 80.0 <= float(lv) <= 110.0:
+                        u_index = round(float(lv), 1)
+                except Exception:
+                    pass
+
+        # U指数は行の存在確認アンカーとして重要なので、最後まで取れなければ保留。
+        # 一方、馬名だけの失敗では行を捨てず、確認表に残して手修正できるようにする。
+        if u_index is None:
+            continue
+        if not name:
+            name = f"（OCR要確認・{row_idx + 1}行目）"
+
+        combined = "\n".join([main_text, detail_text, rescue_row_text] + jockey_ocr_texts)
         sex_age = _parse_sex_age(combined)
 
-        # 斤量は従来の詳細列から取得。騎手専用帯とは分離する。
+        # Ver1.16.7: 斤量は詳細列を最優先し、欠けた場合だけ行全体→旧OCRで救済。
         weight = _extract_weight(detail_text)
+        if weight is None:
+            weight = _extract_weight(rescue_row_text or main_text)
+        if weight is None and legacy_rec:
+            try:
+                lw = legacy_rec.get("斤量")
+                if lw is not None and 48.0 <= float(lw) <= 62.5:
+                    weight = float(lw)
+            except Exception:
+                pass
 
         odds = _extract_odds(main_text)
+        if odds is None:
+            odds = _extract_odds(rescue_row_text)
+        if odds is None and legacy_rec:
+            try:
+                lo = legacy_rec.get("単勝")
+                if lo is not None:
+                    odds = float(lo)
+            except Exception:
+                pass
 
         # Ver1.16.5: 騎手候補マスターとの多段照合。
         # 「別人を無理に入れる」より未選択を優先し、確度が足りない場合は空欄にする。
@@ -2484,7 +2549,7 @@ def parse_umanity_screenshot_image(uploaded_file, raw_text=""):
             "単勝": odds,
             "人気": None,
             "U指数": round(float(u_index), 1),
-            "取得元": "ウマニティ画像(Ver1.16.5-騎手縦列位置固定OCR版)",
+            "取得元": "ウマニティ画像(Ver1.16.7-全頭救済OCR版)",
         })
 
     # 読めた馬番から「先頭馬番」を推定。
@@ -2514,8 +2579,28 @@ def parse_umanity_screenshot_image(uploaded_file, raw_text=""):
 
     row_results.sort(key=lambda r: int(r.get("馬番") or 99))
 
-    # 行分割で3頭以上取れていれば新方式を優先。
-    if len(row_results) >= 3:
+    # Ver1.16.7: 行分割結果と旧OCR結果を馬番単位で補完マージする。
+    # 行分割側に欠けた馬があっても、旧OCRで確認できた馬を落とさない。
+    if row_results:
+        by_gate = {int(r.get("馬番")): r for r in row_results if r.get("馬番") is not None}
+        for old_rec in legacy_fallback or []:
+            try:
+                g = int(old_rec.get("馬番") or -1)
+            except Exception:
+                continue
+            if not (1 <= g <= 18):
+                continue
+            if g not in by_gate:
+                rescued = dict(old_rec)
+                rescued["取得元"] = "ウマニティ画像(Ver1.16.7-旧OCR救済)"
+                row_results.append(rescued)
+                by_gate[g] = rescued
+            else:
+                current = by_gate[g]
+                for key in ("馬名", "性齢", "今回騎手", "斤量", "厩舎", "単勝", "U指数"):
+                    if current.get(key) in (None, "", "(未選択)") and old_rec.get(key) not in (None, "", "(未選択)"):
+                        current[key] = old_rec.get(key)
+        row_results.sort(key=lambda r: int(r.get("馬番") or 99))
         return row_results
 
     # 失敗時のみVer1.15.1以前の文字列解析へ戻す。
