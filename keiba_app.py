@@ -24,8 +24,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.16.8", layout="wide")
-st.title("🏆 ジェニーAI予想ver1.16.8（ウマニティ全頭救済OCR版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.16.9", layout="wide")
+st.title("🏆 ジェニーAI予想ver1.16.9（ウマニティ＋競馬ラボOCR版）")
 
 # 🛠️ スマホ向け：データを極限まで縮小・Base64圧縮する関数
 def encode_for_mobile(data_dict):
@@ -2985,119 +2985,116 @@ def _extract_profile_running_style(window):
     return "選択なし"
 
 
-def parse_netkeiba_profile_screenshot_text(text, horse_gate_map):
-    """netkeibaプロフィール画面から父馬・厩舎・馬主・表示脚質を馬名単位で抽出。"""
+def _find_known_horse_in_text(text, horse_gate_map):
+    """OCR本文に既知の馬名があれば (馬名, 馬番) を返す。"""
+    normalized = normalize_horse_name(str(text or ""))
+    for horse_name in sorted(horse_gate_map, key=len, reverse=True):
+        if horse_name and horse_name in normalized:
+            return horse_name, int(horse_gate_map[horse_name])
+    return None, None
+
+
+def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=None):
+    """競馬ラボの馬プロフィール画像から父馬・厩舎・馬主を抽出する。"""
     lines = [_ocr_clean_line(x) for x in str(text).splitlines()]
     lines = [x for x in lines if x]
-    normalized_lines = [normalize_horse_name(x) for x in lines]
-    records = []
-    names = sorted(horse_gate_map, key=len, reverse=True)
-    for horse_name in names:
-        hit = None
-        for i, line in enumerate(normalized_lines):
-            if horse_name and horse_name in line:
-                hit = i
+    joined = " ".join(lines)
+
+    horse_name, gate = _find_known_horse_in_text(joined, horse_gate_map)
+    if not horse_name and fallback_horse:
+        horse_name = fallback_horse
+        gate = horse_gate_map.get(normalize_horse_name(fallback_horse))
+    if not horse_name or not gate:
+        return []
+
+    sire = ""
+    # 競馬ラボ例: 「父 ハーツクライ」
+    for pat in [
+        r"(?:^|\s)父[：:\s]*([ァ-ヶーA-Za-z0-9・ヴ一-龥]+)",
+        r"父馬[：:\s]*([ァ-ヶーA-Za-z0-9・ヴ一-龥]+)",
+    ]:
+        m = re.search(pat, joined)
+        if m:
+            sire = m.group(1).strip()
+            break
+
+    trainer = "(未選択)"
+    m = re.search(r"(?:調教師|厩舎)[：:\s]*([ァ-ヶーA-Za-z・一-龥]{2,12})(?:\s*[\(（](?:美|栗|美浦|栗東)[\)）])?", joined)
+    if m:
+        raw = re.sub(r"[\(（].*?[\)）]", "", m.group(1)).strip()
+        matched = _best_master_match(raw, [x for x in TRAINER_OPTIONS if x not in {"(未選択)", "その他"}], 0.35)
+        trainer = matched if matched != "(未選択)" else raw
+    else:
+        # 画像例の「牧 光二(美)」のような表記も救済
+        for line in lines:
+            m2 = re.search(r"([一-龥]{2,6})\s*[\(（](?:美|栗|美浦|栗東)[\)）]", line)
+            if m2:
+                raw = m2.group(1)
+                matched = _best_master_match(raw, [x for x in TRAINER_OPTIONS if x not in {"(未選択)", "その他"}], 0.35)
+                trainer = matched if matched != "(未選択)" else raw
                 break
-        if hit is None:
-            continue
-        start = max(0, hit - 4)
-        end = min(len(lines), hit + 9)
-        window = lines[start:end]
-        local = hit - start
 
-        sire = ""
-        # netkeibaプロフィールでは父名が馬名の直前に置かれることが多い。
-        for candidate in list(reversed(window[:local])) + window[local+1:local+4]:
-            c = re.sub(r"[外父母B\s]", "", candidate)
-            if _looks_like_horse_name(c) and c != horse_name and not re.search(r"栗東|美浦|ファーム|牧場", candidate):
-                sire = candidate.replace("外", "").strip()
-                break
+    owner = "(未選択)"
+    m = re.search(r"馬主[：:\s]*([^\n]+?)(?=\s+(?:生産者|生産|距離別|コース別|調教師|厩舎)\b|$)", joined)
+    if m:
+        raw = m.group(1).strip()
+        matched = _best_master_match(raw, [x for x in OWNER_OPTIONS if x not in {"(未選択)", "その他"}], 0.35)
+        owner = matched if matched != "(未選択)" else raw
 
-        trainer = ""
-        trainer_line = ""
-        for candidate in window:
-            m = re.search(r"(?:栗東|美浦)[・\s]*([一-龥]{2,5})", candidate)
-            if m:
-                trainer_line = m.group(1)
-                break
-        if trainer_line:
-            trainer = _best_master_match(trainer_line, [x for x in TRAINER_OPTIONS if x not in {"(未選択)", "その他"}], 0.35)
-            if trainer == "(未選択)":
-                trainer = trainer_line
-
-        owner = ""
-        # 馬名より下、厩舎行の次に馬主が置かれるレイアウトを優先。
-        for idx, candidate in enumerate(window):
-            if trainer_line and trainer_line in candidate:
-                for c in window[idx+1:idx+4]:
-                    if re.search(r"ファーム|レーシング|ホース|組合|クラブ|^[一-龥]{2,6}$", c):
-                        owner = c.strip()
-                        break
-                break
-        if owner:
-            matched = _best_master_match(owner, [x for x in OWNER_OPTIONS if x not in {"(未選択)", "その他"}], 0.35)
-            if matched != "(未選択)":
-                owner = matched
-
-        profile_style = _extract_profile_running_style(window)
-        records.append({
-            "馬番": horse_gate_map[horse_name], "馬名": horse_name,
-            "父馬": sire, "厩舎": trainer or "(未選択)",
-            "馬主": owner or "(未選択)",
-            "脚質": profile_style,
-            "脚質取得元": "netkeiba表示" if profile_style != "選択なし" else "",
-            "取得元": "netkeibaプロフィール画像",
-        })
-    return records
+    return [{
+        "馬番": int(gate), "馬名": horse_name,
+        "父馬": sire, "厩舎": trainer, "馬主": owner,
+        "取得元": "競馬ラボ・プロフィール画像",
+    }]
 
 
-def parse_netkeiba_history_screenshot_text(text, horse_gate_map):
-    """netkeiba過去走画面から前5走の上がり3F平均を抽出し、脚質は補助推定する。"""
+def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=None):
+    """競馬ラボの過去走画像から前走騎手と直近5走の上がり3F平均を抽出する。"""
     lines = [_ocr_clean_line(x) for x in str(text).splitlines()]
     lines = [x for x in lines if x]
-    records = []
-    names = sorted(horse_gate_map, key=len, reverse=True)
-    hit_positions = []
-    for i, line in enumerate(lines):
-        nline = normalize_horse_name(line)
-        for name in names:
-            if name and name in nline:
-                hit_positions.append((i, name))
+    joined = " ".join(lines)
+
+    horse_name, gate = _find_known_horse_in_text(joined, horse_gate_map)
+    if not horse_name and fallback_horse:
+        horse_name = fallback_horse
+        gate = horse_gate_map.get(normalize_horse_name(fallback_horse))
+    if not horse_name or not gate:
+        return []
+
+    # 上がり3F。競馬ラボ画像の 33.7 S / 34.1 H 等を主対象にする。
+    finish_times = []
+    for m in re.finditer(r"(?<![:\d])([3-4]\d\.\d)\s*[SHM]?(?!\d)", joined):
+        val = float(m.group(1))
+        if 30.0 <= val <= 45.0:
+            finish_times.append(val)
+    # 同じ値をOCRが重複して拾うケースを抑えつつ表示順を維持
+    deduped = []
+    for val in finish_times:
+        if not deduped or val != deduped[-1]:
+            deduped.append(val)
+    finish_times = deduped[:5]
+    avg_l3f = round(sum(finish_times) / len(finish_times), 2) if finish_times else None
+
+    # 最上段＝前走。斤量の直後に出る騎手名を優先し、JOCKEY_MASTERへ寄せる。
+    previous_jockey = "(未選択)"
+    jockey_candidates = [x for x in JOCKEY_MASTER.keys() if x != "その他（自由手入力）"]
+    top = " ".join(lines[:12])
+    best = _best_master_match(top, jockey_candidates, 0.55)
+    if best != "(未選択)":
+        previous_jockey = best
+    else:
+        for j in jockey_candidates:
+            if normalize_jockey_name(j) in normalize_jockey_name(top):
+                previous_jockey = j
                 break
-    hit_positions.sort()
 
-    for pos_idx, (start, horse_name) in enumerate(hit_positions):
-        end = hit_positions[pos_idx + 1][0] if pos_idx + 1 < len(hit_positions) else len(lines)
-        block = lines[start:end]
-        joined = " ".join(block)
-
-        # 「後 34.5」またはOCRで後が落ちた33.8等を、前後文脈を使って取得。
-        finish_times = []
-        for m in re.finditer(r"後\s*([3-4]\d\.\d)", joined):
-            finish_times.append(float(m.group(1)))
-        if not finish_times:
-            # 各レースセルにある上がり候補。タイム1:08.4等を除外。
-            candidates = [float(x) for x in re.findall(r"(?<![:\d])([3-4]\d\.\d)(?!\d)", joined)]
-            finish_times = [x for x in candidates if 30.0 <= x <= 45.0]
-        finish_times = finish_times[:5]
-        avg_l3f = round(sum(finish_times) / len(finish_times), 2) if finish_times else None
-
-        first_positions = []
-        # 通過順位の最初の数字を拾う（例: 5 5 / 9 9）。
-        for seq in re.findall(r"(?<!\d)(\d{1,2})\s+(\d{1,2})(?!\d)", joined):
-            a, b = map(int, seq)
-            if 1 <= a <= 18 and 1 <= b <= 18:
-                first_positions.append(a)
-        style_texts = re.findall(r"(逃げ切り|先行\S*|好位\S*|中位\S*|中団\S*|後方\S*|追込\S*|差し\S*)", joined)
-        style = _infer_running_style(first_positions[:5], style_texts)
-
-        records.append({
-            "馬番": horse_gate_map[horse_name], "馬名": horse_name,
-            "上がり3F平均": avg_l3f, "脚質": style,
-            "脚質取得元": "過去走推定" if style != "選択なし" else "",
-            "上がり取得数": len(finish_times), "取得元": "netkeiba過去走画像",
-        })
-    return records
+    return [{
+        "馬番": int(gate), "馬名": horse_name,
+        "前走騎手": previous_jockey,
+        "上がり3F平均": avg_l3f,
+        "上がり取得数": len(finish_times),
+        "取得元": "競馬ラボ・過去5走画像",
+    }]
 
 
 def merge_source_records(umanity_records, profile_records, history_records):
@@ -3108,8 +3105,8 @@ def merge_source_records(umanity_records, profile_records, history_records):
             if not 1 <= gate <= 18:
                 continue
             base = merged.setdefault(gate, {
-                "馬番": gate, "馬名": "", "U指数": None, "今回騎手": "(未選択)",
-                "斤量": None, "父馬": "", "厩舎": "(未選択)", "馬主": "(未選択)",
+                "馬番": gate, "馬名": "", "U指数": None, "今回騎手": "(未選択)", "単勝": None,
+                "斤量": None, "父馬": "", "厩舎": "(未選択)", "馬主": "(未選択)", "前走騎手": "(未選択)",
                 "上がり3F平均": None, "脚質": "選択なし", "脚質取得元": "",
                 "上がり取得数": 0, "取得元": "",
             })
@@ -3154,9 +3151,9 @@ def apply_specialized_image_records(records, auto_track_value):
             "sel_style": rec.get("脚質") if rec.get("脚質") in {"逃げ", "先行", "差し", "追い込み"} else prev.get("sel_style", "選択なし"),
             "wgh": int(prev.get("wgh", 480)),
             "pop": int(prev.get("pop", 10)),
-            "win_odds": float(prev.get("win_odds", 0.0)),
+            "win_odds": float(rec.get("単勝") if rec.get("単勝") is not None else prev.get("win_odds", 0.0)),
             "heavy_record": prev.get("heavy_record", False),
-            "previous_jockey": prev.get("previous_jockey", "(未選択)"),
+            "previous_jockey": rec.get("前走騎手") if rec.get("前走騎手") in JOCKEY_MASTER else prev.get("previous_jockey", "(未選択)"),
             "custom_note": prev.get("custom_note", ""),
             "sel_track": prev.get("sel_track", auto_track_value if auto_track_value in ["芝", "ダート"] else "選択なし"),
             "sel_frame": prev.get("sel_frame", calculate_frame_position(gate)),
@@ -3413,8 +3410,8 @@ with tab_um:
                 st.rerun()
 
 with tab_img:
-    st.write("画像入力は2系統です。ウマニティ画像とnetkeiba画像をそれぞれ指定してください。")
-    st.caption("アップロード、画像読込、OCR実行を別々に診断します。最初の縮小版詳細画像は使用しません。")
+    st.write("画像入力は3系統です。①ウマニティ出馬表 ②競馬ラボのプロフィール ③競馬ラボの過去5走 を指定してください。")
+    st.caption("自動取得する項目：ウマニティ＝馬番・馬名・単勝・U指数・斤量・今回騎手／競馬ラボ＝父馬・馬主・厩舎・前走騎手・直近5走上がり3F平均。その他は手入力のままです。")
 
     ocr_status = get_ocr_environment_status()
     with st.expander("🩺 OCR環境診断", expanded=not OCR_AVAILABLE):
@@ -3430,32 +3427,28 @@ with tab_img:
         if not (ocr_status['pillow_import'] and ocr_status['pytesseract_import'] and ocr_status['tesseract_command'] and 'jpn' in langs):
             st.warning("Streamlit Cloudのリポジトリ直下に、正式名の requirements.txt と packages.txt が必要です。")
 
-    st.info("📱 Ver1.15.5：馬名・U指数・斤量の8行分割方式は維持し、騎手名だけを各行右上の専用帯に位置固定しました。調教師名を騎手として誤照合しにくい方式です。複数枚は順番に処理してください。")
+    st.info("📱 Ver1.16.9：ウマニティを馬番・馬名の基準にして、競馬ラボの情報を馬名で結合します。競馬ラボ画像内に馬名が無い場合は、プロフィール画像と過去5走画像を同じ順番で選ぶと対応付けを補助します。")
 
-    umanity_image = st.file_uploader(
-        "① ウマニティ画像を1枚選択（U指数・騎手・斤量）",
+    umanity_images = st.file_uploader(
+        "① ウマニティ画像（馬番・馬名・単勝・U指数・斤量・今回騎手）",
         type=["png", "jpg", "jpeg", "webp"],
-        accept_multiple_files=False,
-        key="umanity_single_v146",
-    )
-    netkeiba_profile_image = st.file_uploader(
-        "② netkeibaプロフィール画像を1枚選択（父馬・厩舎・馬主・表示脚質）",
+        accept_multiple_files=True,
+        key="umanity_multi_v169",
+    ) or []
+    keibalab_profile_images = st.file_uploader(
+        "② 競馬ラボ・プロフィール画像（父馬・厩舎・馬主）",
         type=["png", "jpg", "jpeg", "webp"],
-        accept_multiple_files=False,
-        key="netkeiba_profile_single_v146",
-    )
-    netkeiba_history_image = st.file_uploader(
-        "③ netkeiba過去走画像を1枚選択（上がり3F）",
+        accept_multiple_files=True,
+        key="keibalab_profile_multi_v169",
+    ) or []
+    keibalab_history_images = st.file_uploader(
+        "③ 競馬ラボ・過去5走画像（前走騎手・上がり3F平均）",
         type=["png", "jpg", "jpeg", "webp"],
-        accept_multiple_files=False,
-        key="netkeiba_history_single_v146",
-    )
+        accept_multiple_files=True,
+        key="keibalab_history_multi_v169",
+    ) or []
 
-    umanity_images = [umanity_image] if umanity_image is not None else []
-    netkeiba_profile_images = [netkeiba_profile_image] if netkeiba_profile_image is not None else []
-    netkeiba_history_images = [netkeiba_history_image] if netkeiba_history_image is not None else []
-
-    all_image_files = umanity_images + netkeiba_profile_images + netkeiba_history_images
+    all_image_files = umanity_images + keibalab_profile_images + keibalab_history_images
     if all_image_files:
         st.success(f"✅ 画像受信成功：{len(all_image_files)}枚")
         upload_rows = []
@@ -3466,64 +3459,72 @@ with tab_img:
                 "形式": uploaded.type or "不明",
             })
         st.dataframe(pd.DataFrame(upload_rows), use_container_width=True, hide_index=True)
-        with st.expander("アップロード画像を確認"):
-            for uploaded in all_image_files:
-                try:
-                    st.image(uploaded.getvalue(), caption=uploaded.name, width=320)
-                except Exception as exc:
-                    st.error(f"{uploaded.name}: プレビュー失敗 ({exc})")
 
     if st.button("🔍 アップロード画像を解析", use_container_width=True, disabled=not all_image_files):
         if not umanity_images:
             st.error("馬番と馬名の基準にするため、ウマニティ画像を最低1枚指定してください。")
         elif not OCR_AVAILABLE:
-            st.error("OCRライブラリを読み込めません。正式名のrequirements.txtを確認してください。")
+            st.error("OCRライブラリを読み込めません。requirements.txtを確認してください。")
         elif not ocr_status.get("tesseract_command"):
-            st.error("Tesseract本体が見つかりません。正式名のpackages.txtをリポジトリ直下へ置いてください。")
+            st.error("Tesseract本体が見つかりません。packages.txtを確認してください。")
         elif "jpn" not in ocr_status.get("languages", []):
             st.error("日本語OCRデータがありません。packages.txtへ tesseract-ocr-jpn を追加してください。")
         else:
-            raw_texts = []
-            umanity_records = []
-            profile_records = []
-            history_records = []
-            processing_errors = []
+            raw_texts, umanity_records, profile_records, history_records, processing_errors = [], [], [], [], []
             st.session_state["ocr_image_diagnostics"] = []
+
             with st.spinner("画像を解析しています…"):
                 for image_file in umanity_images:
                     try:
-                        text = extract_text_from_screenshot(image_file)
-                        raw_texts.append((f"ウマニティ:{image_file.name}", text))
-                        image_records = parse_umanity_screenshot_image(image_file, text)
-                        umanity_records.extend(image_records)
+                        text0 = extract_text_from_screenshot(image_file)
+                        raw_texts.append((f"ウマニティ:{image_file.name}", text0))
+                        recs = parse_umanity_screenshot_image(image_file, text0)
+                        umanity_records.extend(recs)
                         st.session_state["ocr_image_diagnostics"].append({
-                            "画像": image_file.name,
-                            "種類": "ウマニティ",
-                            "抽出頭数": len(image_records),
-                            "抽出馬": " / ".join(
-                                f"{r.get('馬番')} {r.get('馬名')}" for r in image_records
-                            ),
+                            "画像": image_file.name, "種類": "ウマニティ",
+                            "抽出頭数": len(recs),
+                            "抽出馬": " / ".join(f"{r.get('馬番')} {r.get('馬名')}" for r in recs),
                         })
                     except Exception as exc:
-                        processing_errors.append(str(exc))
+                        processing_errors.append(f"{image_file.name}: {exc}")
+
                 horse_gate_map = {
                     normalize_horse_name(r.get("馬名", "")): int(r["馬番"])
                     for r in umanity_records if r.get("馬名") and r.get("馬番")
                 }
-                for image_file in netkeiba_profile_images or []:
+
+                # 競馬ラボプロフィールを先に解析。馬名が読めた順を、過去走画像の補助対応にも使う。
+                profile_horses_in_order = []
+                for image_file in keibalab_profile_images:
                     try:
-                        text = extract_text_from_screenshot(image_file)
-                        raw_texts.append((f"netkeibaプロフィール:{image_file.name}", text))
-                        profile_records.extend(parse_netkeiba_profile_screenshot_text(text, horse_gate_map))
+                        txt = extract_text_from_screenshot(image_file)
+                        raw_texts.append((f"競馬ラボ・プロフィール:{image_file.name}", txt))
+                        recs = parse_keibalab_profile_screenshot_text(txt, horse_gate_map)
+                        profile_records.extend(recs)
+                        profile_horses_in_order.append(recs[0]["馬名"] if recs else None)
+                        st.session_state["ocr_image_diagnostics"].append({
+                            "画像": image_file.name, "種類": "競馬ラボ・プロフィール",
+                            "抽出頭数": len(recs),
+                            "抽出馬": " / ".join(f"{r.get('馬番')} {r.get('馬名')}" for r in recs),
+                        })
                     except Exception as exc:
-                        processing_errors.append(str(exc))
-                for image_file in netkeiba_history_images or []:
+                        profile_horses_in_order.append(None)
+                        processing_errors.append(f"{image_file.name}: {exc}")
+
+                for idx, image_file in enumerate(keibalab_history_images):
                     try:
-                        text = extract_text_from_screenshot(image_file)
-                        raw_texts.append((f"netkeiba過去走:{image_file.name}", text))
-                        history_records.extend(parse_netkeiba_history_screenshot_text(text, horse_gate_map))
+                        txt = extract_text_from_screenshot(image_file)
+                        raw_texts.append((f"競馬ラボ・過去5走:{image_file.name}", txt))
+                        fallback = profile_horses_in_order[idx] if idx < len(profile_horses_in_order) else None
+                        recs = parse_keibalab_history_screenshot_text(txt, horse_gate_map, fallback_horse=fallback)
+                        history_records.extend(recs)
+                        st.session_state["ocr_image_diagnostics"].append({
+                            "画像": image_file.name, "種類": "競馬ラボ・過去5走",
+                            "抽出頭数": len(recs),
+                            "抽出馬": " / ".join(f"{r.get('馬番')} {r.get('馬名')}" for r in recs),
+                        })
                     except Exception as exc:
-                        processing_errors.append(str(exc))
+                        processing_errors.append(f"{image_file.name}: {exc}")
 
             if processing_errors:
                 st.error("一部画像の処理に失敗しました。")
@@ -3536,17 +3537,12 @@ with tab_img:
             if not merged:
                 st.error("馬データを抽出できませんでした。下のOCR原文を確認してください。")
             else:
-                st.success(
-                    f"{len(merged)}頭を抽出しました。"
-                    "ウマニティ画像を基準に全頭検出を確認し、確認表で修正してから反映してください。"
-                )
+                st.success(f"{len(merged)}頭を抽出しました。確認表で誤読だけ直してから反映してください。")
 
     if st.session_state.get("ocr_image_diagnostics"):
         with st.expander("🧪 画像ごとの抽出診断", expanded=False):
-            st.dataframe(
-                pd.DataFrame(st.session_state["ocr_image_diagnostics"]),
-                use_container_width=True, hide_index=True
-            )
+            st.dataframe(pd.DataFrame(st.session_state["ocr_image_diagnostics"]),
+                         use_container_width=True, hide_index=True)
 
     if st.session_state.get("ocr_preview"):
         preview_df = pd.DataFrame(st.session_state["ocr_preview"])
@@ -3554,26 +3550,26 @@ with tab_img:
             preview_df, hide_index=True, use_container_width=True, num_rows="fixed",
             column_config={
                 "馬番": st.column_config.NumberColumn(min_value=1, max_value=18, step=1),
+                "単勝": st.column_config.NumberColumn(format="%.1f"),
                 "U指数": st.column_config.NumberColumn(format="%.2f"),
                 "斤量": st.column_config.NumberColumn(format="%.1f"),
                 "上がり3F平均": st.column_config.NumberColumn(format="%.2f"),
                 "上がり取得数": st.column_config.NumberColumn(min_value=0, max_value=5, step=1),
             },
-            key="ocr_preview_editor",
+            key="ocr_preview_editor_v169",
         )
-        st.caption("上がり取得数が5未満の場合は、表示範囲不足またはOCR漏れがあります。平均値を確認してから反映してください。")
+        st.caption("上がり取得数が5未満なら、競馬ラボ過去走画像の表示範囲不足またはOCR漏れの可能性があります。前走騎手と平均値もここで修正できます。")
         c1, c2 = st.columns(2)
         if c1.button("✅ 確認した内容を出馬表へ反映", type="primary", use_container_width=True):
             apply_specialized_image_records(edited_df.to_dict("records"), auto_track)
             st.session_state.pop("ocr_preview", None)
-            st.success("画像の内容を出馬表へ反映しました。馬体重・増減・人気・単勝は変更していません。")
+            st.success("反映しました。自動取得対象以外の項目は既存の手入力値を維持しています。")
             st.rerun()
         if c2.button("🗑️ 解析結果を破棄", use_container_width=True):
             st.session_state.pop("ocr_preview", None)
             st.session_state.pop("ocr_raw_texts", None)
             st.rerun()
 
-    # 抽出0頭でもOCR原文を確認できるよう、プレビュー表示の外に置く。
     if st.session_state.get("ocr_raw_texts"):
         with st.expander("OCR原文を確認（読み取り調整用）"):
             for filename, raw in st.session_state.get("ocr_raw_texts", []):
