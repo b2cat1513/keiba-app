@@ -2547,38 +2547,173 @@ def parse_jra_odds_screenshot_text(text):
     jockey_candidates = [x for x in JOCKEY_MASTER if x != "その他（自由手入力）"]
     last_gate = 0
 
-    for i, line in enumerate(lines):
-        odds_m = re.search(r"(?P<odds>\d{1,3}\.\d)\s*$", line)
+ for i, line in enumerate(lines):
+
+        # --------------------------------------------------
+        # 単勝オッズ行を探す
+        # 「倍」が付いている数字だけを単勝として扱う
+        # 70.1倍 / 700.6倍 どちらもOK
+        # --------------------------------------------------
+        odds_m = re.search(
+            r"(?P<odds>\d{1,3}(?:\.\d+)?)\s*倍",
+            line
+        )
+
         if not odds_m:
             continue
-        prefix = line[:odds_m.start()].strip()
-        gate_m = re.match(r"(1[0-8]|[1-9])\b", prefix)
-        gate = int(gate_m.group(1)) if gate_m else last_gate + 1
-        name_part = re.sub(r"^(1[0-8]|[1-9])\s*", "", prefix)
-        name_candidates = re.findall(r"[ァ-ヶー一-龥A-Za-z0-9]{3,}", name_part)
+
+        odds = float(odds_m.group("odds"))
+
+        # --------------------------------------------------
+        # オッズ行より前にある馬情報行を探す
+        # U指数 80～110 がある行を馬名・騎手行とする
+        # --------------------------------------------------
+        horse_idx = None
+
+        for back in range(1, 5):
+            j = i - back
+
+            if j < 0:
+                break
+
+            candidate = lines[j]
+
+            u_m = re.search(
+                r"(?<!\d)(?:8\d|9\d|10\d|110)(?:\.\d{1,2})?(?!\d)",
+                candidate
+            )
+
+            if u_m:
+                horse_idx = j
+                break
+
+        if horse_idx is None:
+            continue
+
+        horse_line = lines[horse_idx]
+
+        # --------------------------------------------------
+        # U指数
+        # --------------------------------------------------
+        u_m = re.search(
+            r"(?<!\d)((?:8\d|9\d|10\d|110)(?:\.\d{1,2})?)(?!\d)",
+            horse_line
+        )
+
+        u_index = float(u_m.group(1)) if u_m else None
+
+        # --------------------------------------------------
+        # 騎手
+        # --------------------------------------------------
+        jockey = _best_master_match(
+            horse_line,
+            jockey_candidates,
+            0.42
+        )
+
+        # --------------------------------------------------
+        # 馬名
+        # 騎手名より前を基本的に馬名とする
+        # --------------------------------------------------
+        name_part = horse_line
+
+        if jockey and jockey != "(未選択)" and jockey in name_part:
+            name_part = name_part.split(jockey, 1)[0]
+
+        # U指数・丸数字などを除去
+        name_part = re.sub(
+            r"(?<!\d)(?:8\d|9\d|10\d|110)(?:\.\d{1,2})?(?!\d).*?$",
+            "",
+            name_part
+        )
+
+        name_part = name_part.strip()
+
+        if not name_part:
+            continue
+
+        # 先頭の馬名候補
+        name_candidates = re.findall(
+            r"[ァ-ヶー一-龥A-Za-z0-9]{2,}",
+            name_part
+        )
+
         if not name_candidates:
             continue
-        name = normalize_horse_name(max(name_candidates, key=len))
-        detail = " ".join(lines[i+1:i+3])
+
+        name = normalize_horse_name(
+            max(name_candidates, key=len)
+        )
+
+        # --------------------------------------------------
+        # 馬番・性齢・斤量
+        # 馬名行～オッズ行の間から取得
+        # --------------------------------------------------
+        detail_lines = lines[horse_idx + 1:i]
+        detail = " ".join(detail_lines)
+
+        gate_m = re.search(
+            r"(?:^|\s)(1[0-8]|[1-9])(?:\s|[-—ー|])",
+            detail
+        )
+
+        gate = int(gate_m.group(1)) if gate_m else last_gate + 1
+
         sex_age = _parse_sex_age(detail)
-        weight_m = re.search(r"(?<!\d)(4[8-9](?:\.5)?|5\d(?:\.5)?|6[0-2](?:\.5)?)(?!\d)", detail)
-        pop_m = re.search(r"(1[0-8]|[1-9])\s*人気", detail)
-        # 性齢の後ろから斤量の前までを騎手候補にする
-        jockey_raw = detail
-        if sex_age:
-            jockey_raw = jockey_raw[jockey_raw.find(sex_age)+len(sex_age):]
-        if weight_m:
-            jockey_raw = jockey_raw[:jockey_raw.find(weight_m.group(1))]
-        jockey = _best_master_match(jockey_raw, jockey_candidates, 0.42)
+
+        weight_m = re.search(
+            r"(?<!\d)(4[8-9](?:\.5)?|5\d(?:\.5)?|6[0-2](?:\.5)?)(?!\d)",
+            detail
+        )
+
+        weight = (
+            float(weight_m.group(1))
+            if weight_m
+            else None
+        )
+
+        # --------------------------------------------------
+        # 人気
+        # 「倍」の後ろにある丸数字等は既存処理に任せず、
+        # ここでは取れなければ None
+        # --------------------------------------------------
+        popularity = None
+
+        circled_map = {
+            "①": 1, "②": 2, "③": 3, "④": 4, "⑤": 5,
+            "⑥": 6, "⑦": 7, "⑧": 8, "⑨": 9, "⑩": 10,
+            "⑪": 11, "⑫": 12, "⑬": 13, "⑭": 14, "⑮": 15,
+            "⑯": 16, "⑰": 17, "⑱": 18,
+        }
+
+        after_odds = line[odds_m.end():]
+
+        for mark, num in circled_map.items():
+            if mark in after_odds:
+                popularity = num
+                break
+
         records.append({
-            "馬番": gate, "馬名": name, "性齢": sex_age,
-            "今回騎手": jockey, "斤量": float(weight_m.group(1)) if weight_m else None,
-            "厩舎": "(未選択)", "単勝": float(odds_m.group("odds")),
-            "人気": int(pop_m.group(1)) if pop_m else None,
-            "U指数": None, "取得元": "JRA画像",
+            "馬番": gate,
+            "馬名": name,
+            "性齢": sex_age,
+            "今回騎手": jockey if jockey else "(未選択)",
+            "斤量": weight,
+            "厩舎": "(未選択)",
+            "単勝": odds,
+            "人気": popularity,
+            "U指数": u_index,
+            "取得元": "ウマニティ画像",
+            "_ocr_order": horse_idx,
         })
+
         last_gate = gate
-    return records
+
+    records.sort(
+        key=lambda x: x.get("馬番", 999)
+    )
+
+    return records 
 
 
 
