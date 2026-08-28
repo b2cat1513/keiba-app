@@ -24,8 +24,54 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.16.9", layout="wide")
-st.title("🏆 ジェニーAI予想ver1.16.9（ウマニティ＋競馬ラボOCR版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.17.0", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.17.0（スマホ入力対応版）")
+
+st.markdown("""
+<style>
+/* 共通 */
+div[data-testid="stTextInput"] input,
+div[data-testid="stNumberInput"] input,
+div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+    min-height: 42px;
+}
+
+/* スマホ */
+@media (max-width: 768px) {
+    .block-container {
+        padding-top: 0.8rem !important;
+        padding-left: 0.65rem !important;
+        padding-right: 0.65rem !important;
+        max-width: 100% !important;
+    }
+    h1 { font-size: 1.45rem !important; }
+    h2 { font-size: 1.25rem !important; }
+    h3 { font-size: 1.15rem !important; }
+
+    div[data-testid="stHorizontalBlock"] {
+        gap: 0.45rem !important;
+    }
+    div[data-testid="stTextInput"] input,
+    div[data-testid="stNumberInput"] input {
+        font-size: 16px !important;
+        min-height: 46px !important;
+    }
+    div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+        min-height: 46px !important;
+        font-size: 16px !important;
+    }
+    div.stButton > button,
+    div[data-testid="stDownloadButton"] > button {
+        min-height: 48px !important;
+        font-size: 1rem !important;
+    }
+    div[data-testid="stExpander"] details summary {
+        min-height: 48px !important;
+        align-items: center !important;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
 
 # 🛠️ スマホ向け：データを極限まで縮小・Base64圧縮する関数
 def encode_for_mobile(data_dict):
@@ -3583,65 +3629,150 @@ st.divider()
 # ==========================================
 st.write("### 📝 出馬表データ入力")
 
-c_widths = [0.55, 1.20, 0.52, 0.65, 0.60, 0.58, 0.63, 0.58, 1.10, 0.52, 1.00, 1.00, 0.95, 0.95, 1.05, 0.68, 0.72, 0.72, 0.78, 0.72]
-cols = st.columns(c_widths)
-headers = ["馬番", "馬名", "人気", "単勝", "指数", "斤量", "馬体重", "前3F", "父馬", "道悪", "今回騎手", "前走騎手", "厩舎", "馬主", "手入力メモ", "馬場", "脚質", "枠有利", "前走距離", "能力値"]
-for col, h in zip(cols, headers):
-    col.write(f"**{h}**")
+mobile_mode = st.toggle(
+    "📱 スマホ入力モード",
+    value=st.session_state.get("mobile_input_mode", False),
+    help="スマホではONがおすすめです。1頭ずつ縦長カードで入力できます。PCではOFFで従来の表形式になります。",
+    key="mobile_input_mode",
+)
+
+if mobile_mode:
+    st.info("📱 スマホ入力モード：各馬をタップして開き、2列の大きな入力欄で編集できます。OCRで入った値もここで確認・修正できます。")
+else:
+    st.caption("🖥️ PC表形式です。スマホでは上の「スマホ入力モード」をONにすると入力しやすくなります。")
 
 current_inputs = {"course": sel_course, "track_condition": track_condition, "race_class": race_class, "rows": {}}
 style_counts = {"逃げ": 0, "先行": 0, "差し": 0, "追い込み": 0}
-
 row_tmp_data = []
-for i in range(1, 19):
-    c = st.columns(c_widths)
-    s_row = st.session_state["loaded_data"].get("rows", {}).get(str(i), {})
 
-    num = c[0].text_input(f"num_{i}", value=s_row.get("num", str(i)), label_visibility="collapsed")
-    name = c[1].text_input(f"name_{i}", value=s_row.get("name", ""), label_visibility="collapsed")
-    pop = c[2].number_input(f"pop_{i}", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), label_visibility="collapsed")
-    win_odds = c[3].number_input(
-        f"win_odds_{i}", min_value=0.0, max_value=999.9,
-        value=float(s_row.get("win_odds", 0.0) or 0.0), step=0.1,
-        label_visibility="collapsed", help="未入力は0.0",
-    )
-    idx = c[4].number_input(f"idx_{i}", value=float(s_row.get("idx", 0.0)), step=0.1, label_visibility="collapsed")
-    wgt = c[5].number_input(f"wgt_{i}", min_value=48.0, max_value=62.0, value=float(s_row.get("wgt", 56.0)), step=0.5, label_visibility="collapsed")
-    wgh = c[6].number_input(f"wgh_{i}", min_value=350, max_value=600, value=int(s_row.get("wgh", 480)), step=2, label_visibility="collapsed")
-    l3f = c[7].number_input(f"l3f_{i}", value=float(s_row.get("l3f", 35.0)), step=0.1, label_visibility="collapsed")
-    sire = c[8].text_input(f"sire_{i}", value=s_row.get("sire", ""), label_visibility="collapsed", placeholder="父馬")
-    has_heavy_record = c[9].checkbox(f"rec_{i}", value=s_row.get("heavy_record", False), label_visibility="collapsed")
+jock_list = sorted([k for k in JOCKEY_MASTER.keys() if k != "その他（自由手入力）"]) + ["その他（自由手入力）"]
+jockey_options = ["(未選択)"] + jock_list
+track_options = ["選択なし", "芝", "ダート"]
+style_options = ["選択なし", "逃げ", "先行", "差し", "追い込み"]
+frame_options = ["選択なし", "内枠", "外枠"]
+distance_options = ["同距離", "距離短縮", "距離延長"]
 
-    jock_list = sorted([k for k in JOCKEY_MASTER.keys() if k != "その他（自由手入力）"]) + ["その他（自由手入力）"]
-    jockey_options = ["(未選択)"] + jock_list
-    saved_jockey = normalize_jockey_name(s_row.get("jock", "(未選択)"))
-    jock = c[10].selectbox(f"jock_{i}", jockey_options, index=jockey_options.index(saved_jockey) if saved_jockey in jockey_options else 0, label_visibility="collapsed")
+def _safe_select_index(options, value, fallback=0):
+    try:
+        return options.index(value)
+    except ValueError:
+        return fallback
 
-    saved_previous = normalize_jockey_name(s_row.get("previous_jockey", "(未選択)"))
-    previous_jockey = c[11].selectbox(f"previous_jockey_{i}", jockey_options, index=jockey_options.index(saved_previous) if saved_previous in jockey_options else 0, label_visibility="collapsed")
-    trainer = c[12].selectbox(f"trainer_{i}", TRAINER_OPTIONS, index=TRAINER_OPTIONS.index(s_row.get("trainer")) if s_row.get("trainer") in TRAINER_OPTIONS else 0, label_visibility="collapsed")
-    owner = c[13].selectbox(f"owner_{i}", OWNER_OPTIONS, index=OWNER_OPTIONS.index(s_row.get("owner")) if s_row.get("owner") in OWNER_OPTIONS else 0, label_visibility="collapsed")
-    custom_note = c[14].text_input(f"custom_note_{i}", value=s_row.get("custom_note", ""), label_visibility="collapsed", placeholder="性齢・特徴メモ")
-    sel_track = c[15].selectbox(f"track_{i}", ["選択なし", "芝", "ダート"], index=["選択なし", "芝", "ダート"].index(s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")), label_visibility="collapsed")
-    sel_style = c[16].selectbox(f"style_{i}", ["選択なし", "逃げ", "先行", "差し", "追い込み"], index=["選択なし", "逃げ", "先行", "差し", "追い込み"].index(s_row.get("sel_style", "選択なし")), label_visibility="collapsed")
+if not mobile_mode:
+    c_widths = [0.55, 1.20, 0.52, 0.65, 0.60, 0.58, 0.63, 0.58, 1.10, 0.52, 1.00, 1.00, 0.95, 0.95, 1.05, 0.68, 0.72, 0.72, 0.78, 0.72]
+    cols = st.columns(c_widths)
+    headers = ["馬番", "馬名", "人気", "単勝", "指数", "斤量", "馬体重", "前3F", "父馬", "道悪", "今回騎手", "前走騎手", "厩舎", "馬主", "手入力メモ", "馬場", "脚質", "枠有利", "前走距離", "能力値"]
+    for col, h in zip(cols, headers):
+        col.write(f"**{h}**")
 
-    if name and sel_style in style_counts:
-        style_counts[sel_style] += 1
+    for i in range(1, 19):
+        c = st.columns(c_widths)
+        s_row = st.session_state["loaded_data"].get("rows", {}).get(str(i), {})
 
-    f_opts = ["選択なし", "内枠", "外枠"]
-    num_int = safe_int_convert(num, i)
-    f_def_idx = 1 if num_int <= 8 else (2 if num_int >= 13 else 0)
-    sel_frame = c[17].selectbox(f"frame_{i}", f_opts, index=f_opts.index(s_row.get("sel_frame", f_opts[f_def_idx])), label_visibility="collapsed")
-    sel_dist_change = c[18].selectbox(f"dist_change_{i}", ["同距離", "距離短縮", "距離延長"], index=["同距離", "距離短縮", "距離延長"].index(s_row.get("sel_dist_change", "同距離")), label_visibility="collapsed")
+        num = c[0].text_input(f"num_{i}", value=s_row.get("num", str(i)), label_visibility="collapsed")
+        name = c[1].text_input(f"name_{i}", value=s_row.get("name", ""), label_visibility="collapsed")
+        pop = c[2].number_input(f"pop_{i}", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), label_visibility="collapsed")
+        win_odds = c[3].number_input(f"win_odds_{i}", min_value=0.0, max_value=999.9, value=float(s_row.get("win_odds", 0.0) or 0.0), step=0.1, label_visibility="collapsed", help="未入力は0.0")
+        idx = c[4].number_input(f"idx_{i}", value=float(s_row.get("idx", 0.0)), step=0.1, label_visibility="collapsed")
+        wgt = c[5].number_input(f"wgt_{i}", min_value=48.0, max_value=62.0, value=float(s_row.get("wgt", 56.0)), step=0.5, label_visibility="collapsed")
+        wgh = c[6].number_input(f"wgh_{i}", min_value=350, max_value=600, value=int(s_row.get("wgh", 480)), step=2, label_visibility="collapsed")
+        l3f = c[7].number_input(f"l3f_{i}", value=float(s_row.get("l3f", 35.0)), step=0.1, label_visibility="collapsed")
+        sire = c[8].text_input(f"sire_{i}", value=s_row.get("sire", ""), label_visibility="collapsed", placeholder="父馬")
+        has_heavy_record = c[9].checkbox(f"rec_{i}", value=s_row.get("heavy_record", False), label_visibility="collapsed")
 
-    current_inputs["rows"][str(i)] = {
-        "num": num, "name": name, "pop": pop, "win_odds": win_odds, "idx": idx, "wgt": wgt, "wgh": wgh, "l3f": l3f, "sire": sire, "heavy_record": has_heavy_record,
-        "jock": jock, "previous_jockey": previous_jockey, "trainer": trainer, "owner": owner,
-        "custom_note": custom_note, "sel_track": sel_track, "sel_style": sel_style,
-        "sel_frame": sel_frame, "sel_dist_change": sel_dist_change
-    }
+        saved_jockey = normalize_jockey_name(s_row.get("jock", "(未選択)"))
+        jock = c[10].selectbox(f"jock_{i}", jockey_options, index=_safe_select_index(jockey_options, saved_jockey), label_visibility="collapsed")
+        saved_previous = normalize_jockey_name(s_row.get("previous_jockey", "(未選択)"))
+        previous_jockey = c[11].selectbox(f"previous_jockey_{i}", jockey_options, index=_safe_select_index(jockey_options, saved_previous), label_visibility="collapsed")
+        trainer = c[12].selectbox(f"trainer_{i}", TRAINER_OPTIONS, index=_safe_select_index(TRAINER_OPTIONS, s_row.get("trainer", "(未選択)")), label_visibility="collapsed")
+        owner = c[13].selectbox(f"owner_{i}", OWNER_OPTIONS, index=_safe_select_index(OWNER_OPTIONS, s_row.get("owner", "(未選択)")), label_visibility="collapsed")
+        custom_note = c[14].text_input(f"custom_note_{i}", value=s_row.get("custom_note", ""), label_visibility="collapsed", placeholder="性齢・特徴メモ")
 
-    row_tmp_data.append((num, name, pop, win_odds, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, previous_jockey, trainer, owner, custom_note, sel_track, sel_style, sel_frame, sel_dist_change, c[19]))
+        default_track = s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")
+        sel_track = c[15].selectbox(f"track_{i}", track_options, index=_safe_select_index(track_options, default_track), label_visibility="collapsed")
+        sel_style = c[16].selectbox(f"style_{i}", style_options, index=_safe_select_index(style_options, s_row.get("sel_style", "選択なし")), label_visibility="collapsed")
+
+        num_int = safe_int_convert(num, i)
+        f_def_idx = 1 if num_int <= 8 else (2 if num_int >= 13 else 0)
+        sel_frame = c[17].selectbox(f"frame_{i}", frame_options, index=_safe_select_index(frame_options, s_row.get("sel_frame", frame_options[f_def_idx])), label_visibility="collapsed")
+        sel_dist_change = c[18].selectbox(f"dist_change_{i}", distance_options, index=_safe_select_index(distance_options, s_row.get("sel_dist_change", "同距離")), label_visibility="collapsed")
+        score_cell = c[19]
+
+        if name and sel_style in style_counts:
+            style_counts[sel_style] += 1
+
+        current_inputs["rows"][str(i)] = {
+            "num": num, "name": name, "pop": pop, "win_odds": win_odds, "idx": idx, "wgt": wgt, "wgh": wgh, "l3f": l3f, "sire": sire, "heavy_record": has_heavy_record,
+            "jock": jock, "previous_jockey": previous_jockey, "trainer": trainer, "owner": owner,
+            "custom_note": custom_note, "sel_track": sel_track, "sel_style": sel_style,
+            "sel_frame": sel_frame, "sel_dist_change": sel_dist_change
+        }
+        row_tmp_data.append((num, name, pop, win_odds, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, previous_jockey, trainer, owner, custom_note, sel_track, sel_style, sel_frame, sel_dist_change, score_cell))
+
+else:
+    for i in range(1, 19):
+        s_row = st.session_state["loaded_data"].get("rows", {}).get(str(i), {})
+        preview_name = st.session_state.get(f"name_{i}", s_row.get("name", ""))
+        title = f"{i}番"
+        if str(preview_name).strip():
+            title += f"　{preview_name}"
+
+        with st.expander(title, expanded=(i == 1 and not str(preview_name).strip())):
+            a, b = st.columns(2)
+            num = a.text_input("馬番", value=s_row.get("num", str(i)), key=f"num_{i}")
+            name = b.text_input("馬名", value=s_row.get("name", ""), key=f"name_{i}", placeholder="馬名")
+
+            a, b = st.columns(2)
+            pop = a.number_input("人気", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), key=f"pop_{i}")
+            win_odds = b.number_input("単勝", min_value=0.0, max_value=999.9, value=float(s_row.get("win_odds", 0.0) or 0.0), step=0.1, key=f"win_odds_{i}")
+
+            a, b = st.columns(2)
+            idx = a.number_input("U指数", value=float(s_row.get("idx", 0.0)), step=0.1, key=f"idx_{i}")
+            wgt = b.number_input("斤量", min_value=48.0, max_value=62.0, value=float(s_row.get("wgt", 56.0)), step=0.5, key=f"wgt_{i}")
+
+            a, b = st.columns(2)
+            wgh = a.number_input("馬体重", min_value=350, max_value=600, value=int(s_row.get("wgh", 480)), step=2, key=f"wgh_{i}")
+            l3f = b.number_input("上がり3F平均", value=float(s_row.get("l3f", 35.0)), step=0.1, key=f"l3f_{i}")
+
+            sire = st.text_input("父馬", value=s_row.get("sire", ""), key=f"sire_{i}", placeholder="OCR取得または手入力")
+
+            a, b = st.columns(2)
+            saved_jockey = normalize_jockey_name(s_row.get("jock", "(未選択)"))
+            jock = a.selectbox("今回騎手", jockey_options, index=_safe_select_index(jockey_options, saved_jockey), key=f"jock_{i}")
+            saved_previous = normalize_jockey_name(s_row.get("previous_jockey", "(未選択)"))
+            previous_jockey = b.selectbox("前走騎手", jockey_options, index=_safe_select_index(jockey_options, saved_previous), key=f"previous_jockey_{i}")
+
+            a, b = st.columns(2)
+            trainer = a.selectbox("厩舎", TRAINER_OPTIONS, index=_safe_select_index(TRAINER_OPTIONS, s_row.get("trainer", "(未選択)")), key=f"trainer_{i}")
+            owner = b.selectbox("馬主", OWNER_OPTIONS, index=_safe_select_index(OWNER_OPTIONS, s_row.get("owner", "(未選択)")), key=f"owner_{i}")
+
+            custom_note = st.text_input("手入力メモ", value=s_row.get("custom_note", ""), key=f"custom_note_{i}", placeholder="性齢・特徴など")
+
+            a, b = st.columns(2)
+            default_track = s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")
+            sel_track = a.selectbox("馬場", track_options, index=_safe_select_index(track_options, default_track), key=f"track_{i}")
+            sel_style = b.selectbox("脚質", style_options, index=_safe_select_index(style_options, s_row.get("sel_style", "選択なし")), key=f"style_{i}")
+
+            a, b = st.columns(2)
+            num_int = safe_int_convert(num, i)
+            f_def_idx = 1 if num_int <= 8 else (2 if num_int >= 13 else 0)
+            sel_frame = a.selectbox("枠有利", frame_options, index=_safe_select_index(frame_options, s_row.get("sel_frame", frame_options[f_def_idx])), key=f"frame_{i}")
+            sel_dist_change = b.selectbox("前走距離", distance_options, index=_safe_select_index(distance_options, s_row.get("sel_dist_change", "同距離")), key=f"dist_change_{i}")
+
+            has_heavy_record = st.checkbox("道悪実績あり", value=s_row.get("heavy_record", False), key=f"rec_{i}")
+            st.caption("能力値")
+            score_cell = st.empty()
+
+            if name and sel_style in style_counts:
+                style_counts[sel_style] += 1
+
+            current_inputs["rows"][str(i)] = {
+                "num": num, "name": name, "pop": pop, "win_odds": win_odds, "idx": idx, "wgt": wgt, "wgh": wgh, "l3f": l3f, "sire": sire, "heavy_record": has_heavy_record,
+                "jock": jock, "previous_jockey": previous_jockey, "trainer": trainer, "owner": owner,
+                "custom_note": custom_note, "sel_track": sel_track, "sel_style": sel_style,
+                "sel_frame": sel_frame, "sel_dist_change": sel_dist_change
+            }
+            row_tmp_data.append((num, name, pop, win_odds, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, previous_jockey, trainer, owner, custom_note, sel_track, sel_style, sel_frame, sel_dist_change, score_cell))
 
 # ==========================================
 # 🏁 4. 展開（ペース）AI自動予測
