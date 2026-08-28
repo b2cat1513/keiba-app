@@ -1896,31 +1896,34 @@ def _parse_sex_age(text):
 
 def parse_umanity_screenshot_text(text):
     """
-    ウマニティOCR 第5版
+    ウマニティOCR 第6版
 
-    方針
-    ----
-    ・「馬名 騎手 U指数」の行を1頭の開始点として認識
-    ・その周辺行から
-        馬番
-        性齢
-        斤量
-        単勝
-        人気
-      を取得
-    ・画面下部のメニュー文字などを馬として誤認しない
-    ・馬番OCRが壊れていても、馬名を優先して残す
+    基本方針
+    1. U指数 80～110 がある行を「馬の先頭行」として検出
+    2. その行から馬名・騎手・U指数を取得
+    3. 次の馬の先頭行までから
+       馬番・性齢・斤量・単勝・人気を取得
+    4. OCRノイズ行は極力無視
     """
 
-    lines = [_ocr_clean_line(x) for x in str(text).splitlines()]
-    lines = [x.strip() for x in lines if x and x.strip()]
+    import re
 
-    records = []
-
-    jockey_candidates = [
-        x for x in JOCKEY_MASTER
-        if x != "その他（自由手入力）"
+    # --------------------------------------------------
+    # OCR行を整える
+    # --------------------------------------------------
+    lines = [
+        _ocr_clean_line(x)
+        for x in str(text).splitlines()
     ]
+
+    lines = [
+        x.strip()
+        for x in lines
+        if x and x.strip()
+    ]
+
+    if not lines:
+        return []
 
     # --------------------------------------------------
     # 丸数字 → 人気
@@ -1932,97 +1935,75 @@ def parse_umanity_screenshot_text(text):
         "⑯": 16, "⑰": 17, "⑱": 18, "⑲": 19, "⑳": 20,
     }
 
-    # --------------------------------------------------
-    # 明らかなUI文字
-    # --------------------------------------------------
-    NG_WORDS = {
-        "ニュース",
-        "レース",
-        "新出馬表",
-        "予想コロシアム",
-        "プロ予想MAX",
-        "プレミアムサービス",
-        "予想コロシアムに登録",
-        "Myレース",
-        "レース情報",
-        "Bay",
-        "VIP",
-        "TVIP",
-        "LVIP",
-    }
-
-    def clean_token(s):
-        if not s:
-            return ""
-
-        s = str(s)
-
-        # 丸数字除去
-        for mark in circled_map:
-            s = s.replace(mark, " ")
-
-        # よくあるOCR記号
-        s = re.sub(
-            r"[|｜{}\[\]<>《》「」『』()（）=:;,#★☆※]",
-            " ",
-            s
-        )
-
-        s = re.sub(r"\s+", " ", s).strip()
-        return s
+    jockey_candidates = [
+        x for x in JOCKEY_MASTER
+        if x != "その他（自由手入力）"
+    ]
 
     # --------------------------------------------------
-    # U指数
+    # 数字を安全にfloat化
     # --------------------------------------------------
-    def get_u_index(line):
-        """
-        馬名・騎手行末の80～110程度の数値をU指数として取得。
-        例:
-        イツモニコニコ 藤懸貴志 94.4①
-        """
-
-        if "倍" in line:
-            return None
-
-        s = line
-
-        # 丸数字は邪魔なので除去
-        for mark in circled_map:
-            s = s.replace(mark, "")
-
-        values = re.findall(
-            r"(?<!\d)"
-            r"(8\d(?:\.\d{1,2})?|9\d(?:\.\d{1,2})?|10\d(?:\.\d{1,2})?|110(?:\.0+)?)"
-            r"(?!\d)",
-            s
-        )
-
-        if not values:
-            return None
-
+    def to_float(value):
         try:
-            value = float(values[-1])
+            return float(value)
         except Exception:
             return None
 
-        if 80.0 <= value <= 110.0:
-            return value
+    # --------------------------------------------------
+    # U指数を探す
+    # --------------------------------------------------
+    def get_u_index(line):
+        """
+        行末付近の 80～110 をU指数として採用。
+
+        例
+        イツモニコニコ 藤懸貴志 94.4⑪
+        ディアナザール 川田将雅 99.7①
+        """
+
+        # 「倍」がある行は単勝なので除外
+        if "倍" in line:
+            return None
+
+        nums = re.findall(
+            r"(?<!\d)(\d{2,3}(?:\.\d{1,2})?)(?!\d)",
+            line
+        )
+
+        if not nums:
+            return None
+
+        # 後ろ側から探す
+        for value_text in reversed(nums):
+            value = to_float(value_text)
+
+            if value is None:
+                continue
+
+            if 80.0 <= value <= 110.0:
+                return value
 
         return None
 
     # --------------------------------------------------
-    # 人気
+    # 人気取得
     # --------------------------------------------------
-    def get_popularity(s):
-        for mark, num in circled_map.items():
-            if mark in s:
-                return num
+    def get_popularity(line):
+        # 丸数字を最優先
+        for mark, number in circled_map.items():
+            if mark in line:
+                return number
 
-        # 「70.1倍⑯」の丸数字OCR失敗対策
-        m = re.search(r"倍\s*[\(\[]?\s*(\d{1,2})", s)
+        # OCRで「倍⑦」→「倍7」などになった場合
+        m = re.search(
+            r"倍\s*[\(\[]?\s*(\d{1,2})\s*[\)\]]?",
+            line
+        )
+
         if m:
             try:
                 n = int(m.group(1))
+
                 if 1 <= n <= 20:
                     return n
             except Exception:
@@ -2031,310 +2012,266 @@ def parse_umanity_screenshot_text(text):
         return None
 
     # --------------------------------------------------
-    # 単勝オッズ
+    # 単勝取得
     # --------------------------------------------------
-    def get_odds(s):
+    def get_odds(line):
+        """
+        70.1倍
+        4.1倍
+        700.6倍
+        """
+
         m = re.search(
-            r"(?<!\d)"
-            r"(\d{1,3}(?:\.\d{1,2})?)"
-            r"\s*倍",
-            s
+            r"(?<!\d)(\d{1,3}(?:\.\d{1,2})?)\s*倍",
+            line
         )
 
         if not m:
             return None
 
-        try:
-            value = float(m.group(1))
-        except Exception:
+        value = to_float(m.group(1))
+
+        if value is None:
             return None
 
-        # 明らかなOCR暴走は除く
         if 1.0 <= value <= 999.9:
             return value
 
         return None
 
     # --------------------------------------------------
-    # 騎手
+    # 騎手取得
     # --------------------------------------------------
     def find_jockey(line, u_index=None):
-        s = line
+        work = line
 
-        # U指数以降を切る
+        # U指数を除去
         if u_index is not None:
-            p = s.rfind(str(u_index))
-            if p >= 0:
-                s = s[:p]
+            work = re.sub(
+                rf"{re.escape(str(u_index))}\d*",
+                " ",
+                work
+            )
 
-        # 完全一致を最優先
+        # 丸数字除去
+        for mark in circled_map:
+            work = work.replace(mark, " ")
+
+        work = re.sub(r"\s+", " ", work).strip()
+
+        # 完全一致
         exact = [
-            j for j in jockey_candidates
-            if j and j in s
+            jockey
+            for jockey in jockey_candidates
+            if jockey and jockey in work
         ]
 
         if exact:
             return max(exact, key=len)
 
-        # 後半部分からファジー一致
-        tokens = clean_token(s).split()
+        # 馬名以外の後半をファジー検索
+        tokens = work.split()
 
         if len(tokens) >= 2:
-            raw = " ".join(tokens[1:])
+            tail = " ".join(tokens[1:])
 
             try:
                 result = _best_master_match(
-                    raw,
+                    tail,
                     jockey_candidates,
-                    0.52
+                    0.46
                 )
 
                 if result:
                     return result
+
             except Exception:
                 pass
 
         return "(未選択)"
 
     # --------------------------------------------------
-    # 馬名
+    # 馬名取得
     # --------------------------------------------------
     def find_horse_name(line, jockey, u_index):
-        s = line
+        work = line
 
-        # U指数を末尾から除去
-        temp = s
+        # U指数より後ろを削る
+        if u_index is not None:
+            pattern = re.compile(
+                rf"{re.escape(str(u_index))}"
+            )
 
+            m = pattern.search(work)
+
+            if m:
+                work = work[:m.start()]
+
+        # 丸数字除去
         for mark in circled_map:
-            temp = temp.replace(mark, " ")
+            work = work.replace(mark, " ")
 
-        # 末尾U指数
-        temp = re.sub(
-            r"\s+"
-            r"(?:8\d|9\d|10\d|110)"
-            r"(?:\.\d{1,2})?"
-            r"\s*$",
-            "",
-            temp
-        )
-
+        # 騎手を除去
         if jockey and jockey != "(未選択)":
-            temp = temp.replace(jockey, " ")
+            work = work.replace(jockey, " ")
 
-        temp = clean_token(temp)
+        work = re.sub(r"\s+", " ", work).strip()
 
-        if not temp:
+        if not work:
             return ""
 
-        tokens = temp.split()
+        tokens = work.split()
 
-        # 原則、先頭部分が馬名
-        # UI語を除外
-        result = []
+        # 明らかなUI文字列
+        ignore_words = {
+            "VIP",
+            "TVIP",
+            "LVIP",
+            "ニュース",
+            "レース",
+            "新出馬表",
+            "予想コロシアム",
+            "プロ予想MAX",
+            "予想MAX",
+            "Bay",
+        }
 
         for token in tokens:
+            token = token.strip(
+                "[](){}<>|｜ー‐-:：;；"
+            )
 
-            if token in NG_WORDS:
-                break
+            if not token:
+                continue
 
-            # 数字だけ
+            if token in ignore_words:
+                continue
+
+            # 数字だけなら馬名ではない
             if re.fullmatch(r"[\d.]+", token):
                 continue
 
-            # 明らかなOCRゴミ
-            if len(token) == 1 and re.fullmatch(
-                r"[A-Za-z0-9]",
-                token
-            ):
+            # 倍を含むものは単勝
+            if "倍" in token:
                 continue
 
-            result.append(token)
+            # 1文字はOCRゴミの可能性が高い
+            if len(token) < 2:
+                continue
 
-            # 日本語馬名はほぼ1トークン
-            if len(result) >= 1:
-                break
+            return token
 
-        if not result:
-            return ""
-
-        name = result[0]
-
-        # 最低限の安全チェック
-        if len(name) < 2:
-            return ""
-
-        if name in NG_WORDS:
-            return ""
-
-        if name.startswith("#"):
-            return ""
-
-        if re.fullmatch(r"[#\d.]+", name):
-            return ""
-
-        return name
-
-    # --------------------------------------------------
-    # 性齢
-    # --------------------------------------------------
-    def get_sex_age(s):
-        m = re.search(
-            r"[【\[\(]?\s*"
-            r"([牡牝セ騙])"
-            r"\s*([2-9])"
-            r"\s*[】\]\)]?",
-            s
-        )
-
-        if not m:
-            return ""
-
-        sex = m.group(1)
-
-        if sex in {"セ", "騙"}:
-            sex = "セ"
-
-        return f"{sex}{m.group(2)}"
+        return ""
 
     # --------------------------------------------------
     # 馬番
     # --------------------------------------------------
-    def get_gate(s):
+    def get_gate(block_lines):
         """
-        詳細行の先頭付近だけを見る。
-        U指数・オッズ・斤量を馬番と誤認しない。
+        次のような詳細行を想定
+
+        1 -- 牡5 ... 53.0
+        13 -- 牝3 ... 52.0
         """
 
-        s2 = s.strip()
+        for line in block_lines:
+            m = re.match(
+                r"^\s*(1[0-8]|[1-9])"
+                r"(?=\s|[-ー―=|｜#])",
+                line
+            )
 
-        # まず先頭数字
-        m = re.match(
-            r"^[^\d]{0,4}"
-            r"([1-9]|1[0-8])"
-            r"(?=\s|[-ー―|｜])",
-            s2
-        )
-
-        if m:
-            try:
-                return int(m.group(1))
-            except Exception:
-                pass
-
-        # OCRで先頭にゴミが付いた場合
-        m = re.search(
-            r"(?:^|\s)"
-            r"([1-9]|1[0-8])"
-            r"\s*(?:--|—|―|-|｜|\|)",
-            s2
-        )
-
-        if m:
-            try:
-                return int(m.group(1))
-            except Exception:
-                pass
+            if m:
+                try:
+                    return int(m.group(1))
+                except Exception:
+                    pass
 
         return None
+
+    # --------------------------------------------------
+    # 性齢
+    # --------------------------------------------------
+    def get_sex_age(block_lines):
+        text_block = " ".join(block_lines)
+
+        m = re.search(
+            r"([牡牝セ騙])\s*([2-9])",
+            text_block
+        )
+
+        if m:
+            return f"{m.group(1)}{m.group(2)}"
+
+        return ""
 
     # --------------------------------------------------
     # 斤量
     # --------------------------------------------------
-    def get_weight(s):
+    def get_weight(block_lines):
         """
-        48.0～62.0kgだけを斤量候補にする。
-        最後側の候補を優先。
+        斤量として現実的な 48～62kg の数字だけ拾う。
         """
 
-        candidates = re.findall(
-            r"(?<!\d)"
-            r"(4[8-9](?:\.\d)?|5\d(?:\.\d)?|6[0-2](?:\.\d)?)"
-            r"(?!\d)",
-            s
-        )
+        candidates = []
 
-        for value_text in reversed(candidates):
-            try:
-                value = float(value_text)
-            except Exception:
+        for line in block_lines:
+
+            # 単勝行は除外
+            if "倍" in line:
                 continue
 
-            if 48.0 <= value <= 62.0:
-                return value
+            nums = re.findall(
+                r"(?<!\d)"
+                r"(4[8-9](?:\.\d)?"
+                r"|5\d(?:\.\d)?"
+                r"|6[0-2](?:\.\d)?)"
+                r"(?!\d)",
+                line
+            )
 
-        return None
+            for value_text in nums:
+                value = to_float(value_text)
+
+                if value is not None and 48.0 <= value <= 62.0:
+                    candidates.append(value)
+
+        if not candidates:
+            return None
+
+        # 詳細行の後ろに斤量が来ることが多いので最後を優先
+        return candidates[-1]
 
     # --------------------------------------------------
-    # 1頭分の詳細を後続行から探す
+    # 1頭分の詳細を取得
     # --------------------------------------------------
-    def find_details(start_index):
+    def get_details(start_index, next_index):
+        # 次の馬までを見る
+        block = lines[start_index + 1:next_index]
 
-        gate = None
-        sex_age = ""
-        weight = None
+        # OCRによって余分な空白行等が入ってもよいよう上限を設定
+        if len(block) > 8:
+            block = block[:8]
+
+        gate = get_gate(block)
+        sex_age = get_sex_age(block)
+        weight = get_weight(block)
+
         odds = None
         popularity = None
 
-        # U指数行から最大5行程度確認
-        end = min(
-            len(lines),
-            start_index + 6
-        )
+        for line in block:
+            if odds is None:
+                value = get_odds(line)
 
-        for j in range(start_index + 1, end):
+                if value is not None:
+                    odds = value
 
-            s = lines[j]
-
-            # 次の馬のU指数行が来たら終了
-            if get_u_index(s) is not None:
-                break
-
-            # UI末尾なら終了
-            if any(
-                word in s
-                for word in [
-                    "予想コロシアムに登録",
-                    "ニュース",
-                    "新出馬表",
-                    "プロ予想MAX",
-                ]
-            ):
-                break
-
-            # 馬番
-            if gate is None:
-                v = get_gate(s)
-
-                if v is not None:
-                    gate = v
-
-            # 性齢
-            if not sex_age:
-                v = get_sex_age(s)
-
-                if v:
-                    sex_age = v
-
-            # 斤量
-            if weight is None:
-                v = get_weight(s)
-
-                if v is not None:
-                    weight = v
-
-            # オッズ
-            if odds is None and "倍" in s:
-                v = get_odds(s)
-
-                if v is not None:
-                    odds = v
-
-            # 人気
             if popularity is None:
-                v = get_popularity(s)
+                value = get_popularity(line)
 
-                if v is not None:
-                    popularity = v
+                if value is not None:
+                    popularity = value
 
         return (
             gate,
@@ -2344,36 +2281,58 @@ def parse_umanity_screenshot_text(text):
             popularity
         )
 
-    # ==================================================
-    # メイン解析
-    # ==================================================
+    # --------------------------------------------------
+    # 馬の先頭行を探す
+    # --------------------------------------------------
+    horse_starts = []
 
-    for i, line in enumerate(lines):
-
-        # U指数のある行だけを「馬の開始行」とする
+    for index, line in enumerate(lines):
         u_index = get_u_index(line)
 
         if u_index is None:
             continue
 
-        # オッズ行は除く
-        if "倍" in line:
-            continue
-
-        # UI文字を除く
+        # 明らかな画面UIを除外
         if any(
             word in line
             for word in [
-                "ニュース",
-                "新出馬表",
                 "予想コロシアム",
                 "プロ予想MAX",
                 "プレミアムサービス",
+                "新出馬表",
+                "ニュース",
             ]
         ):
             continue
 
-        jockey = find_jockey(line, u_index)
+        horse_starts.append(
+            (index, u_index)
+        )
+
+    if not horse_starts:
+        return []
+
+    # --------------------------------------------------
+    # 各馬を解析
+    # --------------------------------------------------
+    records = []
+
+    for order, (start_index, u_index) in enumerate(horse_starts):
+
+        line = lines[start_index]
+
+        if order + 1 < len(horse_starts):
+            next_index = horse_starts[order + 1][0]
+        else:
+            next_index = min(
+                len(lines),
+                start_index + 8
+            )
+
+        jockey = find_jockey(
+            line,
+            u_index
+        )
 
         horse_name = find_horse_name(
             line,
@@ -2387,13 +2346,15 @@ def parse_umanity_screenshot_text(text):
         if len(horse_name) < 2:
             continue
 
-        (
-            gate,
-            sex_age,
-            weight,
-            odds,
-            popularity
-        ) = find_details(i)
+        gate, sex_age, weight, odds, popularity = \
+            get_details(
+                start_index,
+                next_index
+            )
+
+        # 馬番が取れなかった場合は誤検出の可能性が高い
+        if gate is None:
+            continue
 
         new_record = {
             "馬番": gate,
@@ -2406,27 +2367,30 @@ def parse_umanity_screenshot_text(text):
             "人気": popularity,
             "U指数": u_index,
             "取得元": "ウマニティ画像",
-            "_ocr_order": i,
+
+            # 内部用
+            "_ocr_order": start_index,
         }
 
-        # ----------------------------------------------
-        # 同じ画像内の重複統合
-        # ----------------------------------------------
-        already = next(
+        # --------------------------------------------------
+        # 同じ画像内で同馬番があれば補完
+        # --------------------------------------------------
+        existing = next(
             (
-                x for x in records
-                if x.get("馬名") == horse_name
+                x
+                for x in records
+                if x.get("馬番") == gate
             ),
             None
         )
 
-        if already is None:
+        if existing is None:
             records.append(new_record)
 
         else:
             for key, value in new_record.items():
 
-                if key == "_ocr_order":
+                if key == "馬番":
                     continue
 
                 if value in [
@@ -2436,18 +2400,16 @@ def parse_umanity_screenshot_text(text):
                 ]:
                     continue
 
-                if already.get(key) in [
+                if existing.get(key) in [
                     None,
                     "",
                     "(未選択)"
                 ]:
-                    already[key] = value
+                    existing[key] = value
 
+    # 馬番順
     records.sort(
-        key=lambda x: x.get(
-            "_ocr_order",
-            9999
-        )
+        key=lambda x: x.get("馬番", 999)
     )
 
     return records
@@ -2455,15 +2417,14 @@ def parse_umanity_screenshot_text(text):
 
 def merge_umanity_records(record_groups):
     """
-    複数のウマニティ画像を統合する第5版。
+    複数のウマニティ画像の結果を統合する。
 
-    ・馬名を主キーとして重複排除
-    ・複数画像で欠けた項目を相互補完
-    ・OCRで壊れた馬番より、画面の馬順を優先
-    ・最大18頭
+    ・同じ馬番は1頭にまとめる
+    ・空欄だけ別画像の情報で補う
+    ・馬名が正常な方を優先
     """
 
-    merged_list = []
+    merged = {}
 
     def is_empty(value):
         return value in [
@@ -2472,177 +2433,141 @@ def merge_umanity_records(record_groups):
             "(未選択)"
         ]
 
-    # --------------------------------------------------
-    # まず馬名で統合
-    # --------------------------------------------------
-    for group_no, records in enumerate(record_groups):
-
-        for row_no, rec in enumerate(records):
-
-            if not rec:
-                continue
-
-            name = rec.get("馬名")
-
-            if not name:
-                continue
-
-            if len(str(name)) < 2:
-                continue
-
-            # #7 のようなOCRゴミ除外
-            if re.fullmatch(
-                r"[#＃]?\s*\d+",
-                str(name)
-            ):
-                continue
-
-            existing = next(
-                (
-                    x for x in merged_list
-                    if x.get("馬名") == name
-                ),
-                None
-            )
-
-            if existing is None:
-
-                new_rec = rec.copy()
-
-                new_rec["_first_group"] = group_no
-                new_rec["_first_order"] = row_no
-
-                merged_list.append(new_rec)
-
-            else:
-
-                # 空欄だけ補完
-                for key, value in rec.items():
-
-                    if key.startswith("_"):
-                        continue
-
-                    if is_empty(value):
-                        continue
-
-                    if is_empty(existing.get(key)):
-                        existing[key] = value
-
-                # 馬番は有効値なら保持
-                old_gate = existing.get("馬番")
-                new_gate = rec.get("馬番")
-
-                if (
-                    old_gate is None
-                    and isinstance(new_gate, int)
-                    and 1 <= new_gate <= 18
-                ):
-                    existing["馬番"] = new_gate
-
-    if not merged_list:
-        return []
-
-    # --------------------------------------------------
-    # OCRで得られた馬番の信頼性確認
-    # --------------------------------------------------
-    valid_gates = [
-        x.get("馬番")
-        for x in merged_list
-        if isinstance(x.get("馬番"), int)
-        and 1 <= x.get("馬番") <= 18
-    ]
-
-    unique_gates = set(valid_gates)
-
-    # 同じ馬番が複数馬に付いていたら、
-    # OCR馬番は信用しない
-    gate_reliable = (
-        len(valid_gates) >= 10
-        and len(valid_gates) == len(unique_gates)
-    )
-
-    # --------------------------------------------------
-    # 画像内出現順
-    # --------------------------------------------------
-    merged_list.sort(
-        key=lambda x: (
-            x.get("_first_group", 999),
-            x.get("_first_order", 999)
-        )
-    )
-
-    # --------------------------------------------------
-    # 馬番再構築
-    # --------------------------------------------------
-    if gate_reliable:
-
-        # 信頼できる馬番を優先
-        merged_list.sort(
-            key=lambda x: (
-                x.get("馬番")
-                if isinstance(x.get("馬番"), int)
-                else 999
-            )
-        )
-
-    else:
-        # OCR馬番が壊れている場合は
-        # 画面の並びを1～18として再構築
-        for n, rec in enumerate(
-            merged_list[:18],
-            start=1
-        ):
-            rec["馬番"] = n
-
-    # --------------------------------------------------
-    # 最終クリーニング
-    # --------------------------------------------------
-    final_records = []
-
-    seen_names = set()
-
-    for rec in merged_list:
-
-        name = rec.get("馬名", "")
+    def horse_name_score(name):
+        """
+        馬名らしさの簡易スコア。
+        OCRゴミより正常な馬名を優先。
+        """
 
         if not name:
-            continue
+            return -100
 
-        if name in seen_names:
-            continue
+        score = len(name)
 
-        seen_names.add(name)
+        if re.search(r"[ぁ-んァ-ヶ一-龠]", name):
+            score += 20
 
-        rec.pop("_ocr_order", None)
-        rec.pop("_first_group", None)
-        rec.pop("_first_order", None)
+        if re.fullmatch(r"[\d#._\-]+", name):
+            score -= 50
 
-        final_records.append(rec)
+        if name.startswith("#"):
+            score -= 30
 
-        if len(final_records) >= 18:
-            break
-    merged = {}
+        if len(name) < 2:
+            score -= 30
+
+        return score
 
     for records in record_groups:
+
+        if not records:
+            continue
+
         for rec in records:
-            horse_no = rec.get("馬番")
-            if horse_no is None:
+
+            gate = rec.get("馬番")
+
+            if gate is None:
                 continue
 
-            if horse_no not in merged:
-                merged[horse_no] = rec.copy()
+            try:
+                gate = int(gate)
+            except Exception:
                 continue
 
-            base = merged[horse_no]
+            if not 1 <= gate <= 18:
+                continue
 
-            for key, value in rec.items():
-                if value in [None, "", "未選択"]:
-                    continue
+            if gate not in merged:
+                merged[gate] = rec.copy()
+                continue
 
-                if base.get(key) in [None, "", "未選択"]:
-                    base[key] = value
+            base = merged[gate]
 
-    return [merged[k] for k in sorted(merged)]
+            # --------------------------------------------------
+            # 馬名は「より馬名らしい方」を採用
+            # --------------------------------------------------
+            old_name = base.get("馬名")
+            new_name = rec.get("馬名")
+
+            if horse_name_score(new_name) > horse_name_score(old_name):
+                base["馬名"] = new_name
+
+            # --------------------------------------------------
+            # その他は基本的に空欄補完
+            # --------------------------------------------------
+            for key in [
+                "性齢",
+                "今回騎手",
+                "斤量",
+                "厩舎",
+                "単勝",
+                "人気",
+                "U指数",
+            ]:
+
+                old_value = base.get(key)
+                new_value = rec.get(key)
+
+                if is_empty(old_value) and not is_empty(new_value):
+                    base[key] = new_value
+
+            # --------------------------------------------------
+            # U指数は80～110の正常値を優先
+            # --------------------------------------------------
+            old_u = base.get("U指数")
+            new_u = rec.get("U指数")
+
+            try:
+                old_ok = (
+                    old_u is not None
+                    and 80 <= float(old_u) <= 110
+                )
+            except Exception:
+                old_ok = False
+
+            try:
+                new_ok = (
+                    new_u is not None
+                    and 80 <= float(new_u) <= 110
+                )
+            except Exception:
+                new_ok = False
+
+            if not old_ok and new_ok:
+                base["U指数"] = new_u
+
+            # --------------------------------------------------
+            # 斤量は48～62kgのみ正常値とする
+            # --------------------------------------------------
+            old_weight = base.get("斤量")
+            new_weight = rec.get("斤量")
+
+            try:
+                old_weight_ok = (
+                    old_weight is not None
+                    and 48 <= float(old_weight) <= 62
+                )
+            except Exception:
+                old_weight_ok = False
+
+            try:
+                new_weight_ok = (
+                    new_weight is not None
+                    and 48 <= float(new_weight) <= 62
+                )
+            except Exception:
+                new_weight_ok = False
+
+            if not old_weight_ok and new_weight_ok:
+                base["斤量"] = new_weight
+
+    result = [
+        merged[k]
+        for k in sorted(merged)
+    ]
+
+    return result
 
 def parse_jra_odds_screenshot_text(text):
     """JRAオッズ画面から馬番・馬名・性齢・騎手・斤量・単勝・人気を抽出。"""
