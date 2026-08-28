@@ -2547,7 +2547,7 @@ def parse_jra_odds_screenshot_text(text):
     jockey_candidates = [x for x in JOCKEY_MASTER if x != "その他（自由手入力）"]
     last_gate = 0
 
- for i, line in enumerate(lines):
+    for i, line in enumerate(lines):
 
         # --------------------------------------------------
         # 単勝オッズ行を探す
