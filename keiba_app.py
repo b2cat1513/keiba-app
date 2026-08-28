@@ -24,8 +24,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.16.7", layout="wide")
-st.title("🏆 ジェニーAI予想ver1.16.7（ウマニティ全頭救済OCR版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.16.8", layout="wide")
+st.title("🏆 ジェニーAI予想ver1.16.8（ウマニティ全頭救済OCR版）")
 
 # 🛠️ スマホ向け：データを極限まで縮小・Base64圧縮する関数
 def encode_for_mobile(data_dict):
@@ -2396,6 +2396,13 @@ def parse_umanity_screenshot_image(uploaded_file, raw_text=""):
         weight = _extract_weight(detail_text)
         if weight is None:
             weight = _extract_weight(rescue_row_text or main_text)
+        if weight is None:
+            # Ver1.16.8: 斤量列を少し広げて複数PSM相当のOCR救済。
+            weight_rescue_text = _ocr_crop(
+                (int(w * 0.560), y1, int(w * 0.825), y2),
+                lang="jpn+eng", psm=11
+            )
+            weight = _extract_weight(weight_rescue_text)
         if weight is None and legacy_rec:
             try:
                 lw = legacy_rec.get("斤量")
@@ -2549,38 +2556,62 @@ def parse_umanity_screenshot_image(uploaded_file, raw_text=""):
             "単勝": odds,
             "人気": None,
             "U指数": round(float(u_index), 1),
-            "取得元": "ウマニティ画像(Ver1.16.7-全頭救済OCR版)",
+            "取得元": "ウマニティ画像(Ver1.16.8-範囲固定OCR版)",
         })
 
-    # 読めた馬番から「先頭馬番」を推定。
-    # 例: 1,2,3...なら offset=1。9,10,11...なら offset=9。
+    # Ver1.16.8: 画像ごとの馬番範囲を先に確定し、その範囲外は絶対に混ぜない。
+    # gate_observations には「読めた馬番 - 行番号」が入るため、同じ画像なら同じ開始馬番へ収束する。
     start_gate = None
     if gate_observations:
-        counts = {}
-        for g in gate_observations:
-            if 1 <= g <= 18:
+        valid_offsets = [int(g) for g in gate_observations if 1 <= int(g) <= 18]
+        if valid_offsets:
+            counts = {}
+            for g in valid_offsets:
                 counts[g] = counts.get(g, 0) + 1
-        if counts:
-            start_gate = max(counts, key=lambda k: (counts[k], -k))
+            max_votes = max(counts.values())
+            tied = sorted(g for g, c in counts.items() if c == max_votes)
+            # 同票時は中央値に近い候補を採用し、単発の誤読に引っ張られにくくする。
+            med = sorted(valid_offsets)[len(valid_offsets) // 2]
+            start_gate = min(tied, key=lambda g: (abs(g - med), g))
+
+    # 画像内の旧OCRにも連続した馬番の手掛かりがあれば、開始位置の補助証拠にする。
+    if start_gate is None and legacy_fallback:
+        legacy_gates = []
+        for rr in legacy_fallback:
+            try:
+                gg = int(rr.get("馬番") or -1)
+                if 1 <= gg <= 18:
+                    legacy_gates.append(gg)
+            except Exception:
+                pass
+        if legacy_gates:
+            start_gate = min(legacy_gates)
 
     if start_gate is None:
-        # 先頭画像の一般形。1頭目から始まるケースを安全な既定値にする。
         start_gate = 1
+    start_gate = max(1, min(18, int(start_gate)))
+    end_gate = min(18, start_gate + 7)
 
     for rec in row_results:
-        if rec.get("馬番") is None:
-            rec["馬番"] = start_gate + rec["_row_idx"]
-        # 行分割で得た値が不自然なら連番へ補正。
-        expected = start_gate + rec["_row_idx"]
-        if not (1 <= int(rec["馬番"]) <= 18) or abs(int(rec["馬番"]) - expected) > 1:
-            rec["馬番"] = expected
+        expected = start_gate + int(rec["_row_idx"])
+        # この画像の行位置を正本にする。範囲外・隣行の馬番誤読を持ち込まない。
+        rec["馬番"] = expected
         rec.pop("_row_idx", None)
         rec.pop("_gate_raw", None)
 
+    # 英字だけのOCRノイズ（EZRA / Enns 等）は馬名として採用しない。
+    def _valid_rescue_horse_name(value):
+        name = str(value or "").strip()
+        if not name:
+            return False
+        if re.fullmatch(r"[A-Za-z0-9._\-]+", name):
+            return False
+        return 2 <= len(name) <= 24
+
     row_results.sort(key=lambda r: int(r.get("馬番") or 99))
 
-    # Ver1.16.7: 行分割結果と旧OCR結果を馬番単位で補完マージする。
-    # 行分割側に欠けた馬があっても、旧OCRで確認できた馬を落とさない。
+    # 旧OCRは「同じ画像範囲内・同じ馬番」の空欄補完だけに限定する。
+    # これで 1～8画像に16番、9～16画像に4番などが混入する事故を防ぐ。
     if row_results:
         by_gate = {int(r.get("馬番")): r for r in row_results if r.get("馬番") is not None}
         for old_rec in legacy_fallback or []:
@@ -2588,19 +2619,49 @@ def parse_umanity_screenshot_image(uploaded_file, raw_text=""):
                 g = int(old_rec.get("馬番") or -1)
             except Exception:
                 continue
-            if not (1 <= g <= 18):
+            if not (start_gate <= g <= end_gate):
                 continue
             if g not in by_gate:
+                # 行分割側にその行自体が無い場合のみ救済。ただし英字ノイズ馬名は捨てる。
+                if not _valid_rescue_horse_name(old_rec.get("馬名")):
+                    continue
                 rescued = dict(old_rec)
-                rescued["取得元"] = "ウマニティ画像(Ver1.16.7-旧OCR救済)"
+                rescued["取得元"] = "ウマニティ画像(Ver1.16.8-旧OCR救済)"
                 row_results.append(rescued)
                 by_gate[g] = rescued
             else:
                 current = by_gate[g]
-                for key in ("馬名", "性齢", "今回騎手", "斤量", "厩舎", "単勝", "U指数"):
+                for key in ("性齢", "斤量", "厩舎", "単勝", "U指数"):
                     if current.get(key) in (None, "", "(未選択)") and old_rec.get(key) not in (None, "", "(未選択)"):
                         current[key] = old_rec.get(key)
-        row_results.sort(key=lambda r: int(r.get("馬番") or 99))
+                # 馬名は日本語を含む妥当候補だけ救済。
+                if (not _valid_rescue_horse_name(current.get("馬名"))) and _valid_rescue_horse_name(old_rec.get("馬名")):
+                    current["馬名"] = old_rec.get("馬名")
+                # 騎手は旧OCRから安易に補完しない。専用帯で確信できない場合は未選択を維持。
+
+        # 同一レースで同じ騎手が複数馬へ割り当てられるのはOCR誤認。安全側で未選択へ戻す。
+        jockey_rows = {}
+        for rec in row_results:
+            jj = rec.get("今回騎手")
+            if jj and jj != "(未選択)":
+                jockey_rows.setdefault(jj, []).append(rec)
+        for jj, recs in jockey_rows.items():
+            if len(recs) > 1:
+                for rec in recs:
+                    rec["今回騎手"] = "(未選択)"
+
+        # 馬番重複は情報量の多い1件だけ残す。
+        dedup = {}
+        def _info_score_v168(rec):
+            return sum(1 for k in ("馬名", "性齢", "今回騎手", "斤量", "厩舎", "単勝", "U指数")
+                       if rec.get(k) not in (None, "", "(未選択)"))
+        for rec in row_results:
+            g = int(rec.get("馬番") or -1)
+            if not (start_gate <= g <= end_gate):
+                continue
+            if g not in dedup or _info_score_v168(rec) > _info_score_v168(dedup[g]):
+                dedup[g] = rec
+        row_results = [dedup[g] for g in sorted(dedup)]
         return row_results
 
     # 失敗時のみVer1.15.1以前の文字列解析へ戻す。
