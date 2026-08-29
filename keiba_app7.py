@@ -24,8 +24,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.1", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.1（スマホ入力・能力値表示修正版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.2", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.2（スマホ入力・能力値エラー完全対策版）")
 
 st.markdown("""
 <style>
@@ -3624,6 +3624,13 @@ with tab_img:
 
 st.divider()
 
+class _NullScoreCell:
+    """スマホで非表示の馬用。score_cell.write() を安全に無視する。"""
+    def write(self, *args, **kwargs):
+        return None
+
+_NULL_SCORE_CELL = _NullScoreCell()
+
 # ==========================================
 # 📋 出馬表入力エリア
 # ==========================================
@@ -3757,7 +3764,7 @@ else:
             row_tmp_data.append((
                 row["num"], row["name"], row["pop"], row["win_odds"], row["idx"], row["wgt"], row["wgh"], row["l3f"],
                 row["sire"], row["heavy_record"], row["jock"], row["previous_jockey"], row["trainer"], row["owner"],
-                row["custom_note"], row["sel_track"], row["sel_style"], row["sel_frame"], row["sel_dist_change"], None
+                row["custom_note"], row["sel_track"], row["sel_style"], row["sel_frame"], row["sel_dist_change"], _NULL_SCORE_CELL
             ))
             continue
 
