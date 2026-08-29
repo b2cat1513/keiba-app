@@ -24,8 +24,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.2", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.2（スマホ入力・能力値エラー完全対策版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.3", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.3（スマホ画像読込修正版）")
 
 st.markdown("""
 <style>
@@ -3473,26 +3473,78 @@ with tab_img:
         if not (ocr_status['pillow_import'] and ocr_status['pytesseract_import'] and ocr_status['tesseract_command'] and 'jpn' in langs):
             st.warning("Streamlit Cloudのリポジトリ直下に、正式名の requirements.txt と packages.txt が必要です。")
 
-    st.info("📱 Ver1.16.9：ウマニティを馬番・馬名の基準にして、競馬ラボの情報を馬名で結合します。競馬ラボ画像内に馬名が無い場合は、プロフィール画像と過去5走画像を同じ順番で選ぶと対応付けを補助します。")
+    st.info("📱 Ver1.18.3：スマホでは画像を1枚ずつ確実に読み込めるモードを追加しました。PCでは従来どおり複数画像を一括選択できます。")
 
-    umanity_images = st.file_uploader(
-        "① ウマニティ画像（馬番・馬名・単勝・U指数・斤量・今回騎手）",
-        type=["png", "jpg", "jpeg", "webp"],
-        accept_multiple_files=True,
-        key="umanity_multi_v169",
-    ) or []
-    keibalab_profile_images = st.file_uploader(
-        "② 競馬ラボ・プロフィール画像（父馬・厩舎・馬主）",
-        type=["png", "jpg", "jpeg", "webp"],
-        accept_multiple_files=True,
-        key="keibalab_profile_multi_v169",
-    ) or []
-    keibalab_history_images = st.file_uploader(
-        "③ 競馬ラボ・過去5走画像（前走騎手・上がり3F平均）",
-        type=["png", "jpg", "jpeg", "webp"],
-        accept_multiple_files=True,
-        key="keibalab_history_multi_v169",
-    ) or []
+    mobile_ocr_mode = st.session_state.get("input_screen_mode", "📱 スマホ") == "📱 スマホ"
+    ocr_upload_mode = st.radio(
+        "画像の読み込み方法",
+        ["📱 スマホ：1枚ずつ", "🖥️ PC：複数枚まとめて"],
+        index=0 if mobile_ocr_mode else 1,
+        horizontal=True,
+        key="ocr_upload_mode_v183",
+    )
+
+    if ocr_upload_mode == "📱 スマホ：1枚ずつ":
+        st.caption("Android/iPhoneでは複数ファイル選択が不安定な場合があるため、1枚ずつ読み込みます。解析後、次の画像を選んで追加できます。")
+
+        umanity_one = st.file_uploader(
+            "① ウマニティ画像を1枚選択",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=False,
+            key="umanity_single_v183",
+        )
+        profile_one = st.file_uploader(
+            "② 競馬ラボ・プロフィール画像を1枚選択",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=False,
+            key="keibalab_profile_single_v183",
+        )
+        history_one = st.file_uploader(
+            "③ 競馬ラボ・過去5走画像を1枚選択",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=False,
+            key="keibalab_history_single_v183",
+        )
+
+        umanity_images = [umanity_one] if umanity_one is not None else []
+        keibalab_profile_images = [profile_one] if profile_one is not None else []
+        keibalab_history_images = [history_one] if history_one is not None else []
+
+        for k in ["mobile_ocr_umanity_records", "mobile_ocr_profile_records", "mobile_ocr_history_records"]:
+            if k not in st.session_state:
+                st.session_state[k] = []
+
+        queued = sum(len(st.session_state[k]) for k in [
+            "mobile_ocr_umanity_records", "mobile_ocr_profile_records", "mobile_ocr_history_records"
+        ])
+        if queued:
+            st.success(f"📥 これまでの解析結果を保持中：{queued}件")
+
+        if st.button("🗑️ スマホOCRの保持データをクリア", use_container_width=True):
+            st.session_state["mobile_ocr_umanity_records"] = []
+            st.session_state["mobile_ocr_profile_records"] = []
+            st.session_state["mobile_ocr_history_records"] = []
+            st.session_state.pop("ocr_preview", None)
+            st.rerun()
+    else:
+        umanity_images = st.file_uploader(
+            "① ウマニティ画像（馬番・馬名・単勝・U指数・斤量・今回騎手）",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=True,
+            key="umanity_multi_v183",
+        ) or []
+        keibalab_profile_images = st.file_uploader(
+            "② 競馬ラボ・プロフィール画像（父馬・厩舎・馬主）",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=True,
+            key="keibalab_profile_multi_v183",
+        ) or []
+        keibalab_history_images = st.file_uploader(
+            "③ 競馬ラボ・過去5走画像（前走騎手・上がり3F平均）",
+            type=["png", "jpg", "jpeg", "webp"],
+            accept_multiple_files=True,
+            key="keibalab_history_multi_v183",
+        ) or []
 
     all_image_files = umanity_images + keibalab_profile_images + keibalab_history_images
     if all_image_files:
@@ -3507,8 +3559,9 @@ with tab_img:
         st.dataframe(pd.DataFrame(upload_rows), use_container_width=True, hide_index=True)
 
     if st.button("🔍 アップロード画像を解析", use_container_width=True, disabled=not all_image_files):
-        if not umanity_images:
-            st.error("馬番と馬名の基準にするため、ウマニティ画像を最低1枚指定してください。")
+        held_umanity = st.session_state.get("mobile_ocr_umanity_records", []) if ocr_upload_mode == "📱 スマホ：1枚ずつ" else []
+        if not umanity_images and not held_umanity:
+            st.error("最初にウマニティ画像を1枚読み込んでください。馬番・馬名の基準にします。")
         elif not OCR_AVAILABLE:
             st.error("OCRライブラリを読み込めません。requirements.txtを確認してください。")
         elif not ocr_status.get("tesseract_command"):
@@ -3516,7 +3569,11 @@ with tab_img:
         elif "jpn" not in ocr_status.get("languages", []):
             st.error("日本語OCRデータがありません。packages.txtへ tesseract-ocr-jpn を追加してください。")
         else:
-            raw_texts, umanity_records, profile_records, history_records, processing_errors = [], [], [], [], []
+            raw_texts = []
+            umanity_records = list(st.session_state.get("mobile_ocr_umanity_records", [])) if ocr_upload_mode == "📱 スマホ：1枚ずつ" else []
+            profile_records = list(st.session_state.get("mobile_ocr_profile_records", [])) if ocr_upload_mode == "📱 スマホ：1枚ずつ" else []
+            history_records = list(st.session_state.get("mobile_ocr_history_records", [])) if ocr_upload_mode == "📱 スマホ：1枚ずつ" else []
+            processing_errors = []
             st.session_state["ocr_image_diagnostics"] = []
 
             with st.spinner("画像を解析しています…"):
@@ -3576,6 +3633,19 @@ with tab_img:
                 st.error("一部画像の処理に失敗しました。")
                 for message in processing_errors:
                     st.code(message)
+
+            if ocr_upload_mode == "📱 スマホ：1枚ずつ":
+                def _dedupe_mobile_records(records):
+                    out = {}
+                    for rec in records:
+                        gate = rec.get("馬番")
+                        name = normalize_horse_name(rec.get("馬名", ""))
+                        key = (gate, name, rec.get("取得元", ""))
+                        out[key] = rec
+                    return list(out.values())
+                st.session_state["mobile_ocr_umanity_records"] = _dedupe_mobile_records(umanity_records)
+                st.session_state["mobile_ocr_profile_records"] = _dedupe_mobile_records(profile_records)
+                st.session_state["mobile_ocr_history_records"] = _dedupe_mobile_records(history_records)
 
             merged = merge_source_records(umanity_records, profile_records, history_records)
             st.session_state["ocr_preview"] = merged
