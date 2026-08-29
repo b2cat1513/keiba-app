@@ -24,8 +24,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.17.0", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.17.0（スマホ入力対応版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.0", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.0（1頭ずつスマホ入力版）")
 
 st.markdown("""
 <style>
@@ -3629,17 +3629,16 @@ st.divider()
 # ==========================================
 st.write("### 📝 出馬表データ入力")
 
-mobile_mode = st.toggle(
-    "📱 スマホ入力モード",
-    value=st.session_state.get("mobile_input_mode", False),
-    help="スマホではONがおすすめです。1頭ずつ縦長カードで入力できます。PCではOFFで従来の表形式になります。",
-    key="mobile_input_mode",
-)
+if "input_screen_mode" not in st.session_state:
+    st.session_state["input_screen_mode"] = "📱 スマホ"
 
-if mobile_mode:
-    st.info("📱 スマホ入力モード：各馬をタップして開き、2列の大きな入力欄で編集できます。OCRで入った値もここで確認・修正できます。")
-else:
-    st.caption("🖥️ PC表形式です。スマホでは上の「スマホ入力モード」をONにすると入力しやすくなります。")
+screen_mode = st.radio(
+    "入力画面",
+    ["📱 スマホ", "🖥️ PC"],
+    key="input_screen_mode",
+    horizontal=True,
+)
+mobile_mode = (screen_mode == "📱 スマホ")
 
 current_inputs = {"course": sel_course, "track_condition": track_condition, "race_class": race_class, "rows": {}}
 style_counts = {"逃げ": 0, "先行": 0, "差し": 0, "追い込み": 0}
@@ -3710,69 +3709,143 @@ if not mobile_mode:
         row_tmp_data.append((num, name, pop, win_odds, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, previous_jockey, trainer, owner, custom_note, sel_track, sel_style, sel_frame, sel_dist_change, score_cell))
 
 else:
+    st.success("📱 スマホ入力：1頭ずつ編集します。入力値はその場で保持されます。")
+
+    # Which horse to edit
+    if "mobile_horse_no" not in st.session_state:
+        st.session_state["mobile_horse_no"] = 1
+
+    horse_no = st.select_slider(
+        "編集する馬番",
+        options=list(range(1, 19)),
+        value=int(st.session_state["mobile_horse_no"]),
+        key="mobile_horse_selector",
+    )
+    st.session_state["mobile_horse_no"] = int(horse_no)
+
+    # All 18 rows must still be present in current_inputs for save/prediction.
+    # The selected horse gets real widgets; the others are carried from session/loaded data.
     for i in range(1, 19):
         s_row = st.session_state["loaded_data"].get("rows", {}).get(str(i), {})
-        preview_name = st.session_state.get(f"name_{i}", s_row.get("name", ""))
-        title = f"{i}番"
-        if str(preview_name).strip():
-            title += f"　{preview_name}"
 
-        with st.expander(title, expanded=(i == 1 and not str(preview_name).strip())):
-            a, b = st.columns(2)
-            num = a.text_input("馬番", value=s_row.get("num", str(i)), key=f"num_{i}")
-            name = b.text_input("馬名", value=s_row.get("name", ""), key=f"name_{i}", placeholder="馬名")
-
-            a, b = st.columns(2)
-            pop = a.number_input("人気", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), key=f"pop_{i}")
-            win_odds = b.number_input("単勝", min_value=0.0, max_value=999.9, value=float(s_row.get("win_odds", 0.0) or 0.0), step=0.1, key=f"win_odds_{i}")
-
-            a, b = st.columns(2)
-            idx = a.number_input("U指数", value=float(s_row.get("idx", 0.0)), step=0.1, key=f"idx_{i}")
-            wgt = b.number_input("斤量", min_value=48.0, max_value=62.0, value=float(s_row.get("wgt", 56.0)), step=0.5, key=f"wgt_{i}")
-
-            a, b = st.columns(2)
-            wgh = a.number_input("馬体重", min_value=350, max_value=600, value=int(s_row.get("wgh", 480)), step=2, key=f"wgh_{i}")
-            l3f = b.number_input("上がり3F平均", value=float(s_row.get("l3f", 35.0)), step=0.1, key=f"l3f_{i}")
-
-            sire = st.text_input("父馬", value=s_row.get("sire", ""), key=f"sire_{i}", placeholder="OCR取得または手入力")
-
-            a, b = st.columns(2)
-            saved_jockey = normalize_jockey_name(s_row.get("jock", "(未選択)"))
-            jock = a.selectbox("今回騎手", jockey_options, index=_safe_select_index(jockey_options, saved_jockey), key=f"jock_{i}")
-            saved_previous = normalize_jockey_name(s_row.get("previous_jockey", "(未選択)"))
-            previous_jockey = b.selectbox("前走騎手", jockey_options, index=_safe_select_index(jockey_options, saved_previous), key=f"previous_jockey_{i}")
-
-            a, b = st.columns(2)
-            trainer = a.selectbox("厩舎", TRAINER_OPTIONS, index=_safe_select_index(TRAINER_OPTIONS, s_row.get("trainer", "(未選択)")), key=f"trainer_{i}")
-            owner = b.selectbox("馬主", OWNER_OPTIONS, index=_safe_select_index(OWNER_OPTIONS, s_row.get("owner", "(未選択)")), key=f"owner_{i}")
-
-            custom_note = st.text_input("手入力メモ", value=s_row.get("custom_note", ""), key=f"custom_note_{i}", placeholder="性齢・特徴など")
-
-            a, b = st.columns(2)
-            default_track = s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")
-            sel_track = a.selectbox("馬場", track_options, index=_safe_select_index(track_options, default_track), key=f"track_{i}")
-            sel_style = b.selectbox("脚質", style_options, index=_safe_select_index(style_options, s_row.get("sel_style", "選択なし")), key=f"style_{i}")
-
-            a, b = st.columns(2)
-            num_int = safe_int_convert(num, i)
-            f_def_idx = 1 if num_int <= 8 else (2 if num_int >= 13 else 0)
-            sel_frame = a.selectbox("枠有利", frame_options, index=_safe_select_index(frame_options, s_row.get("sel_frame", frame_options[f_def_idx])), key=f"frame_{i}")
-            sel_dist_change = b.selectbox("前走距離", distance_options, index=_safe_select_index(distance_options, s_row.get("sel_dist_change", "同距離")), key=f"dist_change_{i}")
-
-            has_heavy_record = st.checkbox("道悪実績あり", value=s_row.get("heavy_record", False), key=f"rec_{i}")
-            st.caption("能力値")
-            score_cell = st.empty()
-
-            if name and sel_style in style_counts:
-                style_counts[sel_style] += 1
-
-            current_inputs["rows"][str(i)] = {
-                "num": num, "name": name, "pop": pop, "win_odds": win_odds, "idx": idx, "wgt": wgt, "wgh": wgh, "l3f": l3f, "sire": sire, "heavy_record": has_heavy_record,
-                "jock": jock, "previous_jockey": previous_jockey, "trainer": trainer, "owner": owner,
-                "custom_note": custom_note, "sel_track": sel_track, "sel_style": sel_style,
-                "sel_frame": sel_frame, "sel_dist_change": sel_dist_change
+        if i != horse_no:
+            row = {
+                "num": st.session_state.get(f"num_{i}", s_row.get("num", str(i))),
+                "name": st.session_state.get(f"name_{i}", s_row.get("name", "")),
+                "pop": st.session_state.get(f"pop_{i}", int(s_row.get("pop", 10))),
+                "win_odds": st.session_state.get(f"win_odds_{i}", float(s_row.get("win_odds", 0.0) or 0.0)),
+                "idx": st.session_state.get(f"idx_{i}", float(s_row.get("idx", 0.0))),
+                "wgt": st.session_state.get(f"wgt_{i}", float(s_row.get("wgt", 56.0))),
+                "wgh": st.session_state.get(f"wgh_{i}", int(s_row.get("wgh", 480))),
+                "l3f": st.session_state.get(f"l3f_{i}", float(s_row.get("l3f", 35.0))),
+                "sire": st.session_state.get(f"sire_{i}", s_row.get("sire", "")),
+                "heavy_record": st.session_state.get(f"rec_{i}", s_row.get("heavy_record", False)),
+                "jock": st.session_state.get(f"jock_{i}", normalize_jockey_name(s_row.get("jock", "(未選択)"))),
+                "previous_jockey": st.session_state.get(f"previous_jockey_{i}", normalize_jockey_name(s_row.get("previous_jockey", "(未選択)"))),
+                "trainer": st.session_state.get(f"trainer_{i}", s_row.get("trainer", "(未選択)")),
+                "owner": st.session_state.get(f"owner_{i}", s_row.get("owner", "(未選択)")),
+                "custom_note": st.session_state.get(f"custom_note_{i}", s_row.get("custom_note", "")),
+                "sel_track": st.session_state.get(f"track_{i}", s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")),
+                "sel_style": st.session_state.get(f"style_{i}", s_row.get("sel_style", "選択なし")),
+                "sel_frame": st.session_state.get(f"frame_{i}", s_row.get("sel_frame", "選択なし")),
+                "sel_dist_change": st.session_state.get(f"dist_change_{i}", s_row.get("sel_dist_change", "同距離")),
             }
-            row_tmp_data.append((num, name, pop, win_odds, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, previous_jockey, trainer, owner, custom_note, sel_track, sel_style, sel_frame, sel_dist_change, score_cell))
+            current_inputs["rows"][str(i)] = row
+            if row["name"] and row["sel_style"] in style_counts:
+                style_counts[row["sel_style"]] += 1
+            # placeholder keeps downstream tuple structure compatible
+            row_tmp_data.append((
+                row["num"], row["name"], row["pop"], row["win_odds"], row["idx"], row["wgt"], row["wgh"], row["l3f"],
+                row["sire"], row["heavy_record"], row["jock"], row["previous_jockey"], row["trainer"], row["owner"],
+                row["custom_note"], row["sel_track"], row["sel_style"], row["sel_frame"], row["sel_dist_change"], None
+            ))
+            continue
+
+        st.markdown(f"## 🐎 {i}番の入力")
+        st.caption("OCRで取得できた項目は自動入力されます。必要な所だけ修正してください。")
+
+        num = st.text_input("馬番", value=s_row.get("num", str(i)), key=f"num_{i}")
+        name = st.text_input("馬名", value=s_row.get("name", ""), key=f"name_{i}", placeholder="馬名")
+
+        c1, c2 = st.columns(2)
+        pop = c1.number_input("人気", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), key=f"pop_{i}")
+        win_odds = c2.number_input("単勝", min_value=0.0, max_value=999.9, value=float(s_row.get("win_odds", 0.0) or 0.0), step=0.1, key=f"win_odds_{i}")
+
+        c1, c2 = st.columns(2)
+        idx = c1.number_input("U指数", value=float(s_row.get("idx", 0.0)), step=0.1, key=f"idx_{i}")
+        wgt = c2.number_input("斤量", min_value=48.0, max_value=62.0, value=float(s_row.get("wgt", 56.0)), step=0.5, key=f"wgt_{i}")
+
+        c1, c2 = st.columns(2)
+        wgh = c1.number_input("馬体重", min_value=350, max_value=600, value=int(s_row.get("wgh", 480)), step=2, key=f"wgh_{i}")
+        l3f = c2.number_input("上がり3F平均", value=float(s_row.get("l3f", 35.0)), step=0.1, key=f"l3f_{i}")
+
+        sire = st.text_input("父馬", value=s_row.get("sire", ""), key=f"sire_{i}")
+
+        c1, c2 = st.columns(2)
+        saved_jockey = normalize_jockey_name(s_row.get("jock", "(未選択)"))
+        jock = c1.selectbox("今回騎手", jockey_options, index=_safe_select_index(jockey_options, saved_jockey), key=f"jock_{i}")
+        saved_previous = normalize_jockey_name(s_row.get("previous_jockey", "(未選択)"))
+        previous_jockey = c2.selectbox("前走騎手", jockey_options, index=_safe_select_index(jockey_options, saved_previous), key=f"previous_jockey_{i}")
+
+        c1, c2 = st.columns(2)
+        trainer = c1.selectbox("厩舎", TRAINER_OPTIONS, index=_safe_select_index(TRAINER_OPTIONS, s_row.get("trainer", "(未選択)")), key=f"trainer_{i}")
+        owner = c2.selectbox("馬主", OWNER_OPTIONS, index=_safe_select_index(OWNER_OPTIONS, s_row.get("owner", "(未選択)")), key=f"owner_{i}")
+
+        custom_note = st.text_input("手入力メモ", value=s_row.get("custom_note", ""), key=f"custom_note_{i}")
+
+        c1, c2 = st.columns(2)
+        default_track = s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")
+        sel_track = c1.selectbox("馬場", track_options, index=_safe_select_index(track_options, default_track), key=f"track_{i}")
+        sel_style = c2.selectbox("脚質", style_options, index=_safe_select_index(style_options, s_row.get("sel_style", "選択なし")), key=f"style_{i}")
+
+        c1, c2 = st.columns(2)
+        num_int = safe_int_convert(num, i)
+        f_def_idx = 1 if num_int <= 8 else (2 if num_int >= 13 else 0)
+        sel_frame = c1.selectbox("枠有利", frame_options, index=_safe_select_index(frame_options, s_row.get("sel_frame", frame_options[f_def_idx])), key=f"frame_{i}")
+        sel_dist_change = c2.selectbox("前走距離", distance_options, index=_safe_select_index(distance_options, s_row.get("sel_dist_change", "同距離")), key=f"dist_change_{i}")
+
+        has_heavy_record = st.checkbox("道悪実績あり", value=s_row.get("heavy_record", False), key=f"rec_{i}")
+        score_cell = st.empty()
+
+        row = {
+            "num": num, "name": name, "pop": pop, "win_odds": win_odds, "idx": idx, "wgt": wgt, "wgh": wgh, "l3f": l3f,
+            "sire": sire, "heavy_record": has_heavy_record, "jock": jock, "previous_jockey": previous_jockey,
+            "trainer": trainer, "owner": owner, "custom_note": custom_note, "sel_track": sel_track,
+            "sel_style": sel_style, "sel_frame": sel_frame, "sel_dist_change": sel_dist_change
+        }
+        current_inputs["rows"][str(i)] = row
+        if name and sel_style in style_counts:
+            style_counts[sel_style] += 1
+
+        row_tmp_data.append((
+            num, name, pop, win_odds, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, previous_jockey,
+            trainer, owner, custom_note, sel_track, sel_style, sel_frame, sel_dist_change, score_cell
+        ))
+
+    # Put tuples back into horse-number order because downstream scoring expects 1..18.
+    row_tmp_data = sorted(
+        row_tmp_data,
+        key=lambda x: safe_int_convert(x[0], 999)
+    )
+
+    st.divider()
+    left, middle, right = st.columns([1, 1, 1])
+
+    if left.button("◀ 前の馬", use_container_width=True, disabled=(horse_no <= 1)):
+        st.session_state["mobile_horse_no"] = max(1, horse_no - 1)
+        st.session_state["mobile_horse_selector"] = max(1, horse_no - 1)
+        st.rerun()
+
+    if middle.button("💾 入力を保存", type="primary", use_container_width=True):
+        st.session_state["loaded_data"]["rows"][str(horse_no)] = current_inputs["rows"][str(horse_no)]
+        st.success(f"{horse_no}番を保存しました。")
+
+    if right.button("次の馬 ▶", use_container_width=True, disabled=(horse_no >= 18)):
+        st.session_state["loaded_data"]["rows"][str(horse_no)] = current_inputs["rows"][str(horse_no)]
+        st.session_state["mobile_horse_no"] = min(18, horse_no + 1)
+        st.session_state["mobile_horse_selector"] = min(18, horse_no + 1)
+        st.rerun()
+
 
 # ==========================================
 # 🏁 4. 展開（ペース）AI自動予測
