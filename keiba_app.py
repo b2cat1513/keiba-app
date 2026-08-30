@@ -24,8 +24,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.5", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.5（開始馬番指定・競馬ラボ誤読対策版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.6", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.6（PC画像ごと対象馬指定版）")
 
 st.markdown("""
 <style>
@@ -3568,7 +3568,7 @@ with tab_img:
         if not (ocr_status['pillow_import'] and ocr_status['pytesseract_import'] and ocr_status['tesseract_command'] and 'jpn' in langs):
             st.warning("Streamlit Cloudのリポジトリ直下に、正式名の requirements.txt と packages.txt が必要です。")
 
-    st.info("📱 Ver1.18.5：ウマニティは画像の先頭馬番を指定できます。競馬ラボは対象馬を指定し、母父の誤取得と上がり3F読取を修正しました。PCでは従来どおり複数画像を一括選択できます。")
+    st.info("📱 Ver1.18.6：PC複数枚モードでも、ウマニティは画像ごとに先頭馬番、競馬ラボは画像ごとに対象馬番を指定できます。OCRの馬名自動判定に頼りすぎない安全優先版です。")
 
     mobile_ocr_mode = st.session_state.get("input_screen_mode", "📱 スマホ") == "📱 スマホ"
     ocr_upload_mode = st.radio(
@@ -3626,6 +3626,10 @@ with tab_img:
             help="競馬ラボ画像は対象馬を指定する方が安全です。",
         )
 
+        pc_umanity_start_map = {}
+        pc_profile_gate_map = {}
+        pc_history_gate_map = {}
+
         umanity_images = [umanity_one] if umanity_one is not None else []
         keibalab_profile_images = [profile_one] if profile_one is not None else []
         keibalab_history_images = [history_one] if history_one is not None else []
@@ -3650,24 +3654,69 @@ with tab_img:
         profile_target_horse = "自動判定"
         history_target_horse = "自動判定"
         umanity_start_choice = "自動判定"
+
         umanity_images = st.file_uploader(
             "① ウマニティ画像（馬番・馬名・単勝・U指数・斤量・今回騎手）",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=True,
-            key="umanity_multi_v183",
+            key="umanity_multi_v186",
         ) or []
         keibalab_profile_images = st.file_uploader(
             "② 競馬ラボ・プロフィール画像（父馬・厩舎・馬主）",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=True,
-            key="keibalab_profile_multi_v183",
+            key="keibalab_profile_multi_v186",
         ) or []
         keibalab_history_images = st.file_uploader(
             "③ 競馬ラボ・過去5走画像（前走騎手・上がり3F平均）",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=True,
-            key="keibalab_history_multi_v183",
+            key="keibalab_history_multi_v186",
         ) or []
+
+        # PCでは各画像の対応先を明示指定できる。
+        pc_umanity_start_map = {}
+        pc_profile_gate_map = {}
+        pc_history_gate_map = {}
+
+        if umanity_images:
+            st.markdown("#### ① ウマニティ画像ごとの先頭馬番")
+            st.caption("各画像の一番上に表示されている馬番を指定してください。9〜16番画像なら「9」、15番からなら「15」。")
+            for idx, f in enumerate(umanity_images):
+                c1, c2 = st.columns([2.5, 1])
+                c1.write(f"📷 {f.name}")
+                pc_umanity_start_map[f.name] = c2.selectbox(
+                    "先頭馬番",
+                    ["自動判定"] + list(range(1, 19)),
+                    key=f"pc_umanity_start_v186_{idx}",
+                    label_visibility="collapsed",
+                )
+
+        if keibalab_profile_images:
+            st.markdown("#### ② 競馬ラボ・プロフィール画像ごとの対象馬番")
+            st.caption("画像ごとに対象の馬番を指定してください。馬名OCRが崩れても、この指定を優先します。")
+            for idx, f in enumerate(keibalab_profile_images):
+                c1, c2 = st.columns([2.5, 1])
+                c1.write(f"📷 {f.name}")
+                pc_profile_gate_map[f.name] = c2.selectbox(
+                    "対象馬番",
+                    ["自動判定"] + list(range(1, 19)),
+                    key=f"pc_profile_gate_v186_{idx}",
+                    label_visibility="collapsed",
+                )
+
+        if keibalab_history_images:
+            st.markdown("#### ③ 競馬ラボ・過去5走画像ごとの対象馬番")
+            st.caption("画像ごとに対象の馬番を指定してください。前走騎手・上がり3F平均をこの馬へ結合します。")
+            for idx, f in enumerate(keibalab_history_images):
+                c1, c2 = st.columns([2.5, 1])
+                c1.write(f"📷 {f.name}")
+                pc_history_gate_map[f.name] = c2.selectbox(
+                    "対象馬番",
+                    ["自動判定"] + list(range(1, 19)),
+                    key=f"pc_history_gate_v186_{idx}",
+                    label_visibility="collapsed",
+                )
 
     all_image_files = umanity_images + keibalab_profile_images + keibalab_history_images
     if all_image_files:
@@ -3704,7 +3753,11 @@ with tab_img:
                     try:
                         text0 = extract_text_from_screenshot(image_file)
                         raw_texts.append((f"ウマニティ:{image_file.name}", text0))
-                        forced_gate = None if umanity_start_choice == "自動判定" else int(umanity_start_choice)
+                        if ocr_upload_mode == "🖥️ PC：複数枚まとめて":
+                            pc_choice = pc_umanity_start_map.get(image_file.name, "自動判定")
+                            forced_gate = None if pc_choice == "自動判定" else int(pc_choice)
+                        else:
+                            forced_gate = None if umanity_start_choice == "自動判定" else int(umanity_start_choice)
                         recs = parse_umanity_screenshot_image(image_file, text0, forced_start_gate=forced_gate)
                         umanity_records.extend(recs)
                         st.session_state["ocr_image_diagnostics"].append({
@@ -3719,6 +3772,10 @@ with tab_img:
                     normalize_horse_name(r.get("馬名", "")): int(r["馬番"])
                     for r in umanity_records if r.get("馬名") and r.get("馬番")
                 }
+                gate_horse_map = {
+                    int(r["馬番"]): normalize_horse_name(r.get("馬名", ""))
+                    for r in umanity_records if r.get("馬名") and r.get("馬番")
+                }
 
                 # 競馬ラボプロフィールを先に解析。馬名が読めた順を、過去走画像の補助対応にも使う。
                 profile_horses_in_order = []
@@ -3726,7 +3783,14 @@ with tab_img:
                     try:
                         txt = extract_text_from_screenshot(image_file)
                         raw_texts.append((f"競馬ラボ・プロフィール:{image_file.name}", txt))
-                        fallback_profile = None if profile_target_horse in {"自動判定", "選択してください"} else profile_target_horse
+                        if ocr_upload_mode == "🖥️ PC：複数枚まとめて":
+                            gate_choice = pc_profile_gate_map.get(image_file.name, "自動判定")
+                            if gate_choice == "自動判定":
+                                fallback_profile = None
+                            else:
+                                fallback_profile = gate_horse_map.get(int(gate_choice))
+                        else:
+                            fallback_profile = None if profile_target_horse in {"自動判定", "選択してください"} else profile_target_horse
                         recs = parse_keibalab_profile_screenshot_text(txt, horse_gate_map, fallback_horse=fallback_profile)
                         profile_records.extend(recs)
                         profile_horses_in_order.append(recs[0]["馬名"] if recs else None)
@@ -3743,7 +3807,13 @@ with tab_img:
                     try:
                         txt = extract_text_from_screenshot(image_file)
                         raw_texts.append((f"競馬ラボ・過去5走:{image_file.name}", txt))
-                        if history_target_horse not in {"自動判定", "選択してください"}:
+                        if ocr_upload_mode == "🖥️ PC：複数枚まとめて":
+                            gate_choice = pc_history_gate_map.get(image_file.name, "自動判定")
+                            if gate_choice == "自動判定":
+                                fallback = profile_horses_in_order[idx] if idx < len(profile_horses_in_order) else None
+                            else:
+                                fallback = gate_horse_map.get(int(gate_choice))
+                        elif history_target_horse not in {"自動判定", "選択してください"}:
                             fallback = history_target_horse
                         else:
                             fallback = profile_horses_in_order[idx] if idx < len(profile_horses_in_order) else None
@@ -3756,6 +3826,18 @@ with tab_img:
                         })
                     except Exception as exc:
                         processing_errors.append(f"{image_file.name}: {exc}")
+
+            if ocr_upload_mode == "🖥️ PC：複数枚まとめて":
+                assigned_gates = []
+                assigned_gates += [int(v) for v in pc_profile_gate_map.values() if v != "自動判定"]
+                assigned_gates += [int(v) for v in pc_history_gate_map.values() if v != "自動判定"]
+                missing_assigned = sorted(set(g for g in assigned_gates if g not in gate_horse_map))
+                if missing_assigned:
+                    st.warning(
+                        "⚠️ 対象馬番を指定しましたが、ウマニティ側で馬名を取得できていない馬番があります: "
+                        + ", ".join(map(str, missing_assigned))
+                        + "。先にウマニティ画像の先頭馬番指定を確認してください。"
+                    )
 
             if processing_errors:
                 st.error("一部画像の処理に失敗しました。")
