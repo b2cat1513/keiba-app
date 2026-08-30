@@ -24,8 +24,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.3", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.3（スマホ画像読込修正版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.4", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.4（OCR精度改善版）")
 
 st.markdown("""
 <style>
@@ -1949,6 +1949,31 @@ def _umanity_gate_from_tokens(tokens, u_token, image_width):
     return min(candidates)[1] if candidates else None
 
 
+def _infer_umanity_start_gate_from_raw_text(raw_text):
+    """ウマニティ画像の開始馬番をOCR原文の独立した馬番から推定する。
+    オッズ等の数字ではなく、1行単独の1～18を優先する。
+    """
+    if not raw_text:
+        return None
+    exact = []
+    for line in str(raw_text).splitlines():
+        s = _ocr_clean_line(line)
+        if re.fullmatch(r"1[0-8]|[1-9]", s):
+            exact.append(int(s))
+    if exact:
+        # 8頭画像なので、最小値から+7以内に複数の独立番号があれば開始番号として強い。
+        uniq = sorted(set(exact))
+        candidates = []
+        for g in uniq:
+            support = sum(1 for x in uniq if g <= x <= min(18, g + 7))
+            candidates.append((support, -g, g))
+        candidates.sort(reverse=True)
+        if candidates[0][0] >= 2:
+            return candidates[0][2]
+        return uniq[0]
+    return None
+
+
 def parse_umanity_screenshot_image(uploaded_file, raw_text=""):
     """ウマニティの縦長スクリーンショットを「1頭=1行」で分割してOCRする。
 
@@ -2433,7 +2458,8 @@ def parse_umanity_screenshot_image(uploaded_file, raw_text=""):
         if u_index is None:
             continue
         if not name:
-            name = f"（OCR要確認・{row_idx + 1}行目）"
+            # 誤った馬を作るより安全側。馬名が確定できない行は自動登録しない。
+            continue
 
         combined = "\n".join([main_text, detail_text, rescue_row_text] + jockey_ocr_texts)
         sex_age = _parse_sex_age(combined)
@@ -2607,8 +2633,8 @@ def parse_umanity_screenshot_image(uploaded_file, raw_text=""):
 
     # Ver1.16.8: 画像ごとの馬番範囲を先に確定し、その範囲外は絶対に混ぜない。
     # gate_observations には「読めた馬番 - 行番号」が入るため、同じ画像なら同じ開始馬番へ収束する。
-    start_gate = None
-    if gate_observations:
+    start_gate = _infer_umanity_start_gate_from_raw_text(raw_text)
+    if start_gate is None and gate_observations:
         valid_offsets = [int(g) for g in gate_observations if 1 <= int(g) <= 18]
         if valid_offsets:
             counts = {}
@@ -2650,7 +2676,12 @@ def parse_umanity_screenshot_image(uploaded_file, raw_text=""):
         name = str(value or "").strip()
         if not name:
             return False
+        if "OCR要確認" in name:
+            return False
         if re.fullmatch(r"[A-Za-z0-9._\-]+", name):
+            return False
+        # 日本語（カタカナ/漢字/ひらがな）を最低1文字含むこと。
+        if not re.search(r"[ぁ-んァ-ヶーヴ一-龥]", name):
             return False
         return 2 <= len(name) <= 24
 
@@ -2708,6 +2739,21 @@ def parse_umanity_screenshot_image(uploaded_file, raw_text=""):
             if g not in dedup or _info_score_v168(rec) > _info_score_v168(dedup[g]):
                 dedup[g] = rec
         row_results = [dedup[g] for g in sorted(dedup)]
+
+        # 同じ単勝が3頭以上へ全く同じ値で入る場合は、列ずれOCRの可能性が高い。
+        odds_groups = {}
+        for rec in row_results:
+            oo = rec.get("単勝")
+            if oo is not None:
+                try:
+                    odds_groups.setdefault(round(float(oo), 1), []).append(rec)
+                except Exception:
+                    pass
+        for _, recs in odds_groups.items():
+            if len(recs) >= 3:
+                for rec in recs:
+                    rec["単勝"] = None
+
         return row_results
 
     # 失敗時のみVer1.15.1以前の文字列解析へ戻す。
@@ -3041,51 +3087,60 @@ def _find_known_horse_in_text(text, horse_gate_map):
 
 
 def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=None):
-    """競馬ラボの馬プロフィール画像から父馬・厩舎・馬主を抽出する。"""
+    """競馬ラボの馬プロフィール画像から父馬・厩舎・馬主を抽出する。
+    Ver1.18.4: ページ全体の長い文字列ではなく、ラベル周辺の行を優先する。
+    """
     lines = [_ocr_clean_line(x) for x in str(text).splitlines()]
     lines = [x for x in lines if x]
     joined = " ".join(lines)
 
     horse_name, gate = _find_known_horse_in_text(joined, horse_gate_map)
     if not horse_name and fallback_horse:
-        horse_name = fallback_horse
-        gate = horse_gate_map.get(normalize_horse_name(fallback_horse))
+        horse_name = normalize_horse_name(fallback_horse)
+        gate = horse_gate_map.get(horse_name)
     if not horse_name or not gate:
         return []
 
-    sire = ""
-    # 競馬ラボ例: 「父 ハーツクライ」
-    for pat in [
-        r"(?:^|\s)父[：:\s]*([ァ-ヶーA-Za-z0-9・ヴ一-龥]+)",
-        r"父馬[：:\s]*([ァ-ヶーA-Za-z0-9・ヴ一-龥]+)",
-    ]:
-        m = re.search(pat, joined)
-        if m:
-            sire = m.group(1).strip()
-            break
+    def _value_after_label(labels, max_len=24):
+        for idx, line in enumerate(lines):
+            for label in labels:
+                if label not in line:
+                    continue
+                tail = line.split(label, 1)[1]
+                tail = re.sub(r"^[：:\\s]+", "", tail).strip()
+                if tail:
+                    return tail[:max_len]
+                if idx + 1 < len(lines):
+                    nxt = lines[idx + 1].strip()
+                    if nxt:
+                        return nxt[:max_len]
+        return ""
 
-    trainer = "(未選択)"
-    m = re.search(r"(?:調教師|厩舎)[：:\s]*([ァ-ヶーA-Za-z・一-龥]{2,12})(?:\s*[\(（](?:美|栗|美浦|栗東)[\)）])?", joined)
-    if m:
-        raw = re.sub(r"[\(（].*?[\)）]", "", m.group(1)).strip()
-        matched = _best_master_match(raw, [x for x in TRAINER_OPTIONS if x not in {"(未選択)", "その他"}], 0.35)
-        trainer = matched if matched != "(未選択)" else raw
-    else:
-        # 画像例の「牧 光二(美)」のような表記も救済
+    sire = _value_after_label(["父馬", "父"], 28)
+    sire = re.split(r"(?:母|母父|調教師|厩舎|馬主|生産)", sire)[0].strip()
+    sire = re.sub(r"[^ぁ-んァ-ヶーヴ一-龥A-Za-z0-9・.]", "", sire)
+
+    trainer_raw = _value_after_label(["調教師", "厩舎"], 24)
+    if not trainer_raw:
         for line in lines:
-            m2 = re.search(r"([一-龥]{2,6})\s*[\(（](?:美|栗|美浦|栗東)[\)）]", line)
-            if m2:
-                raw = m2.group(1)
-                matched = _best_master_match(raw, [x for x in TRAINER_OPTIONS if x not in {"(未選択)", "その他"}], 0.35)
-                trainer = matched if matched != "(未選択)" else raw
+            m = re.search(r"([一-龥]{2,8})\\s*[\\(（](?:美|栗|美浦|栗東)[\\)）]", line)
+            if m:
+                trainer_raw = m.group(1)
                 break
+    trainer_raw = re.sub(r"[\\(（].*?[\\)）]", "", trainer_raw).strip()
+    trainer = "(未選択)"
+    if trainer_raw:
+        candidates = [x for x in TRAINER_OPTIONS if x not in {"(未選択)", "その他"}]
+        matched = _best_master_match(trainer_raw, candidates, 0.38)
+        trainer = matched if matched != "(未選択)" else trainer_raw
 
+    owner_raw = _value_after_label(["馬主"], 32)
+    owner_raw = re.split(r"(?:生産者|生産|調教師|厩舎|距離別|コース別)", owner_raw)[0].strip()
     owner = "(未選択)"
-    m = re.search(r"馬主[：:\s]*([^\n]+?)(?=\s+(?:生産者|生産|距離別|コース別|調教師|厩舎)\b|$)", joined)
-    if m:
-        raw = m.group(1).strip()
-        matched = _best_master_match(raw, [x for x in OWNER_OPTIONS if x not in {"(未選択)", "その他"}], 0.35)
-        owner = matched if matched != "(未選択)" else raw
+    if owner_raw:
+        candidates = [x for x in OWNER_OPTIONS if x not in {"(未選択)", "その他"}]
+        matched = _best_master_match(owner_raw, candidates, 0.38)
+        owner = matched if matched != "(未選択)" else owner_raw
 
     return [{
         "馬番": int(gate), "馬名": horse_name,
@@ -3102,37 +3157,54 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
 
     horse_name, gate = _find_known_horse_in_text(joined, horse_gate_map)
     if not horse_name and fallback_horse:
-        horse_name = fallback_horse
-        gate = horse_gate_map.get(normalize_horse_name(fallback_horse))
+        horse_name = normalize_horse_name(fallback_horse)
+        gate = horse_gate_map.get(horse_name)
     if not horse_name or not gate:
         return []
 
-    # 上がり3F。競馬ラボ画像の 33.7 S / 34.1 H 等を主対象にする。
+    # 競馬ラボの上がり3Fは30～45秒台の小数1桁。
     finish_times = []
-    for m in re.finditer(r"(?<![:\d])([3-4]\d\.\d)\s*[SHM]?(?!\d)", joined):
-        val = float(m.group(1))
-        if 30.0 <= val <= 45.0:
-            finish_times.append(val)
-    # 同じ値をOCRが重複して拾うケースを抑えつつ表示順を維持
+    for line in lines:
+        for m in re.finditer(r"(?<![:\\d])([3-4]\\d\\.\\d)\\s*[SHM]?(?!\\d)", line):
+            val = float(m.group(1))
+            if 30.0 <= val <= 45.0:
+                finish_times.append(val)
+    # 連続重複のみ除去し、画面上から新しい順の最大5走。
     deduped = []
     for val in finish_times:
-        if not deduped or val != deduped[-1]:
+        if not deduped or abs(val - deduped[-1]) > 0.001:
             deduped.append(val)
     finish_times = deduped[:5]
     avg_l3f = round(sum(finish_times) / len(finish_times), 2) if finish_times else None
 
-    # 最上段＝前走。斤量の直後に出る騎手名を優先し、JOCKEY_MASTERへ寄せる。
     previous_jockey = "(未選択)"
     jockey_candidates = [x for x in JOCKEY_MASTER.keys() if x != "その他（自由手入力）"]
-    top = " ".join(lines[:12])
-    best = _best_master_match(top, jockey_candidates, 0.55)
-    if best != "(未選択)":
-        previous_jockey = best
-    else:
-        for j in jockey_candidates:
-            if normalize_jockey_name(j) in normalize_jockey_name(top):
-                previous_jockey = j
-                break
+
+    # 前走は画面上部。まず完全一致/正規化一致、次に1行単位のファジー照合。
+    top_lines = lines[:24]
+    norm_top = normalize_jockey_name(" ".join(top_lines)).replace(" ", "")
+    for j in jockey_candidates:
+        nj = normalize_jockey_name(j).replace(" ", "")
+        if nj and nj in norm_top:
+            previous_jockey = j
+            break
+
+    if previous_jockey == "(未選択)":
+        best_pair = (0.0, None)
+        for line in top_lines:
+            compact = normalize_jockey_name(line)
+            if len(compact) < 2:
+                continue
+            for cand in jockey_candidates:
+                ratio = difflib.SequenceMatcher(
+                    None,
+                    compact.replace(" ", ""),
+                    normalize_jockey_name(cand).replace(" ", "")
+                ).ratio()
+                if ratio > best_pair[0]:
+                    best_pair = (ratio, cand)
+        if best_pair[0] >= 0.72:
+            previous_jockey = best_pair[1]
 
     return [{
         "馬番": int(gate), "馬名": horse_name,
@@ -3473,7 +3545,7 @@ with tab_img:
         if not (ocr_status['pillow_import'] and ocr_status['pytesseract_import'] and ocr_status['tesseract_command'] and 'jpn' in langs):
             st.warning("Streamlit Cloudのリポジトリ直下に、正式名の requirements.txt と packages.txt が必要です。")
 
-    st.info("📱 Ver1.18.3：スマホでは画像を1枚ずつ確実に読み込めるモードを追加しました。PCでは従来どおり複数画像を一括選択できます。")
+    st.info("📱 Ver1.18.4：馬名未確定行を捨て、競馬ラボ画像は対象馬を指定して正しく結合できます。PCでは従来どおり複数画像を一括選択できます。")
 
     mobile_ocr_mode = st.session_state.get("input_screen_mode", "📱 スマホ") == "📱 スマホ"
     ocr_upload_mode = st.radio(
@@ -3506,6 +3578,25 @@ with tab_img:
             key="keibalab_history_single_v183",
         )
 
+        held_horses = [
+            r.get("馬名") for r in st.session_state.get("mobile_ocr_umanity_records", [])
+            if r.get("馬名") and "OCR要確認" not in str(r.get("馬名"))
+        ]
+        held_horses = list(dict.fromkeys(held_horses))
+        target_options = ["自動判定"] + held_horses
+        profile_target_horse = st.selectbox(
+            "②プロフィール画像はどの馬？",
+            target_options,
+            key="profile_target_horse_v184",
+            help="馬名OCRが崩れても、この指定を使って正しい馬へ結合します。",
+        )
+        history_target_horse = st.selectbox(
+            "③過去5走画像はどの馬？",
+            target_options,
+            key="history_target_horse_v184",
+            help="馬名OCRが崩れても、この指定を使って正しい馬へ結合します。",
+        )
+
         umanity_images = [umanity_one] if umanity_one is not None else []
         keibalab_profile_images = [profile_one] if profile_one is not None else []
         keibalab_history_images = [history_one] if history_one is not None else []
@@ -3527,6 +3618,8 @@ with tab_img:
             st.session_state.pop("ocr_preview", None)
             st.rerun()
     else:
+        profile_target_horse = "自動判定"
+        history_target_horse = "自動判定"
         umanity_images = st.file_uploader(
             "① ウマニティ画像（馬番・馬名・単勝・U指数・斤量・今回騎手）",
             type=["png", "jpg", "jpeg", "webp"],
@@ -3602,7 +3695,8 @@ with tab_img:
                     try:
                         txt = extract_text_from_screenshot(image_file)
                         raw_texts.append((f"競馬ラボ・プロフィール:{image_file.name}", txt))
-                        recs = parse_keibalab_profile_screenshot_text(txt, horse_gate_map)
+                        fallback_profile = None if profile_target_horse == "自動判定" else profile_target_horse
+                        recs = parse_keibalab_profile_screenshot_text(txt, horse_gate_map, fallback_horse=fallback_profile)
                         profile_records.extend(recs)
                         profile_horses_in_order.append(recs[0]["馬名"] if recs else None)
                         st.session_state["ocr_image_diagnostics"].append({
@@ -3618,7 +3712,10 @@ with tab_img:
                     try:
                         txt = extract_text_from_screenshot(image_file)
                         raw_texts.append((f"競馬ラボ・過去5走:{image_file.name}", txt))
-                        fallback = profile_horses_in_order[idx] if idx < len(profile_horses_in_order) else None
+                        if history_target_horse != "自動判定":
+                            fallback = history_target_horse
+                        else:
+                            fallback = profile_horses_in_order[idx] if idx < len(profile_horses_in_order) else None
                         recs = parse_keibalab_history_screenshot_text(txt, horse_gate_map, fallback_horse=fallback)
                         history_records.extend(recs)
                         st.session_state["ocr_image_diagnostics"].append({
