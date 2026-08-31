@@ -24,8 +24,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.10", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.10（プロフィール・過去5走OCR強化版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.11", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.11（プロフィール・過去5走OCR強化版）")
 
 st.markdown("""
 <style>
@@ -3526,53 +3526,84 @@ def parse_keibalab_profile_screenshot_image(uploaded_file, horse_gate_map, fallb
 
 
 def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallback_horse=None):
-    """Ver1.18.10: 過去走画面をレース行単位で読み、1レース=上がり1個にする。"""
+    """Ver1.18.11: Ver1.18.9で実績のあった全文OCR方式を復元。
+    複数画像の結合はUI側で行い、5走分まで補完する。
+    """
+    texts = _ocr_image_variants(uploaded_file, (4, 6, 11, 12))
+    if not texts:
+        return []
+
     forced = normalize_horse_name(fallback_horse or "")
     gate = horse_gate_map.get(forced)
     if not forced or not gate:
         return []
 
-    texts = _ocr_image_variants(uploaded_file, (4, 6, 11, 12))
-
-    # 前走騎手は従来の全文解析＋複数OCR投票
     jockey_votes = {}
+    # OCR方式ごとに「上から出てきた上がり値列」を作る
+    sequences = []
     for txt in texts:
         recs = parse_keibalab_history_screenshot_text(txt, horse_gate_map, fallback_horse=forced)
         if recs:
             j = recs[0].get("前走騎手")
             if j not in {None, "", "(未選択)"}:
                 jockey_votes[j] = jockey_votes.get(j, 0) + 1
+
+        vals = []
+        for m in re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)(?!\d)", txt):
+            try:
+                v = round(float(m.group(1).replace(",", ".")), 1)
+            except Exception:
+                continue
+            if 30.0 <= v <= 42.9:
+                vals.append(v)
+
+        # OCRが同じ文字を連続二重読みにした場合のみ除去。
+        compact = []
+        for v in vals:
+            if not compact or v != compact[-1]:
+                compact.append(v)
+        if compact:
+            sequences.append(compact[:6])
+
+    # 各位置ごとに投票して、この画像で見えている順番を維持する。
+    chosen = []
+    max_len = min(5, max([len(s) for s in sequences], default=0))
+    for pos in range(max_len):
+        votes = {}
+        for seq in sequences:
+            if pos < len(seq):
+                v = seq[pos]
+                votes[v] = votes.get(v, 0) + 1
+        if not votes:
+            continue
+        best = max(votes, key=lambda v: (votes[v], -abs(v - 35.0)))
+        chosen.append(best)
+
+    # 位置投票が弱い場合、複数方式で見えた値を順番補完
+    if len(chosen) < 3:
+        global_votes = {}
+        first_pos = {}
+        for seq in sequences:
+            for pos, v in enumerate(seq[:5]):
+                global_votes[v] = global_votes.get(v, 0) + 1
+                first_pos[v] = min(first_pos.get(v, pos), pos)
+        extras = sorted(global_votes, key=lambda v: (-global_votes[v], first_pos[v]))
+        for v in extras:
+            if len(chosen) >= 5:
+                break
+            if v not in chosen:
+                chosen.append(v)
+
+    chosen = chosen[:5]
+    avg = round(sum(chosen) / len(chosen), 2) if chosen else None
     jockey = max(jockey_votes, key=jockey_votes.get) if jockey_votes else "(未選択)"
-
-    # 上がり3Fはレース行単位で最大5個
-    row_vals, _debug = _extract_finish3f_by_rows(uploaded_file)
-
-    # 行分割が弱い場合のみ全文OCRを補助に使う
-    if len(row_vals) < 2:
-        fallback_vals = []
-        for txt in texts:
-            for m in re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)(?!\d)", txt):
-                try:
-                    v = round(float(m.group(1).replace(",", ".")), 1)
-                except Exception:
-                    continue
-                if 30.0 <= v <= 42.9:
-                    fallback_vals.append(v)
-        # 連続重複のみ除去
-        cleaned = []
-        for v in fallback_vals:
-            if not cleaned or v != cleaned[-1]:
-                cleaned.append(v)
-        row_vals = cleaned[:5]
-
-    avg = round(sum(row_vals) / len(row_vals), 2) if row_vals else None
 
     return [{
         "馬番": int(gate), "馬名": forced,
         "前走騎手": jockey,
         "上がり3F平均": avg,
-        "上がり取得数": len(row_vals),
-        "上がり3F内訳": " / ".join(f"{v:.1f}" for v in row_vals),
+        "上がり取得数": len(chosen),
+        "上がり3F内訳": " / ".join(f"{v:.1f}" for v in chosen),
         "取得元": "競馬ラボ・過去5走画像",
     }]
 
@@ -3891,7 +3922,7 @@ with tab_um:
 
 with tab_img:
     st.write("### 📷 画像から自動入力")
-    st.caption("Ver1.18.10：3段階OCRはそのままに、プロフィールはラベル周辺を狙って厩舎・馬主を取得。過去5走はレース行単位で『1レース=上がり1個』として最大5走を取得します。")
+    st.caption("Ver1.18.11：3段階OCRは維持。プロフィールはVer1.18.10の父馬・ラベル周辺OCRを残し、前走騎手・上がり3Fは取得実績の良かったVer1.18.9方式へ戻した安定版です。")
 
     ocr_status = get_ocr_environment_status()
     with st.expander("🩺 OCR環境診断", expanded=not OCR_AVAILABLE):
@@ -4115,7 +4146,8 @@ with tab_img:
     # ③ 競馬ラボ・過去5走
     # --------------------------------------------------
     st.markdown("#### ③ 競馬ラボ・過去5走")
-    st.caption("取得：前走騎手・上がり3F平均。同じ馬に複数画像を指定した場合は、画像順に上がり値をつないで最大5走まで補完します。")
+    st.info("🛡️ Ver1.18.11では、Ver1.18.10で0件になった行分割OCRを主判定から外し、Ver1.18.9で取れていた前走騎手・上がり3F方式を復元しています。")
+    st.caption("取得：前走騎手・上がり3F平均。全文OCRを複数方式で照合し、同じ馬の複数画像は境界重複を除きながら最大5走まで補完します。")
 
     if upload_mode == "📱 スマホ：1枚ずつ":
         h_one = st.file_uploader(
