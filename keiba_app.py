@@ -24,8 +24,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.8", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.8（プロフィール・過去5走OCR強化版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.9", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.9（プロフィール・過去5走OCR強化版）")
 
 st.markdown("""
 <style>
@@ -3270,89 +3270,193 @@ def _ocr_image_variants(uploaded_file, psm_values=(6, 11, 12)):
 
 
 def parse_keibalab_profile_screenshot_image(uploaded_file, horse_gate_map, fallback_horse=None):
-    """Ver1.18.8: プロフィール画像を複数OCRして父・厩舎・馬主を投票/補完。"""
-    texts = _ocr_image_variants(uploaded_file, (4, 6, 11, 12))
-    records = []
-    for txt in texts:
-        recs = parse_keibalab_profile_screenshot_text(txt, horse_gate_map, fallback_horse)
-        if recs:
-            records.append(recs[0])
-    if not records:
-        return []
-
-    forced = normalize_horse_name(fallback_horse or records[0].get("馬名", ""))
-    gate = horse_gate_map.get(forced, records[0].get("馬番"))
-
-    def best_value(key, empty_values):
-        vals = [str(r.get(key, "")).strip() for r in records if r.get(key) not in empty_values]
-        if not vals:
-            return "" if key == "父馬" else "(未選択)"
-        # 長すぎるOCR断片を除外し、複数方式で一致した値を最優先
-        vals = [v for v in vals if 2 <= len(v) <= 30]
-        if not vals:
-            return "" if key == "父馬" else "(未選択)"
-        counts = {}
-        for v in vals:
-            counts[v] = counts.get(v, 0) + 1
-        return sorted(counts, key=lambda v: (counts[v], len(v)), reverse=True)[0]
-
-    return [{
-        "馬番": int(gate), "馬名": forced,
-        "父馬": best_value("父馬", {None, "", "(未選択)"}),
-        "厩舎": best_value("厩舎", {None, "", "(未選択)"}),
-        "馬主": best_value("馬主", {None, "", "(未選択)"}),
-        "取得元": "競馬ラボ・プロフィール画像",
-    }]
-
-
-def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallback_horse=None):
-    """Ver1.18.8: 過去5走画像を複数OCRし、最大5個の上がり値と前走騎手を安定化。"""
+    """Ver1.18.9: プロフィール画像を複数OCRし、父馬・厩舎・馬主を安全側で統合。"""
     texts = _ocr_image_variants(uploaded_file, (4, 6, 11, 12))
     if not texts:
         return []
+
     forced = normalize_horse_name(fallback_horse or "")
     gate = horse_gate_map.get(forced)
     if not forced or not gate:
         return []
 
-    # 各OCR結果の「上から5個」を候補にし、丸め値ごとの出現回数で投票。
-    votes = {}
-    order = {}
+    records = []
+    for txt in texts:
+        recs = parse_keibalab_profile_screenshot_text(txt, horse_gate_map, fallback_horse=forced)
+        if recs:
+            records.append(recs[0])
+
+    # ---------- 父馬 ----------
+    sire_votes = {}
+    for r in records:
+        sire = str(r.get("父馬", "") or "").strip()
+        if 2 <= len(sire) <= 30:
+            sire_votes[sire] = sire_votes.get(sire, 0) + 1
+    sire = max(sire_votes, key=lambda v: (sire_votes[v], len(v))) if sire_votes else ""
+
+    # ---------- 厩舎 ----------
+    trainer_candidates = [x for x in TRAINER_OPTIONS if x not in {"(未選択)", "その他"}]
+    trainer_votes = {}
+    for txt in texts:
+        lines = [_ocr_clean_line(x) for x in str(txt).splitlines()]
+        lines = [x for x in lines if x]
+
+        local_candidates = []
+        for i, line in enumerate(lines):
+            # 「調教師」「厩舎」周辺を優先
+            if "調教師" in line or "厩舎" in line:
+                local_candidates.append(line)
+                if i + 1 < len(lines):
+                    local_candidates.append(lines[i + 1])
+
+            # 競馬ラボでよく出る「○○○○(美)/(栗)」型
+            m = re.search(r"([一-龥]{2,8})\s*[（(](?:美|栗|美浦|栗東)[）)]", line)
+            if m:
+                local_candidates.append(m.group(1))
+
+        for raw in local_candidates:
+            raw = re.sub(r"(?:調教師|厩舎)[：:\s]*", "", raw)
+            raw = re.sub(r"[（(](?:美|栗|美浦|栗東)[）)].*$", "", raw).strip()
+            if not raw:
+                continue
+            matched = _best_master_match(raw, trainer_candidates, 0.58)
+            if matched != "(未選択)":
+                trainer_votes[matched] = trainer_votes.get(matched, 0) + 1
+
+    trainer = "(未選択)"
+    if trainer_votes:
+        best_trainer = max(trainer_votes, key=lambda x: trainer_votes[x])
+        # 1票だけの曖昧値より、2方式以上一致を優先。
+        if trainer_votes[best_trainer] >= 2 or len(texts) <= 2:
+            trainer = best_trainer
+
+    # ---------- 馬主 ----------
+    owner_candidates = [x for x in OWNER_OPTIONS if x not in {"(未選択)", "その他"}]
+    owner_master_votes = {}
+    owner_raw_votes = {}
+
+    for txt in texts:
+        lines = [_ocr_clean_line(x) for x in str(txt).splitlines()]
+        lines = [x for x in lines if x]
+
+        for i, line in enumerate(lines):
+            if "馬主" not in line:
+                continue
+            raw = re.sub(r"^.*?馬主[：:\s]*", "", line).strip()
+            if not raw and i + 1 < len(lines):
+                raw = lines[i + 1].strip()
+            raw = re.split(r"(?:生産者|生産|調教師|厩舎|距離別|コース別|母父|父)", raw)[0].strip()
+            raw = re.sub(r"[^\u3040-\u30ff一-龥A-Za-z0-9・＆&ー\s]", "", raw).strip()
+            if not (2 <= len(raw) <= 28):
+                continue
+
+            matched = _best_master_match(raw, owner_candidates, 0.56)
+            if matched != "(未選択)":
+                owner_master_votes[matched] = owner_master_votes.get(matched, 0) + 1
+            else:
+                # マスター外でも、複数OCR方式で同一文字列なら採用候補。
+                compact = re.sub(r"\s+", "", raw)
+                owner_raw_votes[compact] = owner_raw_votes.get(compact, 0) + 1
+
+    owner = "(未選択)"
+    if owner_master_votes:
+        owner = max(owner_master_votes, key=lambda x: owner_master_votes[x])
+    elif owner_raw_votes:
+        raw_best = max(owner_raw_votes, key=lambda x: owner_raw_votes[x])
+        if owner_raw_votes[raw_best] >= 2:
+            owner = raw_best
+
+    return [{
+        "馬番": int(gate), "馬名": forced,
+        "父馬": sire,
+        "厩舎": trainer,
+        "馬主": owner,
+        "取得元": "競馬ラボ・プロフィール画像",
+    }]
+
+
+def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallback_horse=None):
+    """Ver1.18.9: 1枚の過去走画像から上がり候補を安定抽出。
+    複数画像の結合はUI側で行い、5走分まで補完する。
+    """
+    texts = _ocr_image_variants(uploaded_file, (4, 6, 11, 12))
+    if not texts:
+        return []
+
+    forced = normalize_horse_name(fallback_horse or "")
+    gate = horse_gate_map.get(forced)
+    if not forced or not gate:
+        return []
+
     jockey_votes = {}
+    # OCR方式ごとに「上から出てきた上がり値列」を作る
+    sequences = []
     for txt in texts:
         recs = parse_keibalab_history_screenshot_text(txt, horse_gate_map, fallback_horse=forced)
         if recs:
             j = recs[0].get("前走騎手")
             if j not in {None, "", "(未選択)"}:
                 jockey_votes[j] = jockey_votes.get(j, 0) + 1
+
         vals = []
         for m in re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)(?!\d)", txt):
             try:
-                v = float(m.group(1).replace(",", "."))
+                v = round(float(m.group(1).replace(",", ".")), 1)
             except Exception:
                 continue
-            # 競馬ラボの上がり3Fとして現実的な範囲を少し絞り、タイム等の混入を減らす
             if 30.0 <= v <= 42.9:
-                vals.append(round(v, 1))
+                vals.append(v)
+
+        # OCRが同じ文字を連続二重読みにした場合のみ除去。
         compact = []
         for v in vals:
             if not compact or v != compact[-1]:
                 compact.append(v)
-        for idx, v in enumerate(compact[:5]):
-            votes[v] = votes.get(v, 0) + 1
-            order[v] = min(order.get(v, idx), idx)
+        if compact:
+            sequences.append(compact[:6])
 
-    # 2方式以上で読めた値を優先。足りない場合のみ1票候補で補完。
-    ranked = sorted(votes, key=lambda v: (votes[v] >= 2, votes[v], -order[v]), reverse=True)
-    chosen = sorted(ranked[:5], key=lambda v: order[v])
+    # 各位置ごとに投票して、この画像で見えている順番を維持する。
+    chosen = []
+    max_len = min(5, max([len(s) for s in sequences], default=0))
+    for pos in range(max_len):
+        votes = {}
+        for seq in sequences:
+            if pos < len(seq):
+                v = seq[pos]
+                votes[v] = votes.get(v, 0) + 1
+        if not votes:
+            continue
+        best = max(votes, key=lambda v: (votes[v], -abs(v - 35.0)))
+        chosen.append(best)
+
+    # 位置投票が弱い場合、複数方式で見えた値を順番補完
+    if len(chosen) < 3:
+        global_votes = {}
+        first_pos = {}
+        for seq in sequences:
+            for pos, v in enumerate(seq[:5]):
+                global_votes[v] = global_votes.get(v, 0) + 1
+                first_pos[v] = min(first_pos.get(v, pos), pos)
+        extras = sorted(global_votes, key=lambda v: (-global_votes[v], first_pos[v]))
+        for v in extras:
+            if len(chosen) >= 5:
+                break
+            if v not in chosen:
+                chosen.append(v)
+
+    chosen = chosen[:5]
     avg = round(sum(chosen) / len(chosen), 2) if chosen else None
     jockey = max(jockey_votes, key=jockey_votes.get) if jockey_votes else "(未選択)"
+
     return [{
-        "馬番": int(gate), "馬名": forced, "前走騎手": jockey,
-        "上がり3F平均": avg, "上がり取得数": len(chosen),
+        "馬番": int(gate), "馬名": forced,
+        "前走騎手": jockey,
+        "上がり3F平均": avg,
+        "上がり取得数": len(chosen),
         "上がり3F内訳": " / ".join(f"{v:.1f}" for v in chosen),
         "取得元": "競馬ラボ・過去5走画像",
     }]
+
 
 def merge_source_records(umanity_records, profile_records, history_records):
     merged = {}
@@ -3668,7 +3772,7 @@ with tab_um:
 
 with tab_img:
     st.write("### 📷 画像から自動入力")
-    st.caption("Ver1.18.7：①ウマニティ → ②競馬ラボ・プロフィール → ③競馬ラボ・過去5走を別々に解析します。失敗した種類だけやり直せます。")
+    st.caption("Ver1.18.9：3段階OCRはそのままに、プロフィールの厩舎・馬主と、複数の過去走画像を結合して最大5走の上がり3Fを取る処理を強化しました。")
 
     ocr_status = get_ocr_environment_status()
     with st.expander("🩺 OCR環境診断", expanded=not OCR_AVAILABLE):
@@ -3892,7 +3996,7 @@ with tab_img:
     # ③ 競馬ラボ・過去5走
     # --------------------------------------------------
     st.markdown("#### ③ 競馬ラボ・過去5走")
-    st.caption("取得：前走騎手・上がり3F平均。画像ごとの対象馬番を必ず指定し、その馬へ直接結合します。")
+    st.caption("取得：前走騎手・上がり3F平均。同じ馬に複数画像を指定した場合は、画像順に上がり値をつないで最大5走まで補完します。")
 
     if upload_mode == "📱 スマホ：1枚ずつ":
         h_one = st.file_uploader(
@@ -3961,21 +4065,61 @@ with tab_img:
                     except Exception as exc:
                         errors.append(f"{f.name}: {exc}")
 
+            def _parse_breakdown(rec):
+                vals = []
+                for token in str(rec.get("上がり3F内訳", "") or "").split("/"):
+                    token = token.strip()
+                    try:
+                        v = round(float(token), 1)
+                    except Exception:
+                        continue
+                    if 30.0 <= v <= 42.9:
+                        vals.append(v)
+                return vals
+
+            def _append_with_overlap(base, seq):
+                """連続スクショに重複がある場合、末尾/先頭の最大一致を重ねて結合。"""
+                if not base:
+                    return list(seq)
+                if not seq:
+                    return base
+                max_overlap = min(len(base), len(seq))
+                overlap = 0
+                for k in range(max_overlap, 0, -1):
+                    if base[-k:] == seq[:k]:
+                        overlap = k
+                        break
+                return base + seq[overlap:]
+
             new_records = []
             for gate, recs in sorted(by_gate.items()):
                 target_horse = gate_horse_map.get(gate, "")
+
+                # 前走騎手は最初の画像を優先。未取得なら後続画像から補完。
                 jockey = next(
-                    (r.get("前走騎手") for r in recs if r.get("前走騎手") not in {None, "", "(未選択)"}),
+                    (r.get("前走騎手") for r in recs
+                     if r.get("前走騎手") not in {None, "", "(未選択)"}),
                     "(未選択)"
                 )
-                # 複数画像の平均値をさらに平均せず、取得数が多い画像を優先
-                best = max(recs, key=lambda r: int(r.get("上がり取得数") or 0))
+
+                # 同じ馬に2枚以上ある場合は「最良画像1枚」ではなく、
+                # アップロード順に上がり値列を連結して最大5走にする。
+                combined = []
+                for r in recs:
+                    seq = _parse_breakdown(r)
+                    combined = _append_with_overlap(combined, seq)
+                    if len(combined) >= 5:
+                        break
+
+                combined = combined[:5]
+                avg = round(sum(combined) / len(combined), 2) if combined else None
+
                 new_records.append({
                     "馬番": gate, "馬名": target_horse,
                     "前走騎手": jockey,
-                    "上がり3F平均": best.get("上がり3F平均"),
-                    "上がり取得数": best.get("上がり取得数", 0),
-                    "上がり3F内訳": best.get("上がり3F内訳", ""),
+                    "上がり3F平均": avg,
+                    "上がり取得数": len(combined),
+                    "上がり3F内訳": " / ".join(f"{v:.1f}" for v in combined),
                     "取得元": "競馬ラボ・過去5走画像",
                 })
 
