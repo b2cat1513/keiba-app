@@ -24,8 +24,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.7", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.7（3段階OCR・対象馬固定版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.8", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.8（プロフィール・過去5走OCR強化版）")
 
 st.markdown("""
 <style>
@@ -3147,8 +3147,10 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
     trainer = "(未選択)"
     if trainer_raw:
         candidates = [x for x in TRAINER_OPTIONS if x not in {"(未選択)", "その他"}]
-        matched = _best_master_match(trainer_raw, candidates, 0.42)
-        trainer = matched if matched != "(未選択)" else trainer_raw
+        matched = _best_master_match(trainer_raw, candidates, 0.62)
+        # 誤読した人名（例:「知人」「哲也」）を出馬表へ入れない。
+        # マスターに十分近い場合だけ自動採用し、それ以外は確認表で手修正する。
+        trainer = matched if matched != "(未選択)" else "(未選択)"
 
     owner_raw = ""
     for idx, line in enumerate(lines):
@@ -3238,6 +3240,120 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
     }]
 
 
+
+def _ocr_image_variants(uploaded_file, psm_values=(6, 11, 12)):
+    """同じ画像を複数前処理・PSMでOCRし、文字欠けを相互補完する。"""
+    if not OCR_AVAILABLE:
+        return []
+    try:
+        uploaded_file.seek(0)
+    except Exception:
+        pass
+    image = Image.open(uploaded_file).convert("RGB")
+    gray = ImageOps.autocontrast(ImageOps.grayscale(image))
+    scale = 2 if max(image.size) >= 1600 else 3
+    gray = gray.resize((gray.width * scale, gray.height * scale), Image.Resampling.LANCZOS)
+    gray = gray.filter(ImageFilter.UnsharpMask(radius=1, percent=180, threshold=2))
+    variants = [gray]
+    # 文字が薄いスクリーンショット用の二値化版
+    variants.append(gray.point(lambda x: 255 if x > 178 else 0))
+    texts = []
+    for img in variants:
+        for psm in psm_values:
+            try:
+                txt = pytesseract.image_to_string(img, lang="jpn+eng", config=f"--oem 3 --psm {psm}")
+                if txt and txt.strip():
+                    texts.append(txt)
+            except Exception:
+                pass
+    return texts
+
+
+def parse_keibalab_profile_screenshot_image(uploaded_file, horse_gate_map, fallback_horse=None):
+    """Ver1.18.8: プロフィール画像を複数OCRして父・厩舎・馬主を投票/補完。"""
+    texts = _ocr_image_variants(uploaded_file, (4, 6, 11, 12))
+    records = []
+    for txt in texts:
+        recs = parse_keibalab_profile_screenshot_text(txt, horse_gate_map, fallback_horse)
+        if recs:
+            records.append(recs[0])
+    if not records:
+        return []
+
+    forced = normalize_horse_name(fallback_horse or records[0].get("馬名", ""))
+    gate = horse_gate_map.get(forced, records[0].get("馬番"))
+
+    def best_value(key, empty_values):
+        vals = [str(r.get(key, "")).strip() for r in records if r.get(key) not in empty_values]
+        if not vals:
+            return "" if key == "父馬" else "(未選択)"
+        # 長すぎるOCR断片を除外し、複数方式で一致した値を最優先
+        vals = [v for v in vals if 2 <= len(v) <= 30]
+        if not vals:
+            return "" if key == "父馬" else "(未選択)"
+        counts = {}
+        for v in vals:
+            counts[v] = counts.get(v, 0) + 1
+        return sorted(counts, key=lambda v: (counts[v], len(v)), reverse=True)[0]
+
+    return [{
+        "馬番": int(gate), "馬名": forced,
+        "父馬": best_value("父馬", {None, "", "(未選択)"}),
+        "厩舎": best_value("厩舎", {None, "", "(未選択)"}),
+        "馬主": best_value("馬主", {None, "", "(未選択)"}),
+        "取得元": "競馬ラボ・プロフィール画像",
+    }]
+
+
+def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallback_horse=None):
+    """Ver1.18.8: 過去5走画像を複数OCRし、最大5個の上がり値と前走騎手を安定化。"""
+    texts = _ocr_image_variants(uploaded_file, (4, 6, 11, 12))
+    if not texts:
+        return []
+    forced = normalize_horse_name(fallback_horse or "")
+    gate = horse_gate_map.get(forced)
+    if not forced or not gate:
+        return []
+
+    # 各OCR結果の「上から5個」を候補にし、丸め値ごとの出現回数で投票。
+    votes = {}
+    order = {}
+    jockey_votes = {}
+    for txt in texts:
+        recs = parse_keibalab_history_screenshot_text(txt, horse_gate_map, fallback_horse=forced)
+        if recs:
+            j = recs[0].get("前走騎手")
+            if j not in {None, "", "(未選択)"}:
+                jockey_votes[j] = jockey_votes.get(j, 0) + 1
+        vals = []
+        for m in re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)(?!\d)", txt):
+            try:
+                v = float(m.group(1).replace(",", "."))
+            except Exception:
+                continue
+            # 競馬ラボの上がり3Fとして現実的な範囲を少し絞り、タイム等の混入を減らす
+            if 30.0 <= v <= 42.9:
+                vals.append(round(v, 1))
+        compact = []
+        for v in vals:
+            if not compact or v != compact[-1]:
+                compact.append(v)
+        for idx, v in enumerate(compact[:5]):
+            votes[v] = votes.get(v, 0) + 1
+            order[v] = min(order.get(v, idx), idx)
+
+    # 2方式以上で読めた値を優先。足りない場合のみ1票候補で補完。
+    ranked = sorted(votes, key=lambda v: (votes[v] >= 2, votes[v], -order[v]), reverse=True)
+    chosen = sorted(ranked[:5], key=lambda v: order[v])
+    avg = round(sum(chosen) / len(chosen), 2) if chosen else None
+    jockey = max(jockey_votes, key=jockey_votes.get) if jockey_votes else "(未選択)"
+    return [{
+        "馬番": int(gate), "馬名": forced, "前走騎手": jockey,
+        "上がり3F平均": avg, "上がり取得数": len(chosen),
+        "上がり3F内訳": " / ".join(f"{v:.1f}" for v in chosen),
+        "取得元": "競馬ラボ・過去5走画像",
+    }]
+
 def merge_source_records(umanity_records, profile_records, history_records):
     merged = {}
     for group in (umanity_records, profile_records, history_records):
@@ -3249,7 +3365,7 @@ def merge_source_records(umanity_records, profile_records, history_records):
                 "馬番": gate, "馬名": "", "U指数": None, "今回騎手": "(未選択)", "単勝": None,
                 "斤量": None, "父馬": "", "厩舎": "(未選択)", "馬主": "(未選択)", "前走騎手": "(未選択)",
                 "上がり3F平均": None, "脚質": "選択なし", "脚質取得元": "",
-                "上がり取得数": 0, "取得元": "",
+                "上がり取得数": 0, "上がり3F内訳": "", "取得元": "",
             })
             for key, value in rec.items():
                 if value in (None, "", "(未選択)", "選択なし"):
@@ -3742,8 +3858,8 @@ with tab_img:
                             errors.append(f"{f.name}: {gate}番の馬名がウマニティ側にありません")
                             continue
                         raw = extract_text_from_screenshot(f)
-                        recs = parse_keibalab_profile_screenshot_text(
-                            raw, horse_gate_map, fallback_horse=target_horse
+                        recs = parse_keibalab_profile_screenshot_image(
+                            f, horse_gate_map, fallback_horse=target_horse
                         )
                         # 指定馬番を最終的に強制
                         for r in recs:
@@ -3824,8 +3940,8 @@ with tab_img:
                             errors.append(f"{f.name}: {gate}番の馬名がウマニティ側にありません")
                             continue
                         raw = extract_text_from_screenshot(f)
-                        recs = parse_keibalab_history_screenshot_text(
-                            raw, horse_gate_map, fallback_horse=target_horse
+                        recs = parse_keibalab_history_screenshot_image(
+                            f, horse_gate_map, fallback_horse=target_horse
                         )
                         rec = recs[0] if recs else {
                             "馬番": gate, "馬名": target_horse,
@@ -3859,6 +3975,7 @@ with tab_img:
                     "前走騎手": jockey,
                     "上がり3F平均": best.get("上がり3F平均"),
                     "上がり取得数": best.get("上がり取得数", 0),
+                    "上がり3F内訳": best.get("上がり3F内訳", ""),
                     "取得元": "競馬ラボ・過去5走画像",
                 })
 
