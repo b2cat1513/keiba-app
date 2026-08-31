@@ -24,8 +24,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.11", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.11（プロフィール・過去5走OCR強化版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.12", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.12（プロフィール・過去5走OCR強化版）")
 
 st.markdown("""
 <style>
@@ -1974,6 +1974,250 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
     return None
 
 
+
+def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
+    """Ver1.18.12 高速版。
+    先頭馬番が人手指定されている場合のみ使用し、
+    高コストな馬番OCR・騎手8種投票・列全体OCR・厩舎OCRを省略する。
+    1頭あたり原則4回OCR（馬名/単勝、斤量、騎手、U指数）。
+    """
+    if not OCR_AVAILABLE:
+        return parse_umanity_screenshot_text(raw_text) if raw_text else []
+
+    try:
+        raw_bytes = uploaded_file.getvalue()
+        image = Image.open(io.BytesIO(raw_bytes))
+        image = ImageOps.exif_transpose(image).convert("RGB")
+        image.load()
+    except Exception:
+        return parse_umanity_screenshot_text(raw_text) if raw_text else []
+
+    w, h = image.size
+    table_top = int(h * 0.100)
+    table_bottom = int(h * 0.845)
+    row_h = (table_bottom - table_top) / 8.0
+
+    def _prep(crop, scale=3, threshold=None):
+        gray = ImageOps.autocontrast(ImageOps.grayscale(crop))
+        if threshold is not None:
+            gray = gray.point(lambda px: 255 if px >= threshold else 0)
+        if scale > 1:
+            gray = gray.resize(
+                (gray.width * scale, gray.height * scale),
+                resample=Image.Resampling.LANCZOS,
+            )
+        return gray.filter(ImageFilter.UnsharpMask(radius=1, percent=150, threshold=2))
+
+    def _ocr(box, lang="jpn+eng", psm=6, scale=3, threshold=None):
+        try:
+            crop = image.crop(box)
+            return pytesseract.image_to_string(
+                _prep(crop, scale=scale, threshold=threshold),
+                lang=lang,
+                config=f"--oem 3 --psm {psm}",
+            ).strip()
+        except Exception:
+            return ""
+
+    def _norm_small_kana(s):
+        s = str(s or "")
+        for a, b in {
+            "ジエ":"ジェ","シエ":"シェ","チエ":"チェ",
+            "テイ":"ティ","デイ":"ディ",
+            "フア":"ファ","フイ":"フィ","フエ":"フェ","フオ":"フォ",
+            "ウイ":"ウィ","ウエ":"ウェ","ウオ":"ウォ",
+            "ヴア":"ヴァ","ヴイ":"ヴィ","ヴエ":"ヴェ","ヴオ":"ヴォ",
+        }.items():
+            s = s.replace(a, b)
+        return s
+
+    def _name_from(s):
+        s = _ocr_clean_line(s)
+        ng = {"ウマニティ","ニュース","レース","新出馬表","プロ予想","コロシアム","プレミアム"}
+        cands = []
+        for x in re.findall(r"[ァ-ヶーヴ]{3,20}", s):
+            x = _norm_small_kana(normalize_horse_name(x))
+            if x and x not in ng and 3 <= len(x) <= 18:
+                cands.append(x)
+        return max(cands, key=len) if cands else ""
+
+    def _u_from(s):
+        s = str(s or "").replace(",", ".")
+        vals = []
+        for m in re.finditer(r"(?<!\d)(8\d|9\d|10\d)(?:\.(\d{1,2}))?(?!\d)", s):
+            try:
+                ip = m.group(1)
+                dp = m.group(2)
+                v = float(ip + ("." + dp[:1] if dp else ""))
+                if 80 <= v <= 110:
+                    vals.append(v)
+            except Exception:
+                pass
+        return round(vals[0], 1) if vals else None
+
+    def _weight_from(s):
+        vals = []
+        for m in re.finditer(r"(?<!\d)(4[8-9]|5\d|6[0-2])(?:[.,](0|5))?(?!\d)", str(s or "")):
+            try:
+                v = float(m.group(1) + ("." + m.group(2) if m.group(2) else ""))
+                if 48.0 <= v <= 62.5:
+                    vals.append(v)
+            except Exception:
+                pass
+        return vals[-1] if vals else None
+
+    def _odds_from(s):
+        s = str(s or "").replace(",", ".")
+        vals = []
+        for m in re.finditer(r"(?<!\d)(\d{1,3}\.\d)(?!\d)", s):
+            try:
+                v = float(m.group(1))
+                # U指数や斤量を避ける
+                if 1.0 <= v < 500.0 and not (48.0 <= v <= 110.0):
+                    vals.append(v)
+            except Exception:
+                pass
+        return vals[0] if vals else None
+
+    def _jockey_from(s):
+        obs = re.sub(r"\s+", "", str(s or ""))
+        obs = re.sub(r"[0-9０-９]+(?:[.,．]\d+)?", "", obs)
+        obs = re.sub(r"[^一-龥々ぁ-んァ-ヶーA-Za-z.・]", "", obs)
+        if len(obs) < 2:
+            return "(未選択)"
+        candidates = list(JOCKEY_MASTER.keys()) if isinstance(JOCKEY_MASTER, dict) else list(JOCKEY_MASTER)
+        candidates = [c for c in candidates if c != "その他（自由手入力）"]
+        best = (0.0, None)
+        for cand in candidates:
+            cc = re.sub(r"\s+", "", str(cand))
+            if cc and cc in obs:
+                return cand
+            score = difflib.SequenceMatcher(None, obs, cc).ratio()
+            if len(obs) >= 2 and len(cc) >= 2 and obs[:2] == cc[:2]:
+                score += 0.12
+            if score > best[0]:
+                best = (score, cand)
+        return best[1] if best[0] >= 0.72 else "(未選択)"
+
+    legacy = parse_umanity_screenshot_text(raw_text) if raw_text else []
+    legacy_by_gate = {}
+    for r in legacy:
+        try:
+            legacy_by_gate[int(r.get("馬番"))] = r
+        except Exception:
+            pass
+
+    rows = []
+    start_gate = int(forced_start_gate)
+    max_rows = min(8, max(0, 19 - start_gate))
+
+    for row_idx in range(max_rows):
+        gate = start_gate + row_idx
+        y1 = int(table_top + row_h * row_idx)
+        y2 = int(table_top + row_h * (row_idx + 1))
+        rh = max(1, y2 - y1)
+
+        # 1) 馬名＋単勝
+        main_text = _ocr(
+            (int(w*0.17), y1, int(w*0.66), y2),
+            lang="jpn+eng", psm=6, scale=3
+        )
+
+        # 2) 斤量列
+        detail_text = _ocr(
+            (int(w*0.50), y1, int(w*0.82), y2),
+            lang="jpn+eng", psm=6, scale=3
+        )
+
+        # 3) 騎手専用の細帯。多数決を廃止して1回だけ。
+        jockey_text = _ocr(
+            (
+                int(w*0.625),
+                y1 + int(rh*0.08),
+                int(w*0.815),
+                y1 + int(rh*0.40),
+            ),
+            lang="jpn", psm=7, scale=5
+        )
+
+        # 4) U指数専用列
+        u_text = _ocr(
+            (int(w*0.805), y1, w, y2),
+            lang="eng", psm=6, scale=3
+        )
+
+        name = _name_from(main_text)
+        u_index = _u_from(u_text)
+        weight = _weight_from(detail_text)
+        odds = _odds_from(main_text)
+        jockey = _jockey_from(jockey_text)
+
+        # 全文OCR済みデータは「追加OCRなし」の救済にだけ使う。
+        old = legacy_by_gate.get(gate)
+        if old:
+            if not name:
+                name = str(old.get("馬名") or "").strip()
+            if u_index is None:
+                try:
+                    v = float(old.get("U指数"))
+                    if 80 <= v <= 110:
+                        u_index = round(v, 1)
+                except Exception:
+                    pass
+            if weight is None:
+                try:
+                    v = float(old.get("斤量"))
+                    if 48 <= v <= 62.5:
+                        weight = v
+                except Exception:
+                    pass
+            if odds is None:
+                try:
+                    v = float(old.get("単勝"))
+                    if 1 <= v < 500:
+                        odds = v
+                except Exception:
+                    pass
+            if jockey == "(未選択)":
+                j = old.get("今回騎手")
+                if j and j != "(未選択)":
+                    jockey = j
+
+        # U指数と馬名は最低条件。ここで追加OCRはしない。
+        if not name or u_index is None:
+            continue
+
+        rows.append({
+            "_row_idx": row_idx,
+            "_gate_raw": gate,
+            "馬番": gate,
+            "馬名": name,
+            "性齢": "",
+            "今回騎手": jockey,
+            "斤量": weight,
+            "厩舎": "(未選択)",
+            "単勝": odds,
+            "人気": None,
+            "U指数": round(float(u_index), 1),
+            "取得元": "ウマニティ画像(Ver1.18.12-高速OCR)",
+        })
+
+    # 同一単勝が3頭以上に入る場合は列ずれ誤認として空欄化。
+    odds_groups = {}
+    for r in rows:
+        if r.get("単勝") is not None:
+            try:
+                odds_groups.setdefault(round(float(r["単勝"]), 1), []).append(r)
+            except Exception:
+                pass
+    for recs in odds_groups.values():
+        if len(recs) >= 3:
+            for r in recs:
+                r["単勝"] = None
+
+    return rows
+
+
 def parse_umanity_screenshot_image(uploaded_file, raw_text="", forced_start_gate=None):
     """ウマニティの縦長スクリーンショットを「1頭=1行」で分割してOCRする。
 
@@ -1988,6 +2232,13 @@ def parse_umanity_screenshot_image(uploaded_file, raw_text="", forced_start_gate
     - 馬名は中央列だけを読むため、Enns / EZRA 等の英字ノイズを除外。
     - 1～8以外のスクリーンショットでも、読めた馬番から連番補正する。
     """
+    # Ver1.18.12: 先頭馬番を人が指定している場合は高速経路へ。
+    # 高コストな騎手多数決・馬番OCR・厩舎OCRを行わない。
+    if forced_start_gate is not None:
+        return parse_umanity_screenshot_image_fast(
+            uploaded_file, raw_text=raw_text, forced_start_gate=forced_start_gate
+        )
+
     legacy_fallback = parse_umanity_screenshot_text(raw_text) if raw_text else []
     if not OCR_AVAILABLE:
         return legacy_fallback
@@ -3922,7 +4173,7 @@ with tab_um:
 
 with tab_img:
     st.write("### 📷 画像から自動入力")
-    st.caption("Ver1.18.11：3段階OCRは維持。プロフィールはVer1.18.10の父馬・ラベル周辺OCRを残し、前走騎手・上がり3Fは取得実績の良かったVer1.18.9方式へ戻した安定版です。")
+    st.caption("Ver1.18.12：①ウマニティを高速化。先頭馬番を指定した画像では、不要な馬番OCR・厩舎OCR・騎手の多重OCRを省きます。②③はVer1.18.11の安定ロジックを維持します。")
 
     ocr_status = get_ocr_environment_status()
     with st.expander("🩺 OCR環境診断", expanded=not OCR_AVAILABLE):
@@ -3977,7 +4228,7 @@ with tab_img:
     # ① ウマニティ
     # --------------------------------------------------
     st.markdown("#### ① ウマニティ")
-    st.caption("取得：馬番・馬名・単勝・U指数・斤量・今回騎手。先頭馬番は人が指定し、馬番判定をOCRに任せません。")
+    st.caption("取得：馬番・馬名・単勝・U指数・斤量・今回騎手。Ver1.18.12では先頭馬番指定時に高速OCRを使い、処理回数を大幅に削減します。")
 
     if upload_mode == "📱 スマホ：1枚ずつ":
         u_one = st.file_uploader(
