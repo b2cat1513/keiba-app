@@ -1955,24 +1955,12 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
-    """Ver1.18.24 ウマニティ実画像・スマホ縦長レイアウト専用OCR（PIL行境界版）。
+    """Ver1.18.25 ウマニティ・スマホ縦長画像専用OCR。
 
-    実際に提供された955x2048のスクリーンショットを基準にする。
-    表の縦罫線:
-      馬番 0-67
-      予想印 67-176
-      馬名/性齢/調教師/みんなの人気 176-612
-      騎手/斤量/ローテ 612-781
-      U指数/オッズ 781-953
-
-    重要:
-      - 「馬番→馬名」の連番を固定し、1頭分の行を絶対に捨てない。
-      - 馬名は中央列の上段。
-      - 騎手は右から2列目の上段。
-      - 斤量は右から2列目の中段。
-      - 単勝は中央列の下段にある「○○倍」だけ。
-      - U指数は最右列の上段にある80～110程度の数値。
-      - 表の横罫線から実際の行境界を検出する。固定200pxに依存しない。
+    画面全体を一度にOCRすると、固定ヘッダーや下部メニューの文字が
+    馬名欄へ混ざり、「ママコチャ→シカ」のような部分取得が起きる。
+    そのため、まず馬番列だけをOCRして各馬のY中心を求め、そのYを基準に
+    1頭ずつ横一列をOCRする。馬番自体は指定された先頭馬番から連番で固定する。
     """
     if not OCR_AVAILABLE:
         return parse_umanity_screenshot_text(raw_text) if raw_text else []
@@ -1986,307 +1974,197 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         return parse_umanity_screenshot_text(raw_text) if raw_text else []
 
     w, h = image.size
-
-    def norm_digits(s):
-        return str(s or "").translate(str.maketrans(
-            "０１２３４５６７８９．，−ー", "0123456789.,--"
-        ))
-
-    # ------------------------------------------------------------
-    # 1) 画像全体を1回OCR。ここでは「馬番・馬名・騎手・数値」を
-    #    同時に拾い、後段で実際の列座標に振り分ける。
-    # ------------------------------------------------------------
-    scale = 2 if w < 1200 else 1
-    work = image.resize((w*scale, h*scale), Image.Resampling.LANCZOS) if scale > 1 else image
-    gray = ImageOps.autocontrast(ImageOps.grayscale(work))
-    gray = gray.filter(ImageFilter.UnsharpMask(radius=1, percent=110, threshold=2))
-
-    try:
-        data = pytesseract.image_to_data(
-            gray, lang="jpn+eng",
-            config="--oem 3 --psm 6",
-            output_type=pytesseract.Output.DICT,
-            timeout=20
-        )
-    except Exception:
-        data = None
-
-    tokens=[]
-    if data:
-        n=len(data.get("text",[]))
-        for i in range(n):
-            txt=str(data["text"][i] or "").strip()
-            if not txt:
-                continue
-            try:
-                x=float(data["left"][i])/scale
-                y=float(data["top"][i])/scale
-                bw=float(data["width"][i])/scale
-                bh=float(data["height"][i])/scale
-                conf=float(data.get("conf",[0])[i])
-            except Exception:
-                continue
-            if y < 250 or y > h-350:
-                continue
-            tokens.append((x,y,bw,bh,txt,conf))
-
-    def center(t):
-        return t[0]+t[2]/2.0, t[1]+t[3]/2.0
-
-    # ------------------------------------------------------------
-    # 2) 横罫線を画像処理で検出。
-    #    955x2048実画像では表本体が y≈204 から始まり、
-    #    以降は約200pxごと。ただし2枚目・3枚目は上端が途中行なので
-    #    「線を実測」する。
-    # ------------------------------------------------------------
-    # Ver1.18.24: NumPy/OpenCVを使わずPILだけで水平罫線を検出。
-    # 画像全幅を毎回走査せず、数pxおきにサンプリングして高速化する。
-    gray_img=ImageOps.grayscale(image)
-    pix=gray_img.load()
-    sample_step=max(2, min(6, w//180))
-    xs=range(0, w, sample_step)
-    hs=[0.0]*h
-    for y in range(1, h):
-        total=0
-        for x in xs:
-            total += abs(int(pix[x,y])-int(pix[x,y-1]))
-        hs[y]=total
-
-    # 強い水平線を連続グループ化。
-    # スマホ画像は薄い罫線なので、絶対値だけでなく上位候補も後段で利用する。
-    threshold=max(2500, (w//sample_step)*18)
-    ys=[y for y in range(180, max(181,h-350)) if hs[y] >= threshold]
-    groups=[]
-    for y in ys:
-        if not groups or y-groups[-1][-1] > 3:
-            groups.append([y])
-        else:
-            groups[-1].append(y)
-    lines=[int(round(sum(gr)/len(gr))) for gr in groups if gr]
-
-    # 表の行境界として使える間隔(130～240px)を優先。
-    usable=[]
-    for y in lines:
-        if y < 180 or y > h-400:
-            continue
-        if not usable or y-usable[-1] >= 120:
-            usable.append(y)
-        elif y-usable[-1] < 120:
-            # 太い罫線の二重エッジは平均化
-            usable[-1]=int((usable[-1]+y)/2)
-
-    diffs=[usable[i+1]-usable[i] for i in range(len(usable)-1)
-           if 130 <= usable[i+1]-usable[i] <= 240]
-    row_h=float(sorted(diffs)[len(diffs)//2]) if diffs else 200.0
-
-    # 上の表ヘッダー境界を取得。
-    # 【Ver1.18.23修正】実画像では204px付近はヘッダー下端。
-    # その後の220～340px付近に最初の馬行の上端がある。
-    # 従来 usable[0] が約500pxになるケースがあり、3頭目付近から
-    # 切り出していたため、馬名が「コチ」「ディ」など部分取得になった。
-    candidates_start=[y for y in lines if 220 <= y <= 340]
-    if candidates_start:
-        table_start=max(candidates_start, key=lambda yy: float(hs[int(yy)]) if 0 <= int(yy) < len(hs) else 0.0)
-    else:
-        lo, hi = 220, min(340, h-1)
-        if hi >= lo:
-            table_start=max(range(lo, hi+1), key=lambda yy: hs[yy])
-        else:
-            table_start=244
-
-    # ------------------------------------------------------------
-    # 3) OCR馬番のY位置を取得。取れた場合は行対応を補正。
-    #    PSM6で馬番が一部しか読めなくても、罫線ベースで連番を維持。
-    # ------------------------------------------------------------
-    start_gate=max(1,int(forced_start_gate or 1))
-    max_rows=min(8, 19-start_gate)
-    if max_rows<=0:
+    start_gate = max(1, int(forced_start_gate or 1))
+    max_rows = min(8, 19 - start_gate)
+    if max_rows <= 0:
         return []
 
-    gate_y={}
-    for t in tokens:
-        cx,cy=center(t)
-        if cx > 65:  # 馬番列のみ
-            continue
-        z=norm_digits(t[4]).strip()
-        if re.fullmatch(r"(?:[1-9]|1[0-8])",z):
-            gate=int(z)
-            if start_gate<=gate<start_gate+max_rows:
-                gate_y[gate]=cy
+    def norm_text(s):
+        return str(s or "").replace(" ", "").replace("　", "").strip()
 
-    # table_startの直後を1行目とする。
-    # ただし開始馬番が途中行の場合、table_startは画像上部の行境界。
-    row_bounds=[table_start+i*row_h for i in range(max_rows+1)]
+    def prep(crop, scale=3):
+        crop = crop.convert("L")
+        crop = ImageOps.autocontrast(crop)
+        if scale > 1:
+            crop = crop.resize((crop.width * scale, crop.height * scale), Image.Resampling.LANCZOS)
+        return crop.filter(ImageFilter.UnsharpMask(radius=1, percent=140, threshold=2))
 
-    # 実測された馬番Yを使って row_h/開始位置を微調整。
-    if len(gate_y)>=2:
-        sy=sorted(gate_y.items())
-        local_d=[sy[i+1][1]-sy[i][1] for i in range(len(sy)-1)
-                 if 130 <= sy[i+1][1]-sy[i][1] <= 240]
-        if local_d:
-            row_h=float(sorted(local_d)[len(local_d)//2])
-            first_gate=min(gate_y)
-            # 馬番の中心は行のほぼ中央
-            row_center=gate_y[first_gate]
-            first_top=row_center-row_h/2
-            # 罫線検出と馬番Yの両方に合わせる
-            if abs(first_top-table_start)<row_h*0.35:
-                row_bounds=[first_top+i*row_h for i in range(max_rows+1)]
+    def ocr_crop(crop, psm=6, whitelist=""):
+        try:
+            config = f"--oem 3 --psm {psm}"
+            if whitelist:
+                config += f" -c tessedit_char_whitelist={whitelist}"
+            return pytesseract.image_to_string(
+                prep(crop), lang="jpn+eng", config=config, timeout=12
+            ).strip()
+        except Exception:
+            return ""
 
     # ------------------------------------------------------------
-    # 4) 列ごとの抽出
+    # ① 馬番列だけをOCRして、実際の行中心を取得
     # ------------------------------------------------------------
-    def row_tokens(ri):
-        top=row_bounds[ri]
-        bot=row_bounds[ri+1]
-        return [t for t in tokens if top-8 <= center(t)[1] < bot+8]
-
-    def inside(items,x0,x1,y0,y1):
-        out=[]
-        for t in items:
-            cx,cy=center(t)
-            if x0 <= cx < x1 and y0 <= cy < y1:
-                out.append(t)
-        return out
-
-    def join(items):
-        return " ".join(t[4] for t in sorted(items,key=lambda z:(z[1],z[0]))).strip()
-
-    def extract_name(s):
-        s=_ocr_clean_line(s)
-        # カタカナ馬名を優先。長いものを採用。
-        cands=[]
-        for m in re.findall(r"[ァ-ヶーヴ]{2,24}",s):
-            x=normalize_horse_name(m)
-            if not x: continue
-            if x in {"ウマニティ","ニュース","レース","新出馬表","プロ予想","オッズ"}:
+    gate_centers = {}
+    try:
+        # 左端の馬番列はスマホ画像では概ね幅70px前後。
+        gate_crop = image.crop((0, 0, min(w, int(w * 0.12)), h))
+        gate_data = pytesseract.image_to_data(
+            prep(gate_crop, scale=3),
+            lang="jpn+eng",
+            config="--oem 3 --psm 6",
+            output_type=pytesseract.Output.DICT,
+            timeout=15,
+        )
+        for i, txt in enumerate(gate_data.get("text", [])):
+            z = norm_text(txt).translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+            if not re.fullmatch(r"(?:[1-9]|1[0-8])", z):
                 continue
-            cands.append(x)
-        if cands:
-            return max(cands,key=len)
-        # 英字を含む馬名への救済
-        for m in re.findall(r"[A-Za-z][A-Za-z0-9・ー]{2,24}",s):
-            if m.upper() not in {"VIP","NO","PHOTO"}:
-                return normalize_horse_name(m)
-        return ""
-
-    def extract_u(s):
-        t=norm_digits(s).replace(",","." )
-        vals=[]
-        for m in re.finditer(r"(?<!\d)(?:8\d|9\d|10\d)(?:\.\d{1,2})?(?!\d)",t):
             try:
-                v=float(m.group(0))
-                if 80<=v<=110:
-                    vals.append(v)
-            except:
-                pass
-        return round(vals[0],1) if vals else None
+                yy = (float(gate_data["top"][i]) + float(gate_data["height"][i]) / 2.0) / 3.0
+                xx = (float(gate_data["left"][i]) + float(gate_data["width"][i]) / 2.0) / 3.0
+            except Exception:
+                continue
+            if xx > w * 0.13:
+                continue
+            gate = int(z)
+            if start_gate <= gate < start_gate + max_rows and 150 < yy < h - 250:
+                gate_centers[gate] = yy
+    except Exception:
+        gate_centers = {}
 
-    def extract_weight(s):
-        t=norm_digits(s).replace(",","." )
-        vals=[]
-        for m in re.finditer(r"(?<!\d)(?:4[8-9]|5\d|6[0-2])(?:\.\d)?(?!\d)",t):
+    # 実測中心から行間を決定。馬番OCRが2頭以上取れれば非常に強いアンカーになる。
+    sorted_centers = sorted(gate_centers.items())
+    diffs = [b[1] - a[1] for a, b in zip(sorted_centers, sorted_centers[1:])
+             if 150 <= b[1] - a[1] <= 300]
+    if diffs:
+        row_h = float(sorted(diffs)[len(diffs) // 2])
+    else:
+        # 828x2048系のスマホ画像では約230px、955x2048系では約200px。
+        row_h = 230.0 if w <= 900 else 200.0
+
+    if gate_centers:
+        first_gate = min(gate_centers)
+        first_center = gate_centers[first_gate]
+        # 実測した馬番中心を基準に連番を再構成
+        centers = {g: first_center + (g - first_gate) * row_h
+                   for g in range(start_gate, start_gate + max_rows)}
+        # 取れている馬番は実測値を優先
+        centers.update(gate_centers)
+    else:
+        # 固定ヘッダーありの先頭ページと、途中スクロールページを分離。
+        if start_gate == 1:
+            first_center = 405.0 if w <= 900 else 405.0
+            row_h = 230.0 if w <= 900 else 200.0
+        else:
+            first_center = 300.0 if w <= 900 else 300.0
+            row_h = 230.0 if w <= 900 else 200.0
+        centers = {start_gate + i: first_center + i * row_h for i in range(max_rows)}
+
+    # ------------------------------------------------------------
+    # ② 1頭ずつ横一列OCR
+    # ------------------------------------------------------------
+    def clean_name(text):
+        s = norm_text(text)
+        s = re.sub(r"(?:みんなの人気|VIP|中\d+週|\d+(?:\.\d+)?倍)", "", s)
+        # 馬名候補はカタカナ中心。英字はOCR誤読対策として短いものを除外。
+        cands = re.findall(r"[ァ-ヶーヴ]{2,20}", s)
+        ng = {"ウマニティ", "ニュース", "レース", "新出馬表", "プロ予想", "コロシアム", "プレミアム"}
+        cands = [normalize_horse_name(x) for x in cands if x not in ng]
+        cands = [x for x in cands if len(x) >= 2]
+        return max(cands, key=len) if cands else ""
+
+    def extract_u(text):
+        s = str(text or "").replace(",", ".").replace("．", ".")
+        vals = []
+        for m in re.finditer(r"(?<!\d)(8\d|9\d|10\d)(?:\.(\d{1,2}))?(?!\d)", s):
+            dec = (m.group(2) or "")[:1]
             try:
-                v=float(m.group(0))
-                if 48<=v<=62.5:
-                    vals.append(v)
-            except:
+                v = float(m.group(1) + ("." + dec if dec else ""))
+                if 80 <= v <= 110:
+                    vals.append(round(v, 1))
+            except Exception:
                 pass
-        return vals[-1] if vals else None
+        return vals[0] if vals else None
 
-    def extract_odds(s):
-        t=norm_digits(s).replace(",","." )
-        # 実画像では「10.3倍」のように中央列下段に明示される。
-        m=re.search(r"(?<!\d)(\d{1,3}(?:\.\d{1,2})?)\s*倍",t)
-        if m:
-            try:
-                v=float(m.group(1))
-                if 1<=v<500:
-                    return v
-            except:
-                pass
-        return None
+    def extract_weight(text):
+        s = str(text or "").replace(",", ".").replace("．", ".")
+        vals = re.findall(r"(?<!\d)(4[8-9](?:\.5)?|5\d(?:\.5)?|6[0-2](?:\.5)?)(?!\d)", s)
+        return float(vals[0]) if vals else None
 
-    def extract_jockey(s):
-        # 今回騎手列は日本語名。JOCKEY_MASTERとの完全/近似照合。
-        obs=re.sub(r"[0-9０-９]+(?:[.,．]\d+)?","",str(s or ""))
-        obs=re.sub(r"[^一-龥々ぁ-んァ-ヶーA-Za-z.・]","",obs)
-        if len(obs)<2:
+    def extract_odds(text):
+        s = str(text or "").replace(",", ".").replace("．", ".")
+        m = re.search(r"(\d{1,3}(?:\.\d+)?)\s*倍", s)
+        if not m:
+            # 「倍」が落ちる場合も救済。ただし馬名列の整数を拾わないよう小数限定。
+            m = re.search(r"(?<!\d)(\d+\.\d+)(?!\d)", s)
+        try:
+            v = float(m.group(1)) if m else None
+            return v if v is not None and 1 <= v <= 999 else None
+        except Exception:
+            return None
+
+    def norm_jockey(text):
+        obs = re.sub(r"[0-9０-９]+(?:[.,．]\d+)?", "", str(text or ""))
+        obs = re.sub(r"[^一-龥々ぁ-んァ-ヶーA-Za-z.・]", "", obs)
+        if len(obs) < 2:
             return "(未選択)"
-        candidates=[c for c in JOCKEY_MASTER if c!="その他（自由手入力）"]
-        best=(0.0,None)
-        for cand in candidates:
-            cc=re.sub(r"\s+","",str(cand))
+        best_score, best = 0.0, None
+        for cand in [c for c in JOCKEY_MASTER if c != "その他（自由手入力）"]:
+            cc = re.sub(r"\s+", "", str(cand))
             if cc and cc in obs:
                 return cand
-            score=difflib.SequenceMatcher(None,obs,cc).ratio()
-            if len(obs)>=2 and len(cc)>=2 and obs[:2]==cc[:2]:
-                score+=.12
-            if score>best[0]:
-                best=(score,cand)
-        return best[1] if best[0]>=.62 else "(未選択)"
+            score = difflib.SequenceMatcher(None, obs, cc).ratio()
+            if len(obs) >= 2 and len(cc) >= 2 and obs[:2] == cc[:2]:
+                score += 0.12
+            if score > best_score:
+                best_score, best = score, cand
+        return best if best_score >= 0.62 else "(未選択)"
 
-    # ------------------------------------------------------------
-    # 5) 各行を確実に1レコード化
-    # ------------------------------------------------------------
-    rows=[]
+    rows = []
     for ri in range(max_rows):
-        gate=start_gate+ri
-        items=row_tokens(ri)
-        top=row_bounds[ri]
-        rh=row_bounds[ri+1]-top
+        gate = start_gate + ri
+        cy = float(centers.get(gate, 405 + ri * row_h))
+        # 1頭分の高さ。上下の境界を少し内側にして隣馬の文字を混ぜない。
+        half = min(92.0, row_h * 0.43)
+        y1 = max(0, int(cy - half))
+        y2 = min(h, int(cy + half))
+        row_img = image.crop((0, y1, w, y2))
 
-        # 実画像の座標をそのまま使用。
-        # 馬名: x=176～612, 上段
-        # 騎手: x=612～781, 上段
-        # 斤量: x=612～781, 中段
-        # 単勝: x=176～612, 下段の「倍」
-        # U指数: x=781～953, 上段
-        name_part=inside(items,w*0.18,w*0.64,top+rh*0.05,top+rh*0.42)
-        jockey_part=inside(items,w*0.64,w*0.82,top+rh*0.05,top+rh*0.42)
-        weight_part=inside(items,w*0.64,w*0.82,top+rh*0.42,top+rh*0.72)
-        odds_part=inside(items,w*0.18,w*0.64,top+rh*0.55,top+rh*0.92)
-        u_part=inside(items,w*0.82,w*0.995,top+rh*0.05,top+rh*0.45)
+        # 列ごとに読む。横一列を1回のOCRにすることで、全画面OCRより高速かつ行ずれがない。
+        name_text = ocr_crop(row_img.crop((int(w*0.20), 0, int(w*0.64), row_img.height)), psm=7)
+        jockey_text = ocr_crop(row_img.crop((int(w*0.64), 0, int(w*0.84), row_img.height)), psm=7)
+        u_text = ocr_crop(row_img.crop((int(w*0.84), 0, w, int(row_img.height*0.55))), psm=7, whitelist="0123456789.,")
+        lower_center = row_img.crop((int(w*0.20), int(row_img.height*0.42), int(w*0.84), row_img.height))
+        lower_text = ocr_crop(lower_center, psm=6)
 
-        name=extract_name(join(name_part))
-        jockey=extract_jockey(join(jockey_part))
-        weight=extract_weight(join(weight_part))
-        odds=extract_odds(join(odds_part))
-        u_index=extract_u(join(u_part))
+        name = clean_name(name_text)
+        jockey = norm_jockey(jockey_text)
+        u_index = extract_u(u_text)
+        weight = extract_weight(jockey_text + " " + lower_text)
+        odds = extract_odds(lower_text)
 
-        # 馬名だけはOCRの文字順で取りこぼしやすいので、中央列全体の
-        # 上半分からもう一度候補を作る。ただし1行につき1回だけ。
-        if not name:
-            broad=inside(items,w*0.18,w*0.64,top+rh*0.02,top+rh*0.50)
-            name=extract_name(join(broad))
-
-        # U指数は右端列の上半分だけ。オッズ・斤量は絶対に混ぜない。
-        # それでも取れない場合、同じ行の右端にある80～110数値だけを救済。
-        if u_index is None:
-            for t in items:
-                cx,cy=center(t)
-                if cx >= w*0.80 and top <= cy < top+rh*0.55:
-                    v=extract_u(t[4])
-                    if v is not None:
-                        u_index=v
-                        break
+        # 名前OCRが短すぎる場合だけ中央列をもう1回読む。
+        if len(name) < 3:
+            broad = ocr_crop(row_img.crop((int(w*0.18), 0, int(w*0.64), int(row_img.height*0.65))), psm=6)
+            broad_name = clean_name(broad)
+            if len(broad_name) > len(name):
+                name = broad_name
 
         if not name:
-            name=f"(馬名未取得・{gate}番)"
+            name = f"(馬名未取得・{gate}番)"
 
         rows.append({
-            "_row_idx":ri,
-            "_gate_raw":gate,
-            "馬番":gate,
-            "馬名":name,
-            "性齢":"",
-            "今回騎手":jockey,
-            "斤量":weight,
-            "厩舎":"(未選択)",
-            "単勝":odds,
-            "人気":None,
-            "U指数":u_index,
-            "取得元":"ウマニティ画像(Ver1.18.24-PIL行境界OCR)",
+            "_row_idx": ri,
+            "_gate_raw": gate,
+            "馬番": gate,
+            "馬名": name,
+            "性齢": "",
+            "今回騎手": jockey,
+            "斤量": weight,
+            "厩舎": "(未選択)",
+            "単勝": odds,
+            "人気": None,
+            "U指数": u_index,
+            "取得元": "ウマニティ画像(Ver1.18.25-馬番Yアンカー行OCR)",
         })
 
     return rows
