@@ -1953,7 +1953,7 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
-    """Ver1.18.16 高速・欠落防止版。
+    """Ver1.18.17 高速・欠落防止・局所再OCR版。
     指定した先頭馬番から8行を固定分割し、1行=1回のOCRで必要項目をまとめて取得。
     旧版の「1行4回OCR＋別全文OCR」をやめ、解析時間を大幅短縮する。
     """
@@ -1980,13 +1980,40 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             gray = gray.resize((gray.width * scale, gray.height * scale), Image.Resampling.LANCZOS)
         return gray.filter(ImageFilter.UnsharpMask(radius=1, percent=140, threshold=2))
 
-    def ocr_row(box):
+    def ocr_row(box, psm=6, timeout=10):
         try:
             return pytesseract.image_to_string(
-                prep(image.crop(box)), lang="jpn+eng", config="--oem 3 --psm 6", timeout=10
+                prep(image.crop(box)), lang="jpn+eng", config=f"--oem 3 --psm {psm}", timeout=timeout
             ).strip()
         except Exception:
             return ""
+
+    def rescue_name(box):
+        # 欠落行だけ中央の馬名欄を再OCR。全体OCRをやり直さないのでCPU負荷を抑える。
+        x1 = int(w * 0.15)
+        x2 = int(w * 0.47)
+        y1, y2 = box[1], box[3]
+        pad = max(4, int(row_h * 0.18))
+        y1 = max(0, y1 - pad)
+        y2 = min(h, y2 + pad)
+        text = ocr_row((x1, y1, x2, y2), psm=6, timeout=8)
+        name = name_from(text)
+        if not name:
+            text = ocr_row((x1, y1, x2, y2), psm=11, timeout=8)
+            name = name_from(text)
+        return name, text
+
+    def rescue_u(box):
+        # U指数だけ欠けた行は右端のU指数帯を再OCR。
+        x1 = int(w * 0.78)
+        x2 = int(w * 0.99)
+        y1, y2 = box[1], box[3]
+        text = ocr_row((x1, y1, x2, y2), psm=6, timeout=8)
+        u = u_from(text)
+        if u is None:
+            text = ocr_row((x1, y1, x2, y2), psm=11, timeout=8)
+            u = u_from(text)
+        return u
 
     def norm_kana(s):
         s = str(s or "")
@@ -2077,12 +2104,30 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         y1 = int(table_top + row_h * row_idx)
         y2 = int(table_top + row_h * (row_idx + 1))
         # 馬番欄を除く1行全体。1回のOCRで馬名・騎手・斤量・オッズ・U指数を拾う。
-        text = ocr_row((int(w * 0.06), y1, w, y2))
+        row_box = (int(w * 0.06), y1, w, y2)
+        text = ocr_row(row_box)
         name = name_from(text)
         u_index = u_from(text)
         weight = weight_from(text)
         odds = odds_from(text)
         jockey = jockey_from(text)
+
+        # まず「馬名だけ」欠けた行を局所再OCR。7番のように行全体を落とさない。
+        if not name:
+            name, rescue_text = rescue_name(row_box)
+            if rescue_text:
+                if u_index is None:
+                    u_index = u_from(rescue_text)
+                if weight is None:
+                    weight = weight_from(rescue_text)
+                if odds is None:
+                    odds = odds_from(rescue_text)
+                if jockey == "(未選択)":
+                    jockey = jockey_from(rescue_text)
+
+        # U指数だけ欠けた場合はU指数欄のみ再OCR。
+        if u_index is None:
+            u_index = rescue_u(row_box)
 
         old = legacy_by_gate.get(gate)
         if old:
@@ -2103,15 +2148,15 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             if jockey == "(未選択)" and old.get("今回騎手") not in {None, "", "(未選択)"}:
                 jockey = old.get("今回騎手")
 
-        # U指数か馬名のどちらか一方だけ欠けても、行自体は捨てない。
-        # U指数が読めた行は採用し、Uだけ欠けた場合も馬名＋他項目を残して救済する。
+        # 期待する馬番の行は、馬名OCRに失敗しても捨てない。
+        # これにより「7番そのものが消える」問題を防ぎ、後段で手動確認できる。
         if not name:
-            continue
+            name = f"(馬名未取得・{gate}番)"
         rows.append({
             "_row_idx": row_idx, "_gate_raw": gate, "馬番": gate, "馬名": name,
             "性齢": "", "今回騎手": jockey, "斤量": weight, "厩舎": "(未選択)",
             "単勝": odds, "人気": None, "U指数": u_index,
-            "取得元": "ウマニティ画像(Ver1.18.16-1行1回OCR)",
+            "取得元": "ウマニティ画像(Ver1.18.17-1行OCR＋欠落行局所救済)",
         })
 
     return rows
