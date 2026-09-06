@@ -27,7 +27,7 @@ except Exception:
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
 st.set_page_config(page_title="ジェニーAI予想ver1.18.26", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.24（ウマニティOCR安定版）")
+st.title("🏆 ジェニーAI予想ver1.18.27（ウマニティOCR安定版）")
 
 st.markdown("""
 <style>
@@ -2053,15 +2053,25 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         centers.update(gate_centers)
     else:
         # 固定ヘッダーありの先頭ページと、途中スクロールページを分離。
-        if start_gate == 1:
-            # 先頭ページはヘッダー直下の1番の行中心が約350px。
-            first_center = 355.0 if w <= 900 else 405.0
-            row_h = 180.0 if w <= 900 else 200.0
+        if w <= 900:
+            # ウマニティ実画面(約828px幅)に合わせたページ別アンカー。
+            # 1枚目: 1番の中心は約355px、8番開始画面: 8番は約345px、
+            # 15番開始画面: 15番は約285px。
+            if start_gate == 1:
+                first_center, row_h = 355.0, 176.0
+            elif start_gate == 8:
+                first_center, row_h = 345.0, 176.0
+            elif start_gate >= 15:
+                first_center, row_h = 285.0, 190.0
+            else:
+                first_center, row_h = 345.0, 176.0
         else:
-            # 8番以降のスクロール画像は、画面上端に前の行が
-            # 少し残るため、先頭対象行の中心を約300pxに置く。
-            first_center = 300.0 if w <= 900 else 300.0
-            row_h = 180.0 if w <= 900 else 200.0
+            if start_gate == 1:
+                first_center, row_h = 405.0, 200.0
+            elif start_gate == 8:
+                first_center, row_h = 400.0, 200.0
+            else:
+                first_center, row_h = 320.0, 200.0
         centers = {start_gate + i: first_center + i * row_h for i in range(max_rows)}
 
     # ------------------------------------------------------------
@@ -2135,13 +2145,20 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         row_img = image.crop((0, y1, w, y2))
 
         # 列ごとに読む。横一列を1回のOCRにすることで、全画面OCRより高速かつ行ずれがない。
-        name_text = ocr_crop(row_img.crop((int(w*0.20), 0, int(w*0.64), row_img.height)), psm=7)
+        name_crop = row_img.crop((int(w*0.19), 0, int(w*0.65), row_img.height))
+        # PSM7だけだと長いカタカナ馬名の先頭/末尾が欠けることがあるため、
+        # 7と6の2方式で読み、最も長く自然なカタカナ候補を採用する。
+        name_text = ocr_crop(name_crop, psm=7)
+        name_text_alt = ocr_crop(name_crop, psm=6)
         jockey_text = ocr_crop(row_img.crop((int(w*0.64), 0, int(w*0.84), row_img.height)), psm=7)
         u_text = ocr_crop(row_img.crop((int(w*0.84), 0, w, int(row_img.height*0.55))), psm=7, whitelist="0123456789.,")
         lower_center = row_img.crop((int(w*0.20), int(row_img.height*0.42), int(w*0.84), row_img.height))
         lower_text = ocr_crop(lower_center, psm=6)
 
         name = clean_name(name_text)
+        name_alt = clean_name(name_text_alt)
+        if len(name_alt) > len(name):
+            name = name_alt
         jockey = norm_jockey(jockey_text)
         u_index = extract_u(u_text)
         weight = extract_weight(jockey_text + " " + lower_text)
@@ -2149,7 +2166,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
 
         # 名前OCRが短すぎる場合だけ中央列をもう1回読む。
         if len(name) < 3:
-            broad = ocr_crop(row_img.crop((int(w*0.18), 0, int(w*0.64), int(row_img.height*0.65))), psm=6)
+            broad = ocr_crop(row_img.crop((int(w*0.16), 0, int(w*0.67), int(row_img.height*0.72))), psm=6)
             broad_name = clean_name(broad)
             if len(broad_name) > len(name):
                 name = broad_name
@@ -4020,21 +4037,21 @@ with tab_img:
         ["📱 スマホ：1枚ずつ", "🖥️ PC：複数枚まとめて"],
         index=0 if mobile_ocr_mode else 1,
         horizontal=True,
-        key="ocr_upload_mode_v1826",
+        key="ocr_upload_mode_v1827",
     )
 
     # --------------------------------------------------
     # ① ウマニティ
     # --------------------------------------------------
     st.markdown("#### ① ウマニティ")
-    st.caption("取得：馬番・馬名・単勝・U指数・斤量・今回騎手。Ver1.18.26ではスマホ画面の実際の行間に合わせて行位置を補正し、7番などの行欠落を防ぎます。")
+    st.caption("取得：馬番・馬名・単勝・U指数・斤量・今回騎手。Ver1.18.27ではスマホ画面の馬番位置を基準に1頭ずつ切り出し、馬名の途中欠けや行ずれを抑えます。")
 
     if upload_mode == "📱 スマホ：1枚ずつ":
         u_one = st.file_uploader(
             "ウマニティ画像",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=False,
-            key="uploader_u_v1826_mobile",
+            key="uploader_u_v1827_mobile",
         )
         u_files = [u_one] if u_one else []
     else:
@@ -4042,7 +4059,7 @@ with tab_img:
             "ウマニティ画像",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=True,
-            key="uploader_u_v1826_pc",
+            key="uploader_u_v1827_pc",
         ) or []
 
     u_start_map = {}
@@ -4053,7 +4070,7 @@ with tab_img:
             "先頭馬番",
             list(range(1, 19)),
             index=min(idx * 7, 17) if upload_mode == "🖥️ PC：複数枚まとめて" else 0,
-            key=f"u_start_v1826_{idx}",
+            key=f"u_start_v1827_{idx}",
             label_visibility="collapsed",
         )
 
