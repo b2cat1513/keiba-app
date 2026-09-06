@@ -1953,18 +1953,14 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
-    """Ver1.18.18 ウマニティ列位置固定OCR版。
+    """Ver1.18.19 ウマニティ実画面レイアウト対応OCR。
 
-    1枚の画像を「1行ずつ何回もOCR」するのではなく、出馬表本体を1回の
-    image_to_data OCRで読み、文字のX/Y座標から
-      馬番 / 馬名 / U指数 / 今回騎手 / 単勝 / 斤量
-    を列ごとに振り分ける。
+    ウマニティのスマホ画面では、実際の列は
+      馬番 | 予想印 | 馬名・性齢等 | 騎手/斤量 | U指数
+    で、単勝オッズは馬名欄の下段に表示される。
 
-    目的:
-    - 10.3や57などを別列へ取り違える問題を減らす。
-    - 7番のように1行だけOCR失敗して馬自体が消える問題を防ぐ。
-    - U指数だけ読めない場合も馬行は残す。
-    - OCR回数を抑えてStreamlitのCPU負荷を増やしすぎない。
+    そのため「画面幅を6等分する」方式ではなく、実画面のX/Y位置を使って
+    1回のimage_to_data OCRから各項目を拾う。
     """
     if not OCR_AVAILABLE:
         return parse_umanity_screenshot_text(raw_text) if raw_text else []
@@ -1979,53 +1975,43 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
 
     w, h = image.size
     start_gate = max(1, int(forced_start_gate or 1))
-    max_rows = min(8, 19 - start_gate)
-    if max_rows <= 0:
+
+    # 現在のウマニティスマホ画像（716x1536 / 955x2048等）は
+    # 1画面に7頭表示される。画面比率が通常の縦長なら7頭を採用。
+    row_count = 7 if h / max(w, 1) > 1.75 else 8
+    row_count = min(row_count, max(0, 19 - start_gate))
+    if row_count <= 0:
         return []
 
-    # ウマニティの出馬表本体。上下のヘッダー等を除いて8頭分を固定化。
-    table_top = int(h * 0.100)
-    table_bottom = int(h * 0.845)
-    row_h = (table_bottom - table_top) / 8.0
+    # 実画面では上部ヘッダー～表見出しが約15%、表本体が約84%まで。
+    table_top = int(h * 0.150)
+    table_bottom = int(h * 0.842)
+    row_h = (table_bottom - table_top) / float(row_count)
 
-    # 列境界（画面幅に対する比率）。
-    # 実際の表示では概ね 馬番/馬名/U指数/騎手/単勝/斤量 の順。
-    col_edges = [
-        (0.00, 0.15),  # 馬番
-        (0.15, 0.37),  # 馬名
-        (0.37, 0.53),  # U指数
-        (0.53, 0.70),  # 今回騎手
-        (0.70, 0.85),  # 単勝
-        (0.85, 1.00),  # 斤量
-    ]
-
-    # 列の境界付近で文字が切れないよう、解析用画像には少し余白を付ける。
-    # ただしY方向は行の対応を崩さないため、本体だけを使用する。
+    # 少し拡大して1回だけOCR。座標は元画像基準へ戻す。
     crop = image.crop((0, table_top, w, table_bottom))
-    scale = 2 if w < 1400 else 1
+    scale = 2 if w < 1000 else 1
     if scale > 1:
         crop = crop.resize((w * scale, crop.height * scale), Image.Resampling.LANCZOS)
     gray = ImageOps.autocontrast(ImageOps.grayscale(crop))
-    gray = gray.filter(ImageFilter.UnsharpMask(radius=1, percent=130, threshold=2))
+    gray = gray.filter(ImageFilter.UnsharpMask(radius=1, percent=120, threshold=2))
 
-    def _run_data(psm=6):
-        try:
-            return pytesseract.image_to_data(
-                gray,
-                lang="jpn+eng",
-                config=f"--oem 3 --psm {psm}",
-                output_type=pytesseract.Output.DICT,
-                timeout=18,
-            )
-        except Exception:
-            return None
+    try:
+        data = pytesseract.image_to_data(
+            gray,
+            lang="jpn+eng",
+            config="--oem 3 --psm 6",
+            output_type=pytesseract.Output.DICT,
+            timeout=18,
+        )
+    except Exception:
+        data = None
 
-    data = _run_data(6)
-    if data is None:
+    if not data:
         return parse_umanity_screenshot_text(raw_text) if raw_text else []
 
-    # トークンを行×列へ格納。confidenceの低いトークンも数字列では捨てない。
-    buckets = [[[] for _ in range(6)] for _ in range(max_rows)]
+    # 行ごとにOCRトークンを保持。
+    buckets = [[] for _ in range(row_count)]
     n = len(data.get("text", []))
     for i in range(n):
         txt = str(data["text"][i] or "").strip()
@@ -2040,31 +2026,48 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         except Exception:
             continue
         cy = y + bh / 2.0
-        row_idx = int(cy / row_h)
-        if row_idx < 0 or row_idx >= max_rows:
-            continue
-        cx = x + bw / 2.0
-        col_idx = None
-        for ci, (a, b) in enumerate(col_edges):
-            if w * a <= cx < w * b:
-                col_idx = ci
-                break
-        if col_idx is None:
-            continue
-        buckets[row_idx][col_idx].append((y, x, txt, conf))
+        ri = int(cy / row_h)
+        if 0 <= ri < row_count:
+            buckets[ri].append((x, y, bw, bh, txt, conf))
 
-    def join_bucket(items):
-        items = sorted(items, key=lambda z: (z[0], z[1]))
-        return " ".join(z[2] for z in items).strip()
+    def norm_digits(s):
+        return str(s or "").translate(str.maketrans(
+            "０１２３４５６７８９．，−ー", "0123456789.,--"
+        ))
 
-    # 補助抽出器。列が固定されているため、数字はその列だけから読む。
-    def normalize_digits(s):
-        return str(s or "").translate(str.maketrans("０１２３４５６７８９．，", "0123456789.,"))
+    def join_items(items):
+        return " ".join(x[4] for x in sorted(items, key=lambda z: (z[1], z[0]))).strip()
 
-    def number_from_col(s, kind):
-        t = normalize_digits(s).replace(",", ".")
+    def in_box(items, x0, x1, y0, y1):
+        out = []
+        for item in items:
+            x, y, bw, bh, txt, conf = item
+            cx = x + bw / 2.0
+            cy = (y % row_h) + bh / 2.0
+            if x0 <= cx < x1 and y0 <= cy < y1:
+                out.append(item)
+        return out
+
+    def extract_name(s):
+        s = _ocr_clean_line(s)
+        # 性齢や「栗」等を除去し、カタカナ連続文字を馬名候補にする。
+        cands = []
+        for m in re.findall(r"[ァ-ヶーヴ]{3,20}", s):
+            x = normalize_horse_name(m)
+            if not x:
+                continue
+            if x.upper() in {"EZRA", "ENNS"}:
+                continue
+            if x in {"ウマニティ", "ニュース", "レース", "新出馬表", "プロ予想"}:
+                continue
+            cands.append(x)
+        return max(cands, key=len) if cands else ""
+
+    def extract_number(s, kind):
+        t = norm_digits(s).replace("，", ",").replace(",", ".")
         if kind == "u":
             vals = []
+            # 80～110のU指数。順位丸数字の後ろに付くケースにも対応。
             for m in re.finditer(r"(?<!\d)(?:8\d|9\d|10\d)(?:\.\d{1,2})?(?!\d)", t):
                 try:
                     v = float(m.group(0))
@@ -2075,7 +2078,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             return round(vals[0], 1) if vals else None
         if kind == "odds":
             vals = []
-            for m in re.finditer(r"(?<!\d)\d{1,3}\.\d(?!\d)", t):
+            for m in re.finditer(r"(?<!\d)(?:\d{1,3})(?:\.\d{1,2})(?!\d)", t):
                 try:
                     v = float(m.group(0))
                     if 1 <= v < 500 and not (48 <= v <= 110):
@@ -2085,9 +2088,9 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             return vals[0] if vals else None
         if kind == "weight":
             vals = []
-            for m in re.finditer(r"(?<!\d)(?:4[8-9]|5\d|6[0-2])(?:[.,](?:0|5))?(?!\d)", t):
+            for m in re.finditer(r"(?<!\d)(?:4[8-9]|5\d|6[0-2])(?:\.\d)?(?!\d)", t):
                 try:
-                    v = float(m.group(0).replace(",", "."))
+                    v = float(m.group(0))
                     if 48 <= v <= 62.5:
                         vals.append(v)
                 except Exception:
@@ -2095,18 +2098,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             return vals[-1] if vals else None
         return None
 
-    def name_from_col(s):
-        s = _ocr_clean_line(s)
-        ng = {"ウマニティ", "ニュース", "レース", "新出馬表", "プロ予想", "コロシアム", "プレミアム"}
-        cands = []
-        for x in re.findall(r"[ァ-ヶーヴ]{3,20}", s):
-            x = normalize_horse_name(x)
-            if x and x not in ng and 3 <= len(x) <= 18:
-                if x.upper() not in {"EZRA", "ENNS"}:
-                    cands.append(x)
-        return max(cands, key=len) if cands else ""
-
-    def jockey_from_col(s):
+    def extract_jockey(s):
         obs = re.sub(r"[0-9０-９]+(?:[.,．]\d+)?", "", str(s or ""))
         obs = re.sub(r"[^一-龥々ぁ-んァ-ヶーA-Za-z.・]", "", obs)
         if len(obs) < 2:
@@ -2122,9 +2114,9 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
                 score += 0.12
             if score > best[0]:
                 best = (score, cand)
-        return best[1] if best[0] >= 0.70 else "(未選択)"
+        return best[1] if best[0] >= 0.68 else "(未選択)"
 
-    # 旧全文OCRが渡されている場合は最後の補完用にだけ利用する。
+    # 旧全文OCR結果は「空欄補完」の最後の保険としてのみ使用。
     legacy_by_gate = {}
     if raw_text:
         try:
@@ -2134,32 +2126,33 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             pass
 
     rows = []
-    for row_idx in range(max_rows):
-        cols = [join_bucket(buckets[row_idx][ci]) for ci in range(6)]
-        gate_text = normalize_digits(cols[0])
-        gate = start_gate + row_idx
+    for ri in range(row_count):
+        gate = start_gate + ri
+        items = buckets[ri]
+        rel_items = []
+        for x, y, bw, bh, txt, conf in items:
+            rel_items.append((x, y - ri * row_h, bw, bh, txt, conf))
 
-        # 馬番列をOCRできた場合のみ検証。固定行番号を優先して欠落させない。
-        gate_vals = [int(x) for x in re.findall(r"(?<!\d)(1[0-8]|[1-9])(?!\d)", gate_text)]
-        if gate_vals and gate_vals[0] == gate:
-            pass
+        # 実際の画面配置：
+        # 馬番 0～8%、馬名/オッズ 20～64%、騎手/斤量 64～84%、U指数 84～100%。
+        name_items = in_box(rel_items, w*0.18, w*0.64, 0, row_h*0.62)
+        odds_items = in_box(rel_items, w*0.18, w*0.64, row_h*0.55, row_h)
+        jockey_items = in_box(rel_items, w*0.64, w*0.84, 0, row_h*0.62)
+        weight_items = in_box(rel_items, w*0.64, w*0.84, row_h*0.55, row_h)
+        u_items = in_box(rel_items, w*0.84, w, 0, row_h)
 
-        name = name_from_col(cols[1])
-        u_index = number_from_col(cols[2], "u")
-        jockey = jockey_from_col(cols[3])
-        odds = number_from_col(cols[4], "odds")
-        weight = number_from_col(cols[5], "weight")
+        name = extract_name(join_items(name_items))
+        odds = extract_number(join_items(odds_items), "odds")
+        jockey = extract_jockey(join_items(jockey_items))
+        weight = extract_number(join_items(weight_items), "weight")
+        u_index = extract_number(join_items(u_items), "u")
 
-        # 列OCRが空だった場合だけ、旧結果から同じ馬番の値を補完。
         old = legacy_by_gate.get(gate)
         if old:
             if not name:
-                name = str(old.get("馬名") or "").strip()
-            if u_index is None:
-                try:
-                    v = float(old.get("U指数")); u_index = round(v, 1) if 80 <= v <= 110 else None
-                except Exception:
-                    pass
+                old_name = str(old.get("馬名") or "").strip()
+                if old_name and not old_name.startswith("(馬名未取得"):
+                    name = old_name
             if odds is None:
                 try:
                     v = float(old.get("単勝")); odds = v if 1 <= v < 500 else None
@@ -2170,6 +2163,11 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
                     v = float(old.get("斤量")); weight = v if 48 <= v <= 62.5 else None
                 except Exception:
                     pass
+            if u_index is None:
+                try:
+                    v = float(old.get("U指数")); u_index = round(v, 1) if 80 <= v <= 110 else None
+                except Exception:
+                    pass
             if jockey == "(未選択)" and old.get("今回騎手") not in {None, "", "(未選択)"}:
                 jockey = old.get("今回騎手")
 
@@ -2177,7 +2175,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             name = f"(馬名未取得・{gate}番)"
 
         rows.append({
-            "_row_idx": row_idx,
+            "_row_idx": ri,
             "_gate_raw": gate,
             "馬番": gate,
             "馬名": name,
@@ -2188,10 +2186,9 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "単勝": odds,
             "人気": None,
             "U指数": u_index,
-            "取得元": "ウマニティ画像(Ver1.18.18-列位置OCR)",
+            "取得元": "ウマニティ画像(Ver1.18.19-実画面列OCR)",
         })
 
-    # 8頭分を必ず返すため、行数欠落は発生させない。
     return rows
 
 
