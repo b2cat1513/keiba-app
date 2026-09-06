@@ -24,8 +24,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.15", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.15（コード整理・軽量化版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.16", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.16（コード整理・軽量化版）")
 
 st.markdown("""
 <style>
@@ -191,16 +191,16 @@ with st.sidebar:
 # ==========================================
 
 # ==========================================
-# 🧩 Ver1.18.15 モジュール化
+# 🧩 Ver1.18.16 モジュール化
 # ==========================================
 # ==========================================
-# 🧩 Ver1.18.15 組み込みモジュール版
+# 🧩 Ver1.18.16 組み込みモジュール版
 # GitHubでkeiba_app.py単体を置いても動作するよう、core.py / ocr.pyを内部に組み込み
 # ==========================================
 
 # -*- coding: utf-8 -*-
 """ジェニーAI予想 - コア計算・マスターデータ
-Ver1.18.15 modular
+Ver1.18.16 modular
 
 UIやOCRから独立させ、騎手・血統・コース関連の共通処理を管理します。
 """
@@ -1813,7 +1813,7 @@ def calculate_detailed_lineage_adjustment(
 
 # -*- coding: utf-8 -*-
 """ジェニーAI予想 - OCR/画像解析モジュール
-Ver1.18.15 modular
+Ver1.18.16 modular
 """
 import io
 import re
@@ -1953,10 +1953,9 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
-    """Ver1.18.12 高速版。
-    先頭馬番が人手指定されている場合のみ使用し、
-    高コストな馬番OCR・騎手8種投票・列全体OCR・厩舎OCRを省略する。
-    1頭あたり原則4回OCR（馬名/単勝、斤量、騎手、U指数）。
+    """Ver1.18.16 高速・欠落防止版。
+    指定した先頭馬番から8行を固定分割し、1行=1回のOCRで必要項目をまとめて取得。
+    旧版の「1行4回OCR＋別全文OCR」をやめ、解析時間を大幅短縮する。
     """
     if not OCR_AVAILABLE:
         return parse_umanity_screenshot_text(raw_text) if raw_text else []
@@ -1974,96 +1973,81 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
     table_bottom = int(h * 0.845)
     row_h = (table_bottom - table_top) / 8.0
 
-    def _prep(crop, scale=3, threshold=None):
+    def prep(crop):
         gray = ImageOps.autocontrast(ImageOps.grayscale(crop))
-        if threshold is not None:
-            gray = gray.point(lambda px: 255 if px >= threshold else 0)
+        scale = 2 if crop.width >= 900 else 3
         if scale > 1:
-            gray = gray.resize(
-                (gray.width * scale, gray.height * scale),
-                resample=Image.Resampling.LANCZOS,
-            )
-        return gray.filter(ImageFilter.UnsharpMask(radius=1, percent=150, threshold=2))
+            gray = gray.resize((gray.width * scale, gray.height * scale), Image.Resampling.LANCZOS)
+        return gray.filter(ImageFilter.UnsharpMask(radius=1, percent=140, threshold=2))
 
-    def _ocr(box, lang="jpn+eng", psm=6, scale=3, threshold=None):
+    def ocr_row(box):
         try:
-            crop = image.crop(box)
             return pytesseract.image_to_string(
-                _prep(crop, scale=scale, threshold=threshold),
-                lang=lang,
-                config=f"--oem 3 --psm {psm}",
+                prep(image.crop(box)), lang="jpn+eng", config="--oem 3 --psm 6", timeout=10
             ).strip()
         except Exception:
             return ""
 
-    def _norm_small_kana(s):
+    def norm_kana(s):
         s = str(s or "")
-        for a, b in {
-            "ジエ":"ジェ","シエ":"シェ","チエ":"チェ",
-            "テイ":"ティ","デイ":"ディ",
-            "フア":"ファ","フイ":"フィ","フエ":"フェ","フオ":"フォ",
-            "ウイ":"ウィ","ウエ":"ウェ","ウオ":"ウォ",
-            "ヴア":"ヴァ","ヴイ":"ヴィ","ヴエ":"ヴェ","ヴオ":"ヴォ",
-        }.items():
+        for a, b in {"ジエ":"ジェ","シエ":"シェ","チエ":"チェ","テイ":"ティ","デイ":"ディ","フア":"ファ","フイ":"フィ","フエ":"フェ","フオ":"フォ","ウイ":"ウィ","ウエ":"ウェ","ウオ":"ウォ","ヴア":"ヴァ","ヴイ":"ヴィ","ヴエ":"ヴェ","ヴオ":"ウォ"}.items():
             s = s.replace(a, b)
         return s
 
-    def _name_from(s):
-        s = _ocr_clean_line(s)
+    def name_from(text):
+        clean = _ocr_clean_line(text)
         ng = {"ウマニティ","ニュース","レース","新出馬表","プロ予想","コロシアム","プレミアム"}
         cands = []
-        for x in re.findall(r"[ァ-ヶーヴ]{3,20}", s):
-            x = _norm_small_kana(normalize_horse_name(x))
+        for x in re.findall(r"[ァ-ヶーヴ]{3,20}", clean):
+            x = norm_kana(normalize_horse_name(x))
             if x and x not in ng and 3 <= len(x) <= 18:
+                # 数字由来の英字ノイズは除外
+                if x.upper() in {"EZRA","ENNS"}:
+                    continue
                 cands.append(x)
         return max(cands, key=len) if cands else ""
 
-    def _u_from(s):
-        s = str(s or "").replace(",", ".")
+    def u_from(text):
         vals = []
-        for m in re.finditer(r"(?<!\d)(8\d|9\d|10\d)(?:\.(\d{1,2}))?(?!\d)", s):
+        t = str(text or "").replace(",", ".")
+        for m in re.finditer(r"(?<!\d)(8\d|9\d|10\d)(?:\.(\d{1,2}))?(?!\d)", t):
             try:
-                ip = m.group(1)
-                dp = m.group(2)
-                v = float(ip + ("." + dp[:1] if dp else ""))
+                v = float(m.group(1) + (("." + m.group(2)[:1]) if m.group(2) else ""))
                 if 80 <= v <= 110:
                     vals.append(v)
             except Exception:
                 pass
         return round(vals[0], 1) if vals else None
 
-    def _weight_from(s):
+    def weight_from(text):
         vals = []
-        for m in re.finditer(r"(?<!\d)(4[8-9]|5\d|6[0-2])(?:[.,](0|5))?(?!\d)", str(s or "")):
+        for m in re.finditer(r"(?<!\d)(4[8-9]|5\d|6[0-2])(?:[.,](0|5))?(?!\d)", str(text or "")):
             try:
-                v = float(m.group(1) + ("." + m.group(2) if m.group(2) else ""))
-                if 48.0 <= v <= 62.5:
+                v = float(m.group(1) + (("." + m.group(2)) if m.group(2) else ""))
+                if 48 <= v <= 62.5:
                     vals.append(v)
             except Exception:
                 pass
         return vals[-1] if vals else None
 
-    def _odds_from(s):
-        s = str(s or "").replace(",", ".")
+    def odds_from(text):
         vals = []
-        for m in re.finditer(r"(?<!\d)(\d{1,3}\.\d)(?!\d)", s):
+        t = str(text or "").replace(",", ".")
+        for m in re.finditer(r"(?<!\d)(\d{1,3}\.\d)(?!\d)", t):
             try:
                 v = float(m.group(1))
-                # U指数や斤量を避ける
-                if 1.0 <= v < 500.0 and not (48.0 <= v <= 110.0):
+                if 1 <= v < 500 and not (48 <= v <= 110):
                     vals.append(v)
             except Exception:
                 pass
         return vals[0] if vals else None
 
-    def _jockey_from(s):
-        obs = re.sub(r"\s+", "", str(s or ""))
-        obs = re.sub(r"[0-9０-９]+(?:[.,．]\d+)?", "", obs)
+    def jockey_from(text):
+        obs = re.sub(r"[0-9０-９]+(?:[.,．]\d+)?", "", str(text or ""))
         obs = re.sub(r"[^一-龥々ぁ-んァ-ヶーA-Za-z.・]", "", obs)
         if len(obs) < 2:
             return "(未選択)"
-        candidates = list(JOCKEY_MASTER.keys()) if isinstance(JOCKEY_MASTER, dict) else list(JOCKEY_MASTER)
-        candidates = [c for c in candidates if c != "その他（自由手入力）"]
+        candidates = [c for c in JOCKEY_MASTER if c != "その他（自由手入力）"]
         best = (0.0, None)
         for cand in candidates:
             cc = re.sub(r"\s+", "", str(cand))
@@ -2074,123 +2058,61 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
                 score += 0.12
             if score > best[0]:
                 best = (score, cand)
-        return best[1] if best[0] >= 0.72 else "(未選択)"
+        return best[1] if best[0] >= 0.70 else "(未選択)"
 
-    legacy = parse_umanity_screenshot_text(raw_text) if raw_text else []
+    # raw_text が既に渡されていても、原則として追加の全文OCRはしない。
     legacy_by_gate = {}
-    for r in legacy:
+    if raw_text:
         try:
-            legacy_by_gate[int(r.get("馬番"))] = r
+            for r in parse_umanity_screenshot_text(raw_text):
+                legacy_by_gate[int(r.get("馬番"))] = r
         except Exception:
             pass
 
     rows = []
-    start_gate = int(forced_start_gate)
-    max_rows = min(8, max(0, 19 - start_gate))
-
+    start_gate = max(1, int(forced_start_gate or 1))
+    max_rows = min(8, 19 - start_gate)
     for row_idx in range(max_rows):
         gate = start_gate + row_idx
         y1 = int(table_top + row_h * row_idx)
         y2 = int(table_top + row_h * (row_idx + 1))
-        rh = max(1, y2 - y1)
+        # 馬番欄を除く1行全体。1回のOCRで馬名・騎手・斤量・オッズ・U指数を拾う。
+        text = ocr_row((int(w * 0.06), y1, w, y2))
+        name = name_from(text)
+        u_index = u_from(text)
+        weight = weight_from(text)
+        odds = odds_from(text)
+        jockey = jockey_from(text)
 
-        # 1) 馬名＋単勝
-        main_text = _ocr(
-            (int(w*0.17), y1, int(w*0.66), y2),
-            lang="jpn+eng", psm=6, scale=3
-        )
-
-        # 2) 斤量列
-        detail_text = _ocr(
-            (int(w*0.50), y1, int(w*0.82), y2),
-            lang="jpn+eng", psm=6, scale=3
-        )
-
-        # 3) 騎手専用の細帯。多数決を廃止して1回だけ。
-        jockey_text = _ocr(
-            (
-                int(w*0.625),
-                y1 + int(rh*0.08),
-                int(w*0.815),
-                y1 + int(rh*0.40),
-            ),
-            lang="jpn", psm=7, scale=5
-        )
-
-        # 4) U指数専用列
-        u_text = _ocr(
-            (int(w*0.805), y1, w, y2),
-            lang="eng", psm=6, scale=3
-        )
-
-        name = _name_from(main_text)
-        u_index = _u_from(u_text)
-        weight = _weight_from(detail_text)
-        odds = _odds_from(main_text)
-        jockey = _jockey_from(jockey_text)
-
-        # 全文OCR済みデータは「追加OCRなし」の救済にだけ使う。
         old = legacy_by_gate.get(gate)
         if old:
             if not name:
                 name = str(old.get("馬名") or "").strip()
             if u_index is None:
                 try:
-                    v = float(old.get("U指数"))
-                    if 80 <= v <= 110:
-                        u_index = round(v, 1)
-                except Exception:
-                    pass
+                    v = float(old.get("U指数")); u_index = round(v, 1) if 80 <= v <= 110 else None
+                except Exception: pass
             if weight is None:
                 try:
-                    v = float(old.get("斤量"))
-                    if 48 <= v <= 62.5:
-                        weight = v
-                except Exception:
-                    pass
+                    v = float(old.get("斤量")); weight = v if 48 <= v <= 62.5 else None
+                except Exception: pass
             if odds is None:
                 try:
-                    v = float(old.get("単勝"))
-                    if 1 <= v < 500:
-                        odds = v
-                except Exception:
-                    pass
-            if jockey == "(未選択)":
-                j = old.get("今回騎手")
-                if j and j != "(未選択)":
-                    jockey = j
+                    v = float(old.get("単勝")); odds = v if 1 <= v < 500 else None
+                except Exception: pass
+            if jockey == "(未選択)" and old.get("今回騎手") not in {None, "", "(未選択)"}:
+                jockey = old.get("今回騎手")
 
-        # U指数と馬名は最低条件。ここで追加OCRはしない。
-        if not name or u_index is None:
+        # U指数か馬名のどちらか一方だけ欠けても、行自体は捨てない。
+        # U指数が読めた行は採用し、Uだけ欠けた場合も馬名＋他項目を残して救済する。
+        if not name:
             continue
-
         rows.append({
-            "_row_idx": row_idx,
-            "_gate_raw": gate,
-            "馬番": gate,
-            "馬名": name,
-            "性齢": "",
-            "今回騎手": jockey,
-            "斤量": weight,
-            "厩舎": "(未選択)",
-            "単勝": odds,
-            "人気": None,
-            "U指数": round(float(u_index), 1),
-            "取得元": "ウマニティ画像(Ver1.18.12-高速OCR)",
+            "_row_idx": row_idx, "_gate_raw": gate, "馬番": gate, "馬名": name,
+            "性齢": "", "今回騎手": jockey, "斤量": weight, "厩舎": "(未選択)",
+            "単勝": odds, "人気": None, "U指数": u_index,
+            "取得元": "ウマニティ画像(Ver1.18.16-1行1回OCR)",
         })
-
-    # 同一単勝が3頭以上に入る場合は列ずれ誤認として空欄化。
-    odds_groups = {}
-    for r in rows:
-        if r.get("単勝") is not None:
-            try:
-                odds_groups.setdefault(round(float(r["単勝"]), 1), []).append(r)
-            except Exception:
-                pass
-    for recs in odds_groups.values():
-        if len(recs) >= 3:
-            for r in recs:
-                r["単勝"] = None
 
     return rows
 
@@ -3599,11 +3521,55 @@ def parse_keibalab_profile_screenshot_image(uploaded_file, horse_gate_map, fallb
     }]
 
 
+def _ocr_history_fast(uploaded_file):
+    """Ver1.18.16: 過去5走専用の軽量OCR。
+    まず1回だけPSM6で全文OCRし、30～42.9秒の上がり3Fが取れなかった場合だけ
+    PSM11を1回追加する。従来の3前処理×4PSM相当をやめ、解析時間を大幅短縮する。
+    """
+    if not OCR_AVAILABLE:
+        return []
+    img = _open_uploaded_pil(uploaded_file)
+    if img is None:
+        return []
+    # 過去5走画面は細かい文字が多いが、1800px程度で十分。
+    max_w = 1600
+    if img.width > max_w:
+        ratio = max_w / img.width
+        img = img.resize((max_w, max(1, int(img.height * ratio))), Image.Resampling.LANCZOS)
+    gray = ImageOps.autocontrast(ImageOps.grayscale(img))
+    gray = gray.filter(ImageFilter.SHARPEN)
+
+    texts = []
+    for psm in (6,):
+        try:
+            txt = pytesseract.image_to_string(
+                gray, lang="jpn+eng", config=f"--oem 3 --psm {psm}", timeout=15
+            )
+            if txt and txt.strip():
+                texts.append(txt)
+        except Exception:
+            pass
+
+    def has_3f(txt):
+        return bool(re.search(r"(?<![:\d])([3-4]\d[\.,]\d)(?!\d)", txt or ""))
+
+    if not any(has_3f(t) for t in texts):
+        try:
+            txt = pytesseract.image_to_string(
+                gray, lang="jpn+eng", config="--oem 3 --psm 11", timeout=15
+            )
+            if txt and txt.strip() and txt not in texts:
+                texts.append(txt)
+        except Exception:
+            pass
+    return texts
+
+
 def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallback_horse=None):
     """Ver1.18.11: Ver1.18.9で実績のあった全文OCR方式を復元。
     複数画像の結合はUI側で行い、5走分まで補完する。
     """
-    texts = _ocr_image_variants(uploaded_file, (4, 6, 11, 12))
+    texts = _ocr_history_fast(uploaded_file)
     if not texts:
         return []
 
@@ -3949,7 +3915,7 @@ with tab_um:
 
 with tab_img:
     st.write("### 📷 画像から自動入力")
-    st.caption("Ver1.18.12：①ウマニティを高速化。先頭馬番を指定した画像では、不要な馬番OCR・厩舎OCR・騎手の多重OCRを省きます。②③はVer1.18.11の安定ロジックを維持します。")
+    st.caption("Ver1.18.16：①ウマニティを1行1回OCR化して高速化。先頭馬番を指定した画像では、不要な馬番OCR・厩舎OCR・騎手の多重OCRを省きます。②③はVer1.18.11の安定ロジックを維持します。")
 
     ocr_status = get_ocr_environment_status()
     with st.expander("🩺 OCR環境診断", expanded=not OCR_AVAILABLE):
@@ -3997,21 +3963,21 @@ with tab_img:
         ["📱 スマホ：1枚ずつ", "🖥️ PC：複数枚まとめて"],
         index=0 if mobile_ocr_mode else 1,
         horizontal=True,
-        key="ocr_upload_mode_v187",
+        key="ocr_upload_mode_v1816",
     )
 
     # --------------------------------------------------
     # ① ウマニティ
     # --------------------------------------------------
     st.markdown("#### ① ウマニティ")
-    st.caption("取得：馬番・馬名・単勝・U指数・斤量・今回騎手。Ver1.18.12では先頭馬番指定時に高速OCRを使い、処理回数を大幅に削減します。")
+    st.caption("取得：馬番・馬名・単勝・U指数・斤量・今回騎手。Ver1.18.16では1行1回OCRで高速化し、5番・7番などの行欠落を減らします。")
 
     if upload_mode == "📱 スマホ：1枚ずつ":
         u_one = st.file_uploader(
             "ウマニティ画像",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=False,
-            key="uploader_u_v187_mobile",
+            key="uploader_u_v1816_mobile",
         )
         u_files = [u_one] if u_one else []
     else:
@@ -4019,7 +3985,7 @@ with tab_img:
             "ウマニティ画像",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=True,
-            key="uploader_u_v187_pc",
+            key="uploader_u_v1816_pc",
         ) or []
 
     u_start_map = {}
@@ -4030,7 +3996,7 @@ with tab_img:
             "先頭馬番",
             list(range(1, 19)),
             index=min(idx * 8, 17) if upload_mode == "🖥️ PC：複数枚まとめて" else 0,
-            key=f"u_start_v187_{idx}_{f.name}",
+            key=f"u_start_v1816_{idx}",
             label_visibility="collapsed",
         )
 
@@ -4039,24 +4005,38 @@ with tab_img:
             st.error("OCR環境を確認してください。Tesseract本体と日本語データ(jpn)が必要です。")
         else:
             new_records, new_raw, diagnostics, errors = [], [], [], []
+            progress = st.progress(0)
+            status_box = st.empty()
             with st.spinner("ウマニティ画像を解析しています…"):
-                for f in u_files:
+                for idx, f in enumerate(u_files):
                     try:
-                        raw = extract_text_from_screenshot(f)
-                        recs = parse_umanity_screenshot_image(
-                            f, raw, forced_start_gate=int(u_start_map[f.name])
-                        )
+                        sg = int(u_start_map[f.name])
+                        status_box.write(f"🔎 ウマニティ解析 {idx + 1}/{len(u_files)}：先頭 {sg}番")
+                        recs = parse_umanity_screenshot_image(f, "", forced_start_gate=sg)
+                        expected = min(8, 19 - sg)
+                        raw = ""
+                        if len(recs) < expected:
+                            try:
+                                raw = extract_text_from_screenshot(f)
+                                fallback = parse_umanity_screenshot_image(f, raw, forced_start_gate=sg)
+                                if len(fallback) > len(recs):
+                                    recs = fallback
+                            except Exception:
+                                raw = ""
                         new_records.extend(recs)
-                        new_raw.append((f"ウマニティ:{f.name}", raw))
+                        if raw:
+                            new_raw.append((f"ウマニティ:{f.name}", raw))
                         diagnostics.append({
                             "画像": f.name, "種類": "ウマニティ",
-                            "指定": f"先頭 {u_start_map[f.name]}番",
-                            "抽出頭数": len(recs),
+                            "指定": f"先頭 {sg}番", "抽出頭数": len(recs),
+                            "期待頭数": expected,
                             "抽出馬": " / ".join(f"{r.get('馬番')} {r.get('馬名')}" for r in recs),
                         })
                     except Exception as exc:
                         errors.append(f"{f.name}: {exc}")
-
+                    finally:
+                        progress.progress((idx + 1) / len(u_files))
+            status_box.empty()
             # 今回指定された馬番範囲は新結果で置換
             old = {int(r["馬番"]): r for r in st.session_state["v187_umanity_records"] if r.get("馬番")}
             for f in u_files:
@@ -4181,7 +4161,7 @@ with tab_img:
             "過去5走画像",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=False,
-            key="uploader_h_v187_mobile",
+            key="uploader_h_v1816_mobile",
         )
         h_files = [h_one] if h_one else []
     else:
@@ -4189,18 +4169,19 @@ with tab_img:
             "過去5走画像",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=True,
-            key="uploader_h_v187_pc",
+            key="uploader_h_v1816_pc",
         ) or []
 
     h_gate_map = {}
     for idx, f in enumerate(h_files):
         c1, c2 = st.columns([2.6, 1])
-        c1.write(f"📷 {f.name}")
-        default_index = min(idx // 2, len(gate_choices)-1) if gate_choices else 0
-        h_gate_map[f.name] = c2.selectbox(
+        c1.write(f"📷 {idx + 1}. {f.name}")
+        # 新しいキーで過去の選択値を引き継がない。原則「2枚で1頭」を初期割当。
+        default_index = min(idx // 2, len(gate_choices) - 1) if gate_choices else 0
+        h_gate_map[idx] = c2.selectbox(
             "対象馬番", gate_choices,
             index=default_index,
-            key=f"h_gate_v187_{idx}_{f.name}",
+            key=f"h_gate_v1816_{idx}",
             label_visibility="collapsed",
         )
 
@@ -4210,38 +4191,48 @@ with tab_img:
         elif not _ocr_ready():
             st.error("OCR環境を確認してください。")
         else:
-            # 同じ馬に複数画像がある場合、画像単位の結果を後で統合
             by_gate = {}
             new_raw, diagnostics, errors = [], [], []
+            progress = st.progress(0)
+            status_box = st.empty()
+            total = len(h_files)
             with st.spinner("競馬ラボ・過去5走を解析しています…"):
-                for f in h_files:
+                for idx, f in enumerate(h_files):
+                    gate = int(h_gate_map[idx])
+                    target_horse = gate_horse_map.get(gate)
+                    status_box.write(f"🔎 過去5走解析 {idx + 1}/{total}：{gate}番 {target_horse or '(馬名未取得)'}")
                     try:
-                        gate = int(h_gate_map[f.name])
-                        target_horse = gate_horse_map.get(gate)
                         if not target_horse:
                             errors.append(f"{f.name}: {gate}番の馬名がウマニティ側にありません")
                             continue
-                        raw = extract_text_from_screenshot(f)
+
+                        # 重要：従来ここで extract_text_from_screenshot() を先に実行していたため、
+                        # 同じ画像を二重OCRしていました。Ver1.18.16では不要な全文OCRを削除。
                         recs = parse_keibalab_history_screenshot_image(
                             f, horse_gate_map, fallback_horse=target_horse
                         )
                         rec = recs[0] if recs else {
                             "馬番": gate, "馬名": target_horse,
                             "前走騎手": "(未選択)", "上がり3F平均": None,
-                            "上がり取得数": 0, "取得元": "競馬ラボ・過去5走画像"
+                            "上がり取得数": 0, "上がり3F内訳": "",
+                            "取得元": "競馬ラボ・過去5走画像"
                         }
                         rec["馬番"] = gate
                         rec["馬名"] = target_horse
                         by_gate.setdefault(gate, []).append(rec)
-                        new_raw.append((f"競馬ラボ・過去5走:{f.name}", raw))
+
                         diagnostics.append({
                             "画像": f.name, "種類": "競馬ラボ・過去5走",
                             "指定": f"{gate} {target_horse}",
                             "抽出頭数": 1 if recs else 0,
                             "抽出馬": f"{gate} {target_horse}",
+                            "上がり取得数": rec.get("上がり取得数", 0),
+                            "上がり3F内訳": rec.get("上がり3F内訳", ""),
                         })
                     except Exception as exc:
                         errors.append(f"{f.name}: {exc}")
+                    finally:
+                        progress.progress((idx + 1) / total)
 
             def _parse_breakdown(rec):
                 vals = []
@@ -4256,9 +4247,6 @@ with tab_img:
                 return vals
 
             def _append_with_overlap(base, seq):
-                """連続スクショの重複を吸収して結合。
-                完全な並び一致に加えて、境界の同一値1個も重複とみなす。
-                """
                 if not base:
                     return list(seq)
                 if not seq:
@@ -4276,26 +4264,18 @@ with tab_img:
             new_records = []
             for gate, recs in sorted(by_gate.items()):
                 target_horse = gate_horse_map.get(gate, "")
-
-                # 前走騎手は最初の画像を優先。未取得なら後続画像から補完。
                 jockey = next(
                     (r.get("前走騎手") for r in recs
                      if r.get("前走騎手") not in {None, "", "(未選択)"}),
                     "(未選択)"
                 )
-
-                # 同じ馬に2枚以上ある場合は「最良画像1枚」ではなく、
-                # アップロード順に上がり値列を連結して最大5走にする。
                 combined = []
                 for r in recs:
-                    seq = _parse_breakdown(r)
-                    combined = _append_with_overlap(combined, seq)
+                    combined = _append_with_overlap(combined, _parse_breakdown(r))
                     if len(combined) >= 5:
                         break
-
                 combined = combined[:5]
                 avg = round(sum(combined) / len(combined), 2) if combined else None
-
                 new_records.append({
                     "馬番": gate, "馬名": target_horse,
                     "前走騎手": jockey,
@@ -4311,12 +4291,12 @@ with tab_img:
             st.session_state["v187_history_records"] = [old[k] for k in sorted(old)]
             st.session_state["v187_raw_texts"].extend(new_raw)
             st.session_state["v187_diagnostics"].extend(diagnostics)
+            status_box.empty()
             if errors:
                 st.warning("一部の過去5走画像で取得できませんでした。")
                 for e in errors:
                     st.code(e)
             st.success(f"③ 過去5走：{len(new_records)}頭分を解析しました。")
-
     # --------------------------------------------------
     # 統合確認
     # --------------------------------------------------
@@ -4341,7 +4321,7 @@ with tab_img:
                 "上がり3F平均": st.column_config.NumberColumn(format="%.2f"),
                 "上がり取得数": st.column_config.NumberColumn(min_value=0, max_value=5, step=1),
             },
-            key="ocr_preview_editor_v187",
+            key="ocr_preview_editor_v1816",
         )
 
         c1, c2 = st.columns(2)
