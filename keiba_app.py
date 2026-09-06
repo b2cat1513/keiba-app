@@ -1953,9 +1953,18 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
-    """Ver1.18.17 高速・欠落防止・局所再OCR版。
-    指定した先頭馬番から8行を固定分割し、1行=1回のOCRで必要項目をまとめて取得。
-    旧版の「1行4回OCR＋別全文OCR」をやめ、解析時間を大幅短縮する。
+    """Ver1.18.18 ウマニティ列位置固定OCR版。
+
+    1枚の画像を「1行ずつ何回もOCR」するのではなく、出馬表本体を1回の
+    image_to_data OCRで読み、文字のX/Y座標から
+      馬番 / 馬名 / U指数 / 今回騎手 / 単勝 / 斤量
+    を列ごとに振り分ける。
+
+    目的:
+    - 10.3や57などを別列へ取り違える問題を減らす。
+    - 7番のように1行だけOCR失敗して馬自体が消える問題を防ぐ。
+    - U指数だけ読めない場合も馬行は残す。
+    - OCR回数を抑えてStreamlitのCPU負荷を増やしすぎない。
     """
     if not OCR_AVAILABLE:
         return parse_umanity_screenshot_text(raw_text) if raw_text else []
@@ -1969,108 +1978,136 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         return parse_umanity_screenshot_text(raw_text) if raw_text else []
 
     w, h = image.size
+    start_gate = max(1, int(forced_start_gate or 1))
+    max_rows = min(8, 19 - start_gate)
+    if max_rows <= 0:
+        return []
+
+    # ウマニティの出馬表本体。上下のヘッダー等を除いて8頭分を固定化。
     table_top = int(h * 0.100)
     table_bottom = int(h * 0.845)
     row_h = (table_bottom - table_top) / 8.0
 
-    def prep(crop):
-        gray = ImageOps.autocontrast(ImageOps.grayscale(crop))
-        scale = 2 if crop.width >= 900 else 3
-        if scale > 1:
-            gray = gray.resize((gray.width * scale, gray.height * scale), Image.Resampling.LANCZOS)
-        return gray.filter(ImageFilter.UnsharpMask(radius=1, percent=140, threshold=2))
+    # 列境界（画面幅に対する比率）。
+    # 実際の表示では概ね 馬番/馬名/U指数/騎手/単勝/斤量 の順。
+    col_edges = [
+        (0.00, 0.15),  # 馬番
+        (0.15, 0.37),  # 馬名
+        (0.37, 0.53),  # U指数
+        (0.53, 0.70),  # 今回騎手
+        (0.70, 0.85),  # 単勝
+        (0.85, 1.00),  # 斤量
+    ]
 
-    def ocr_row(box, psm=6, timeout=10):
+    # 列の境界付近で文字が切れないよう、解析用画像には少し余白を付ける。
+    # ただしY方向は行の対応を崩さないため、本体だけを使用する。
+    crop = image.crop((0, table_top, w, table_bottom))
+    scale = 2 if w < 1400 else 1
+    if scale > 1:
+        crop = crop.resize((w * scale, crop.height * scale), Image.Resampling.LANCZOS)
+    gray = ImageOps.autocontrast(ImageOps.grayscale(crop))
+    gray = gray.filter(ImageFilter.UnsharpMask(radius=1, percent=130, threshold=2))
+
+    def _run_data(psm=6):
         try:
-            return pytesseract.image_to_string(
-                prep(image.crop(box)), lang="jpn+eng", config=f"--oem 3 --psm {psm}", timeout=timeout
-            ).strip()
+            return pytesseract.image_to_data(
+                gray,
+                lang="jpn+eng",
+                config=f"--oem 3 --psm {psm}",
+                output_type=pytesseract.Output.DICT,
+                timeout=18,
+            )
         except Exception:
-            return ""
+            return None
 
-    def rescue_name(box):
-        # 欠落行だけ中央の馬名欄を再OCR。全体OCRをやり直さないのでCPU負荷を抑える。
-        x1 = int(w * 0.15)
-        x2 = int(w * 0.47)
-        y1, y2 = box[1], box[3]
-        pad = max(4, int(row_h * 0.18))
-        y1 = max(0, y1 - pad)
-        y2 = min(h, y2 + pad)
-        text = ocr_row((x1, y1, x2, y2), psm=6, timeout=8)
-        name = name_from(text)
-        if not name:
-            text = ocr_row((x1, y1, x2, y2), psm=11, timeout=8)
-            name = name_from(text)
-        return name, text
+    data = _run_data(6)
+    if data is None:
+        return parse_umanity_screenshot_text(raw_text) if raw_text else []
 
-    def rescue_u(box):
-        # U指数だけ欠けた行は右端のU指数帯を再OCR。
-        x1 = int(w * 0.78)
-        x2 = int(w * 0.99)
-        y1, y2 = box[1], box[3]
-        text = ocr_row((x1, y1, x2, y2), psm=6, timeout=8)
-        u = u_from(text)
-        if u is None:
-            text = ocr_row((x1, y1, x2, y2), psm=11, timeout=8)
-            u = u_from(text)
-        return u
+    # トークンを行×列へ格納。confidenceの低いトークンも数字列では捨てない。
+    buckets = [[[] for _ in range(6)] for _ in range(max_rows)]
+    n = len(data.get("text", []))
+    for i in range(n):
+        txt = str(data["text"][i] or "").strip()
+        if not txt:
+            continue
+        try:
+            x = float(data["left"][i]) / scale
+            y = float(data["top"][i]) / scale
+            bw = float(data["width"][i]) / scale
+            bh = float(data["height"][i]) / scale
+            conf = float(data.get("conf", [0])[i])
+        except Exception:
+            continue
+        cy = y + bh / 2.0
+        row_idx = int(cy / row_h)
+        if row_idx < 0 or row_idx >= max_rows:
+            continue
+        cx = x + bw / 2.0
+        col_idx = None
+        for ci, (a, b) in enumerate(col_edges):
+            if w * a <= cx < w * b:
+                col_idx = ci
+                break
+        if col_idx is None:
+            continue
+        buckets[row_idx][col_idx].append((y, x, txt, conf))
 
-    def norm_kana(s):
-        s = str(s or "")
-        for a, b in {"ジエ":"ジェ","シエ":"シェ","チエ":"チェ","テイ":"ティ","デイ":"ディ","フア":"ファ","フイ":"フィ","フエ":"フェ","フオ":"フォ","ウイ":"ウィ","ウエ":"ウェ","ウオ":"ウォ","ヴア":"ヴァ","ヴイ":"ヴィ","ヴエ":"ヴェ","ヴオ":"ウォ"}.items():
-            s = s.replace(a, b)
-        return s
+    def join_bucket(items):
+        items = sorted(items, key=lambda z: (z[0], z[1]))
+        return " ".join(z[2] for z in items).strip()
 
-    def name_from(text):
-        clean = _ocr_clean_line(text)
-        ng = {"ウマニティ","ニュース","レース","新出馬表","プロ予想","コロシアム","プレミアム"}
+    # 補助抽出器。列が固定されているため、数字はその列だけから読む。
+    def normalize_digits(s):
+        return str(s or "").translate(str.maketrans("０１２３４５６７８９．，", "0123456789.,"))
+
+    def number_from_col(s, kind):
+        t = normalize_digits(s).replace(",", ".")
+        if kind == "u":
+            vals = []
+            for m in re.finditer(r"(?<!\d)(?:8\d|9\d|10\d)(?:\.\d{1,2})?(?!\d)", t):
+                try:
+                    v = float(m.group(0))
+                    if 80 <= v <= 110:
+                        vals.append(v)
+                except Exception:
+                    pass
+            return round(vals[0], 1) if vals else None
+        if kind == "odds":
+            vals = []
+            for m in re.finditer(r"(?<!\d)\d{1,3}\.\d(?!\d)", t):
+                try:
+                    v = float(m.group(0))
+                    if 1 <= v < 500 and not (48 <= v <= 110):
+                        vals.append(v)
+                except Exception:
+                    pass
+            return vals[0] if vals else None
+        if kind == "weight":
+            vals = []
+            for m in re.finditer(r"(?<!\d)(?:4[8-9]|5\d|6[0-2])(?:[.,](?:0|5))?(?!\d)", t):
+                try:
+                    v = float(m.group(0).replace(",", "."))
+                    if 48 <= v <= 62.5:
+                        vals.append(v)
+                except Exception:
+                    pass
+            return vals[-1] if vals else None
+        return None
+
+    def name_from_col(s):
+        s = _ocr_clean_line(s)
+        ng = {"ウマニティ", "ニュース", "レース", "新出馬表", "プロ予想", "コロシアム", "プレミアム"}
         cands = []
-        for x in re.findall(r"[ァ-ヶーヴ]{3,20}", clean):
-            x = norm_kana(normalize_horse_name(x))
+        for x in re.findall(r"[ァ-ヶーヴ]{3,20}", s):
+            x = normalize_horse_name(x)
             if x and x not in ng and 3 <= len(x) <= 18:
-                # 数字由来の英字ノイズは除外
-                if x.upper() in {"EZRA","ENNS"}:
-                    continue
-                cands.append(x)
+                if x.upper() not in {"EZRA", "ENNS"}:
+                    cands.append(x)
         return max(cands, key=len) if cands else ""
 
-    def u_from(text):
-        vals = []
-        t = str(text or "").replace(",", ".")
-        for m in re.finditer(r"(?<!\d)(8\d|9\d|10\d)(?:\.(\d{1,2}))?(?!\d)", t):
-            try:
-                v = float(m.group(1) + (("." + m.group(2)[:1]) if m.group(2) else ""))
-                if 80 <= v <= 110:
-                    vals.append(v)
-            except Exception:
-                pass
-        return round(vals[0], 1) if vals else None
-
-    def weight_from(text):
-        vals = []
-        for m in re.finditer(r"(?<!\d)(4[8-9]|5\d|6[0-2])(?:[.,](0|5))?(?!\d)", str(text or "")):
-            try:
-                v = float(m.group(1) + (("." + m.group(2)) if m.group(2) else ""))
-                if 48 <= v <= 62.5:
-                    vals.append(v)
-            except Exception:
-                pass
-        return vals[-1] if vals else None
-
-    def odds_from(text):
-        vals = []
-        t = str(text or "").replace(",", ".")
-        for m in re.finditer(r"(?<!\d)(\d{1,3}\.\d)(?!\d)", t):
-            try:
-                v = float(m.group(1))
-                if 1 <= v < 500 and not (48 <= v <= 110):
-                    vals.append(v)
-            except Exception:
-                pass
-        return vals[0] if vals else None
-
-    def jockey_from(text):
-        obs = re.sub(r"[0-9０-９]+(?:[.,．]\d+)?", "", str(text or ""))
+    def jockey_from_col(s):
+        obs = re.sub(r"[0-9０-９]+(?:[.,．]\d+)?", "", str(s or ""))
         obs = re.sub(r"[^一-龥々ぁ-んァ-ヶーA-Za-z.・]", "", obs)
         if len(obs) < 2:
             return "(未選択)"
@@ -2087,7 +2124,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
                 best = (score, cand)
         return best[1] if best[0] >= 0.70 else "(未選択)"
 
-    # raw_text が既に渡されていても、原則として追加の全文OCRはしない。
+    # 旧全文OCRが渡されている場合は最後の補完用にだけ利用する。
     legacy_by_gate = {}
     if raw_text:
         try:
@@ -2097,38 +2134,23 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             pass
 
     rows = []
-    start_gate = max(1, int(forced_start_gate or 1))
-    max_rows = min(8, 19 - start_gate)
     for row_idx in range(max_rows):
+        cols = [join_bucket(buckets[row_idx][ci]) for ci in range(6)]
+        gate_text = normalize_digits(cols[0])
         gate = start_gate + row_idx
-        y1 = int(table_top + row_h * row_idx)
-        y2 = int(table_top + row_h * (row_idx + 1))
-        # 馬番欄を除く1行全体。1回のOCRで馬名・騎手・斤量・オッズ・U指数を拾う。
-        row_box = (int(w * 0.06), y1, w, y2)
-        text = ocr_row(row_box)
-        name = name_from(text)
-        u_index = u_from(text)
-        weight = weight_from(text)
-        odds = odds_from(text)
-        jockey = jockey_from(text)
 
-        # まず「馬名だけ」欠けた行を局所再OCR。7番のように行全体を落とさない。
-        if not name:
-            name, rescue_text = rescue_name(row_box)
-            if rescue_text:
-                if u_index is None:
-                    u_index = u_from(rescue_text)
-                if weight is None:
-                    weight = weight_from(rescue_text)
-                if odds is None:
-                    odds = odds_from(rescue_text)
-                if jockey == "(未選択)":
-                    jockey = jockey_from(rescue_text)
+        # 馬番列をOCRできた場合のみ検証。固定行番号を優先して欠落させない。
+        gate_vals = [int(x) for x in re.findall(r"(?<!\d)(1[0-8]|[1-9])(?!\d)", gate_text)]
+        if gate_vals and gate_vals[0] == gate:
+            pass
 
-        # U指数だけ欠けた場合はU指数欄のみ再OCR。
-        if u_index is None:
-            u_index = rescue_u(row_box)
+        name = name_from_col(cols[1])
+        u_index = number_from_col(cols[2], "u")
+        jockey = jockey_from_col(cols[3])
+        odds = number_from_col(cols[4], "odds")
+        weight = number_from_col(cols[5], "weight")
 
+        # 列OCRが空だった場合だけ、旧結果から同じ馬番の値を補完。
         old = legacy_by_gate.get(gate)
         if old:
             if not name:
@@ -2136,29 +2158,40 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             if u_index is None:
                 try:
                     v = float(old.get("U指数")); u_index = round(v, 1) if 80 <= v <= 110 else None
-                except Exception: pass
-            if weight is None:
-                try:
-                    v = float(old.get("斤量")); weight = v if 48 <= v <= 62.5 else None
-                except Exception: pass
+                except Exception:
+                    pass
             if odds is None:
                 try:
                     v = float(old.get("単勝")); odds = v if 1 <= v < 500 else None
-                except Exception: pass
+                except Exception:
+                    pass
+            if weight is None:
+                try:
+                    v = float(old.get("斤量")); weight = v if 48 <= v <= 62.5 else None
+                except Exception:
+                    pass
             if jockey == "(未選択)" and old.get("今回騎手") not in {None, "", "(未選択)"}:
                 jockey = old.get("今回騎手")
 
-        # 期待する馬番の行は、馬名OCRに失敗しても捨てない。
-        # これにより「7番そのものが消える」問題を防ぎ、後段で手動確認できる。
         if not name:
             name = f"(馬名未取得・{gate}番)"
+
         rows.append({
-            "_row_idx": row_idx, "_gate_raw": gate, "馬番": gate, "馬名": name,
-            "性齢": "", "今回騎手": jockey, "斤量": weight, "厩舎": "(未選択)",
-            "単勝": odds, "人気": None, "U指数": u_index,
-            "取得元": "ウマニティ画像(Ver1.18.17-1行OCR＋欠落行局所救済)",
+            "_row_idx": row_idx,
+            "_gate_raw": gate,
+            "馬番": gate,
+            "馬名": name,
+            "性齢": "",
+            "今回騎手": jockey,
+            "斤量": weight,
+            "厩舎": "(未選択)",
+            "単勝": odds,
+            "人気": None,
+            "U指数": u_index,
+            "取得元": "ウマニティ画像(Ver1.18.18-列位置OCR)",
         })
 
+    # 8頭分を必ず返すため、行数欠落は発生させない。
     return rows
 
 
