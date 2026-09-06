@@ -1958,7 +1958,7 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
-    """Ver1.18.22 ウマニティ実画像・スマホ縦長レイアウト専用OCR。
+    """Ver1.18.23 ウマニティ実画像・スマホ縦長レイアウト専用OCR（行開始位置修正版）。
 
     実際に提供された955x2048のスクリーンショットを基準にする。
     表の縦罫線:
@@ -2077,8 +2077,16 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
     row_h=float(sorted(diffs)[len(diffs)//2]) if diffs else 200.0
 
     # 上の表ヘッダー境界を取得。
-    # 最初の行境界を「表開始線」として使う。
-    table_start=usable[0] if usable else 204
+    # 【Ver1.18.23修正】実画像では204px付近はヘッダー下端。
+    # その後の220～340px付近に最初の馬行の上端がある。
+    # 従来 usable[0] が約500pxになるケースがあり、3頭目付近から
+    # 切り出していたため、馬名が「コチ」「ディ」など部分取得になった。
+    candidates_start=[y for y in lines if 220 <= y <= 340]
+    if candidates_start:
+        table_start=max(candidates_start, key=lambda yy: float(hs[int(yy)]) if 0 <= int(yy) < len(hs) else 0.0)
+    else:
+        lo, hi = 220, min(340, h-1)
+        table_start=int(np.argmax(hs[lo:hi+1])+lo) if hi >= lo else 244
 
     # ------------------------------------------------------------
     # 3) OCR馬番のY位置を取得。取れた場合は行対応を補正。
@@ -2272,7 +2280,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "単勝":odds,
             "人気":None,
             "U指数":u_index,
-            "取得元":"ウマニティ画像(Ver1.18.22-実画像列位置OCR)",
+            "取得元":"ウマニティ画像(Ver1.18.23-実画像行位置修正)",
         })
 
     return rows
