@@ -1953,14 +1953,24 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
-    """Ver1.18.19 ウマニティ実画面レイアウト対応OCR。
+    """Ver1.18.21 ウマニティ実画像・スマホ縦長レイアウト専用OCR。
 
-    ウマニティのスマホ画面では、実際の列は
-      馬番 | 予想印 | 馬名・性齢等 | 騎手/斤量 | U指数
-    で、単勝オッズは馬名欄の下段に表示される。
+    実際に提供された955x2048のスクリーンショットを基準にする。
+    表の縦罫線:
+      馬番 0-67
+      予想印 67-176
+      馬名/性齢/調教師/みんなの人気 176-612
+      騎手/斤量/ローテ 612-781
+      U指数/オッズ 781-953
 
-    そのため「画面幅を6等分する」方式ではなく、実画面のX/Y位置を使って
-    1回のimage_to_data OCRから各項目を拾う。
+    重要:
+      - 「馬番→馬名」の連番を固定し、1頭分の行を絶対に捨てない。
+      - 馬名は中央列の上段。
+      - 騎手は右から2列目の上段。
+      - 斤量は右から2列目の中段。
+      - 単勝は中央列の下段にある「○○倍」だけ。
+      - U指数は最右列の上段にある80～110程度の数値。
+      - 表の横罫線から実際の行境界を検出する。固定200pxに依存しない。
     """
     if not OCR_AVAILABLE:
         return parse_umanity_screenshot_text(raw_text) if raw_text else []
@@ -1974,223 +1984,290 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         return parse_umanity_screenshot_text(raw_text) if raw_text else []
 
     w, h = image.size
-    start_gate = max(1, int(forced_start_gate or 1))
-
-    # 現在のウマニティスマホ画像（716x1536 / 955x2048等）は
-    # 1画面に7頭表示される。画面比率が通常の縦長なら7頭を採用。
-    row_count = 7 if h / max(w, 1) > 1.75 else 8
-    row_count = min(row_count, max(0, 19 - start_gate))
-    if row_count <= 0:
-        return []
-
-    # 実画面では上部ヘッダー～表見出しが約15%、表本体が約84%まで。
-    table_top = int(h * 0.150)
-    table_bottom = int(h * 0.842)
-    row_h = (table_bottom - table_top) / float(row_count)
-
-    # 少し拡大して1回だけOCR。座標は元画像基準へ戻す。
-    crop = image.crop((0, table_top, w, table_bottom))
-    scale = 2 if w < 1000 else 1
-    if scale > 1:
-        crop = crop.resize((w * scale, crop.height * scale), Image.Resampling.LANCZOS)
-    gray = ImageOps.autocontrast(ImageOps.grayscale(crop))
-    gray = gray.filter(ImageFilter.UnsharpMask(radius=1, percent=120, threshold=2))
-
-    try:
-        data = pytesseract.image_to_data(
-            gray,
-            lang="jpn+eng",
-            config="--oem 3 --psm 6",
-            output_type=pytesseract.Output.DICT,
-            timeout=18,
-        )
-    except Exception:
-        data = None
-
-    if not data:
-        return parse_umanity_screenshot_text(raw_text) if raw_text else []
-
-    # 行ごとにOCRトークンを保持。
-    buckets = [[] for _ in range(row_count)]
-    n = len(data.get("text", []))
-    for i in range(n):
-        txt = str(data["text"][i] or "").strip()
-        if not txt:
-            continue
-        try:
-            x = float(data["left"][i]) / scale
-            y = float(data["top"][i]) / scale
-            bw = float(data["width"][i]) / scale
-            bh = float(data["height"][i]) / scale
-            conf = float(data.get("conf", [0])[i])
-        except Exception:
-            continue
-        cy = y + bh / 2.0
-        ri = int(cy / row_h)
-        if 0 <= ri < row_count:
-            buckets[ri].append((x, y, bw, bh, txt, conf))
 
     def norm_digits(s):
         return str(s or "").translate(str.maketrans(
             "０１２３４５６７８９．，−ー", "0123456789.,--"
         ))
 
-    def join_items(items):
-        return " ".join(x[4] for x in sorted(items, key=lambda z: (z[1], z[0]))).strip()
+    # ------------------------------------------------------------
+    # 1) 画像全体を1回OCR。ここでは「馬番・馬名・騎手・数値」を
+    #    同時に拾い、後段で実際の列座標に振り分ける。
+    # ------------------------------------------------------------
+    scale = 2 if w < 1200 else 1
+    work = image.resize((w*scale, h*scale), Image.Resampling.LANCZOS) if scale > 1 else image
+    gray = ImageOps.autocontrast(ImageOps.grayscale(work))
+    gray = gray.filter(ImageFilter.UnsharpMask(radius=1, percent=110, threshold=2))
 
-    def in_box(items, x0, x1, y0, y1):
-        out = []
-        for item in items:
-            x, y, bw, bh, txt, conf = item
-            cx = x + bw / 2.0
-            cy = (y % row_h) + bh / 2.0
+    try:
+        data = pytesseract.image_to_data(
+            gray, lang="jpn+eng",
+            config="--oem 3 --psm 6",
+            output_type=pytesseract.Output.DICT,
+            timeout=20
+        )
+    except Exception:
+        data = None
+
+    tokens=[]
+    if data:
+        n=len(data.get("text",[]))
+        for i in range(n):
+            txt=str(data["text"][i] or "").strip()
+            if not txt:
+                continue
+            try:
+                x=float(data["left"][i])/scale
+                y=float(data["top"][i])/scale
+                bw=float(data["width"][i])/scale
+                bh=float(data["height"][i])/scale
+                conf=float(data.get("conf",[0])[i])
+            except Exception:
+                continue
+            if y < 250 or y > h-350:
+                continue
+            tokens.append((x,y,bw,bh,txt,conf))
+
+    def center(t):
+        return t[0]+t[2]/2.0, t[1]+t[3]/2.0
+
+    # ------------------------------------------------------------
+    # 2) 横罫線を画像処理で検出。
+    #    955x2048実画像では表本体が y≈204 から始まり、
+    #    以降は約200pxごと。ただし2枚目・3枚目は上端が途中行なので
+    #    「線を実測」する。
+    # ------------------------------------------------------------
+    arr=np.array(image)
+    g=np.array(ImageOps.grayscale(image), dtype=np.int16)
+    # OpenCV不要。上下1pxの輝度差を横方向に合計して水平罫線を検出。
+    hs=np.abs(g[1:, :].astype(np.int16)-g[:-1, :].astype(np.int16)).sum(axis=1)
+    hs=np.concatenate([[0], hs])
+
+    # 強い水平線を連続グループ化
+    ys=np.where(hs > max(18000, w*35))[0].tolist()
+    groups=[]
+    for y in ys:
+        if not groups or y-groups[-1][-1] > 3:
+            groups.append([y])
+        else:
+            groups[-1].append(y)
+    lines=[int(round(sum(gr)/len(gr))) for gr in groups if len(gr)>=1]
+
+    # 表の行境界として使える間隔(130～240px)を優先。
+    usable=[]
+    for y in lines:
+        if y < 180 or y > h-400:
+            continue
+        if not usable or y-usable[-1] >= 120:
+            usable.append(y)
+        elif y-usable[-1] < 120:
+            # 太い罫線の二重エッジは平均化
+            usable[-1]=int((usable[-1]+y)/2)
+
+    diffs=[usable[i+1]-usable[i] for i in range(len(usable)-1)
+           if 130 <= usable[i+1]-usable[i] <= 240]
+    row_h=float(sorted(diffs)[len(diffs)//2]) if diffs else 200.0
+
+    # 上の表ヘッダー境界を取得。
+    # 最初の行境界を「表開始線」として使う。
+    table_start=usable[0] if usable else 204
+
+    # ------------------------------------------------------------
+    # 3) OCR馬番のY位置を取得。取れた場合は行対応を補正。
+    #    PSM6で馬番が一部しか読めなくても、罫線ベースで連番を維持。
+    # ------------------------------------------------------------
+    start_gate=max(1,int(forced_start_gate or 1))
+    max_rows=min(8, 19-start_gate)
+    if max_rows<=0:
+        return []
+
+    gate_y={}
+    for t in tokens:
+        cx,cy=center(t)
+        if cx > 65:  # 馬番列のみ
+            continue
+        z=norm_digits(t[4]).strip()
+        if re.fullmatch(r"(?:[1-9]|1[0-8])",z):
+            gate=int(z)
+            if start_gate<=gate<start_gate+max_rows:
+                gate_y[gate]=cy
+
+    # table_startの直後を1行目とする。
+    # ただし開始馬番が途中行の場合、table_startは画像上部の行境界。
+    row_bounds=[table_start+i*row_h for i in range(max_rows+1)]
+
+    # 実測された馬番Yを使って row_h/開始位置を微調整。
+    if len(gate_y)>=2:
+        sy=sorted(gate_y.items())
+        local_d=[sy[i+1][1]-sy[i][1] for i in range(len(sy)-1)
+                 if 130 <= sy[i+1][1]-sy[i][1] <= 240]
+        if local_d:
+            row_h=float(sorted(local_d)[len(local_d)//2])
+            first_gate=min(gate_y)
+            # 馬番の中心は行のほぼ中央
+            row_center=gate_y[first_gate]
+            first_top=row_center-row_h/2
+            # 罫線検出と馬番Yの両方に合わせる
+            if abs(first_top-table_start)<row_h*0.35:
+                row_bounds=[first_top+i*row_h for i in range(max_rows+1)]
+
+    # ------------------------------------------------------------
+    # 4) 列ごとの抽出
+    # ------------------------------------------------------------
+    def row_tokens(ri):
+        top=row_bounds[ri]
+        bot=row_bounds[ri+1]
+        return [t for t in tokens if top-8 <= center(t)[1] < bot+8]
+
+    def inside(items,x0,x1,y0,y1):
+        out=[]
+        for t in items:
+            cx,cy=center(t)
             if x0 <= cx < x1 and y0 <= cy < y1:
-                out.append(item)
+                out.append(t)
         return out
 
+    def join(items):
+        return " ".join(t[4] for t in sorted(items,key=lambda z:(z[1],z[0]))).strip()
+
     def extract_name(s):
-        s = _ocr_clean_line(s)
-        # 性齢や「栗」等を除去し、カタカナ連続文字を馬名候補にする。
-        cands = []
-        for m in re.findall(r"[ァ-ヶーヴ]{3,20}", s):
-            x = normalize_horse_name(m)
-            if not x:
-                continue
-            if x.upper() in {"EZRA", "ENNS"}:
-                continue
-            if x in {"ウマニティ", "ニュース", "レース", "新出馬表", "プロ予想"}:
+        s=_ocr_clean_line(s)
+        # カタカナ馬名を優先。長いものを採用。
+        cands=[]
+        for m in re.findall(r"[ァ-ヶーヴ]{2,24}",s):
+            x=normalize_horse_name(m)
+            if not x: continue
+            if x in {"ウマニティ","ニュース","レース","新出馬表","プロ予想","オッズ"}:
                 continue
             cands.append(x)
-        return max(cands, key=len) if cands else ""
+        if cands:
+            return max(cands,key=len)
+        # 英字を含む馬名への救済
+        for m in re.findall(r"[A-Za-z][A-Za-z0-9・ー]{2,24}",s):
+            if m.upper() not in {"VIP","NO","PHOTO"}:
+                return normalize_horse_name(m)
+        return ""
 
-    def extract_number(s, kind):
-        t = norm_digits(s).replace("，", ",").replace(",", ".")
-        if kind == "u":
-            vals = []
-            # 80～110のU指数。順位丸数字の後ろに付くケースにも対応。
-            for m in re.finditer(r"(?<!\d)(?:8\d|9\d|10\d)(?:\.\d{1,2})?(?!\d)", t):
-                try:
-                    v = float(m.group(0))
-                    if 80 <= v <= 110:
-                        vals.append(v)
-                except Exception:
-                    pass
-            return round(vals[0], 1) if vals else None
-        if kind == "odds":
-            vals = []
-            for m in re.finditer(r"(?<!\d)(?:\d{1,3})(?:\.\d{1,2})(?!\d)", t):
-                try:
-                    v = float(m.group(0))
-                    if 1 <= v < 500 and not (48 <= v <= 110):
-                        vals.append(v)
-                except Exception:
-                    pass
-            return vals[0] if vals else None
-        if kind == "weight":
-            vals = []
-            for m in re.finditer(r"(?<!\d)(?:4[8-9]|5\d|6[0-2])(?:\.\d)?(?!\d)", t):
-                try:
-                    v = float(m.group(0))
-                    if 48 <= v <= 62.5:
-                        vals.append(v)
-                except Exception:
-                    pass
-            return vals[-1] if vals else None
+    def extract_u(s):
+        t=norm_digits(s).replace(",","." )
+        vals=[]
+        for m in re.finditer(r"(?<!\d)(?:8\d|9\d|10\d)(?:\.\d{1,2})?(?!\d)",t):
+            try:
+                v=float(m.group(0))
+                if 80<=v<=110:
+                    vals.append(v)
+            except:
+                pass
+        return round(vals[0],1) if vals else None
+
+    def extract_weight(s):
+        t=norm_digits(s).replace(",","." )
+        vals=[]
+        for m in re.finditer(r"(?<!\d)(?:4[8-9]|5\d|6[0-2])(?:\.\d)?(?!\d)",t):
+            try:
+                v=float(m.group(0))
+                if 48<=v<=62.5:
+                    vals.append(v)
+            except:
+                pass
+        return vals[-1] if vals else None
+
+    def extract_odds(s):
+        t=norm_digits(s).replace(",","." )
+        # 実画像では「10.3倍」のように中央列下段に明示される。
+        m=re.search(r"(?<!\d)(\d{1,3}(?:\.\d{1,2})?)\s*倍",t)
+        if m:
+            try:
+                v=float(m.group(1))
+                if 1<=v<500:
+                    return v
+            except:
+                pass
         return None
 
     def extract_jockey(s):
-        obs = re.sub(r"[0-9０-９]+(?:[.,．]\d+)?", "", str(s or ""))
-        obs = re.sub(r"[^一-龥々ぁ-んァ-ヶーA-Za-z.・]", "", obs)
-        if len(obs) < 2:
+        # 今回騎手列は日本語名。JOCKEY_MASTERとの完全/近似照合。
+        obs=re.sub(r"[0-9０-９]+(?:[.,．]\d+)?","",str(s or ""))
+        obs=re.sub(r"[^一-龥々ぁ-んァ-ヶーA-Za-z.・]","",obs)
+        if len(obs)<2:
             return "(未選択)"
-        candidates = [c for c in JOCKEY_MASTER if c != "その他（自由手入力）"]
-        best = (0.0, None)
+        candidates=[c for c in JOCKEY_MASTER if c!="その他（自由手入力）"]
+        best=(0.0,None)
         for cand in candidates:
-            cc = re.sub(r"\s+", "", str(cand))
+            cc=re.sub(r"\s+","",str(cand))
             if cc and cc in obs:
                 return cand
-            score = difflib.SequenceMatcher(None, obs, cc).ratio()
-            if len(obs) >= 2 and len(cc) >= 2 and obs[:2] == cc[:2]:
-                score += 0.12
-            if score > best[0]:
-                best = (score, cand)
-        return best[1] if best[0] >= 0.68 else "(未選択)"
+            score=difflib.SequenceMatcher(None,obs,cc).ratio()
+            if len(obs)>=2 and len(cc)>=2 and obs[:2]==cc[:2]:
+                score+=.12
+            if score>best[0]:
+                best=(score,cand)
+        return best[1] if best[0]>=.62 else "(未選択)"
 
-    # 旧全文OCR結果は「空欄補完」の最後の保険としてのみ使用。
-    legacy_by_gate = {}
-    if raw_text:
-        try:
-            for r in parse_umanity_screenshot_text(raw_text):
-                legacy_by_gate[int(r.get("馬番"))] = r
-        except Exception:
-            pass
+    # ------------------------------------------------------------
+    # 5) 各行を確実に1レコード化
+    # ------------------------------------------------------------
+    rows=[]
+    for ri in range(max_rows):
+        gate=start_gate+ri
+        items=row_tokens(ri)
+        top=row_bounds[ri]
+        rh=row_bounds[ri+1]-top
 
-    rows = []
-    for ri in range(row_count):
-        gate = start_gate + ri
-        items = buckets[ri]
-        rel_items = []
-        for x, y, bw, bh, txt, conf in items:
-            rel_items.append((x, y - ri * row_h, bw, bh, txt, conf))
+        # 実画像の座標をそのまま使用。
+        # 馬名: x=176～612, 上段
+        # 騎手: x=612～781, 上段
+        # 斤量: x=612～781, 中段
+        # 単勝: x=176～612, 下段の「倍」
+        # U指数: x=781～953, 上段
+        name_part=inside(items,w*0.18,w*0.64,top+rh*0.05,top+rh*0.42)
+        jockey_part=inside(items,w*0.64,w*0.82,top+rh*0.05,top+rh*0.42)
+        weight_part=inside(items,w*0.64,w*0.82,top+rh*0.42,top+rh*0.72)
+        odds_part=inside(items,w*0.18,w*0.64,top+rh*0.55,top+rh*0.92)
+        u_part=inside(items,w*0.82,w*0.995,top+rh*0.05,top+rh*0.45)
 
-        # 実際の画面配置：
-        # 馬番 0～8%、馬名/オッズ 20～64%、騎手/斤量 64～84%、U指数 84～100%。
-        name_items = in_box(rel_items, w*0.18, w*0.64, 0, row_h*0.62)
-        odds_items = in_box(rel_items, w*0.18, w*0.64, row_h*0.55, row_h)
-        jockey_items = in_box(rel_items, w*0.64, w*0.84, 0, row_h*0.62)
-        weight_items = in_box(rel_items, w*0.64, w*0.84, row_h*0.55, row_h)
-        u_items = in_box(rel_items, w*0.84, w, 0, row_h)
+        name=extract_name(join(name_part))
+        jockey=extract_jockey(join(jockey_part))
+        weight=extract_weight(join(weight_part))
+        odds=extract_odds(join(odds_part))
+        u_index=extract_u(join(u_part))
 
-        name = extract_name(join_items(name_items))
-        odds = extract_number(join_items(odds_items), "odds")
-        jockey = extract_jockey(join_items(jockey_items))
-        weight = extract_number(join_items(weight_items), "weight")
-        u_index = extract_number(join_items(u_items), "u")
+        # 馬名だけはOCRの文字順で取りこぼしやすいので、中央列全体の
+        # 上半分からもう一度候補を作る。ただし1行につき1回だけ。
+        if not name:
+            broad=inside(items,w*0.18,w*0.64,top+rh*0.02,top+rh*0.50)
+            name=extract_name(join(broad))
 
-        old = legacy_by_gate.get(gate)
-        if old:
-            if not name:
-                old_name = str(old.get("馬名") or "").strip()
-                if old_name and not old_name.startswith("(馬名未取得"):
-                    name = old_name
-            if odds is None:
-                try:
-                    v = float(old.get("単勝")); odds = v if 1 <= v < 500 else None
-                except Exception:
-                    pass
-            if weight is None:
-                try:
-                    v = float(old.get("斤量")); weight = v if 48 <= v <= 62.5 else None
-                except Exception:
-                    pass
-            if u_index is None:
-                try:
-                    v = float(old.get("U指数")); u_index = round(v, 1) if 80 <= v <= 110 else None
-                except Exception:
-                    pass
-            if jockey == "(未選択)" and old.get("今回騎手") not in {None, "", "(未選択)"}:
-                jockey = old.get("今回騎手")
+        # U指数は右端列の上半分だけ。オッズ・斤量は絶対に混ぜない。
+        # それでも取れない場合、同じ行の右端にある80～110数値だけを救済。
+        if u_index is None:
+            for t in items:
+                cx,cy=center(t)
+                if cx >= w*0.80 and top <= cy < top+rh*0.55:
+                    v=extract_u(t[4])
+                    if v is not None:
+                        u_index=v
+                        break
 
         if not name:
-            name = f"(馬名未取得・{gate}番)"
+            name=f"(馬名未取得・{gate}番)"
 
         rows.append({
-            "_row_idx": ri,
-            "_gate_raw": gate,
-            "馬番": gate,
-            "馬名": name,
-            "性齢": "",
-            "今回騎手": jockey,
-            "斤量": weight,
-            "厩舎": "(未選択)",
-            "単勝": odds,
-            "人気": None,
-            "U指数": u_index,
-            "取得元": "ウマニティ画像(Ver1.18.19-実画面列OCR)",
+            "_row_idx":ri,
+            "_gate_raw":gate,
+            "馬番":gate,
+            "馬名":name,
+            "性齢":"",
+            "今回騎手":jockey,
+            "斤量":weight,
+            "厩舎":"(未選択)",
+            "単勝":odds,
+            "人気":None,
+            "U指数":u_index,
+            "取得元":"ウマニティ画像(Ver1.18.21-実画像列位置OCR)",
         })
 
     return rows
-
 
 def parse_umanity_screenshot_image(uploaded_file, raw_text="", forced_start_gate=None):
     """ウマニティの縦長スクリーンショットを「1頭=1行」で分割してOCRする。
@@ -4045,14 +4122,14 @@ with tab_img:
     # ① ウマニティ
     # --------------------------------------------------
     st.markdown("#### ① ウマニティ")
-    st.caption("取得：馬番・馬名・単勝・U指数・斤量・今回騎手。Ver1.18.16では1行1回OCRで高速化し、5番・7番などの行欠落を減らします。")
+    st.caption("取得：馬番・馬名・単勝・U指数・斤量・今回騎手。Ver1.18.20では馬番のY位置を基準に行を復元し、7番などの行欠落を防ぎます。")
 
     if upload_mode == "📱 スマホ：1枚ずつ":
         u_one = st.file_uploader(
             "ウマニティ画像",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=False,
-            key="uploader_u_v1816_mobile",
+            key="uploader_u_v1820_mobile",
         )
         u_files = [u_one] if u_one else []
     else:
@@ -4060,7 +4137,7 @@ with tab_img:
             "ウマニティ画像",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=True,
-            key="uploader_u_v1816_pc",
+            key="uploader_u_v1820_pc",
         ) or []
 
     u_start_map = {}
@@ -4070,8 +4147,8 @@ with tab_img:
         u_start_map[f.name] = c2.selectbox(
             "先頭馬番",
             list(range(1, 19)),
-            index=min(idx * 8, 17) if upload_mode == "🖥️ PC：複数枚まとめて" else 0,
-            key=f"u_start_v1816_{idx}",
+            index=min(idx * 7, 17) if upload_mode == "🖥️ PC：複数枚まとめて" else 0,
+            key=f"u_start_v1820_{idx}",
             label_visibility="collapsed",
         )
 
@@ -4088,7 +4165,7 @@ with tab_img:
                         sg = int(u_start_map[f.name])
                         status_box.write(f"🔎 ウマニティ解析 {idx + 1}/{len(u_files)}：先頭 {sg}番")
                         recs = parse_umanity_screenshot_image(f, "", forced_start_gate=sg)
-                        expected = min(8, 19 - sg)
+                        expected = min(7, 19 - sg)
                         raw = ""
                         if len(recs) < expected:
                             try:
@@ -4116,7 +4193,7 @@ with tab_img:
             old = {int(r["馬番"]): r for r in st.session_state["v187_umanity_records"] if r.get("馬番")}
             for f in u_files:
                 sg = int(u_start_map[f.name])
-                for g in range(sg, min(19, sg + 8)):
+                for g in range(sg, min(19, sg + 7)):
                     old.pop(g, None)
             for r in new_records:
                 if r.get("馬番"):
