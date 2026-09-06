@@ -26,7 +26,7 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.22", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.26", layout="wide", initial_sidebar_state="collapsed")
 st.title("🏆 ジェニーAI予想ver1.18.24（ウマニティOCR安定版）")
 
 st.markdown("""
@@ -1955,7 +1955,7 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
-    """Ver1.18.25 ウマニティ・スマホ縦長画像専用OCR。
+    """Ver1.18.26 ウマニティ・スマホ縦長画像専用OCR。
 
     画面全体を一度にOCRすると、固定ヘッダーや下部メニューの文字が
     馬名欄へ混ざり、「ママコチャ→シカ」のような部分取得が起きる。
@@ -2038,8 +2038,10 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
     if diffs:
         row_h = float(sorted(diffs)[len(diffs) // 2])
     else:
-        # 828x2048系のスマホ画像では約230px、955x2048系では約200px。
-        row_h = 230.0 if w <= 900 else 200.0
+        # ウマニティの実際のスマホ画面は、828px幅の縦長画像では
+        # 1行がおおむね175〜185px。従来の230pxでは2頭目以降が
+        # 大きくずれて別の行を読むため、ここを実画面に合わせる。
+        row_h = 180.0 if w <= 900 else 200.0
 
     if gate_centers:
         first_gate = min(gate_centers)
@@ -2052,11 +2054,14 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
     else:
         # 固定ヘッダーありの先頭ページと、途中スクロールページを分離。
         if start_gate == 1:
-            first_center = 405.0 if w <= 900 else 405.0
-            row_h = 230.0 if w <= 900 else 200.0
+            # 先頭ページはヘッダー直下の1番の行中心が約350px。
+            first_center = 355.0 if w <= 900 else 405.0
+            row_h = 180.0 if w <= 900 else 200.0
         else:
+            # 8番以降のスクロール画像は、画面上端に前の行が
+            # 少し残るため、先頭対象行の中心を約300pxに置く。
             first_center = 300.0 if w <= 900 else 300.0
-            row_h = 230.0 if w <= 900 else 200.0
+            row_h = 180.0 if w <= 900 else 200.0
         centers = {start_gate + i: first_center + i * row_h for i in range(max_rows)}
 
     # ------------------------------------------------------------
@@ -2164,7 +2169,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "単勝": odds,
             "人気": None,
             "U指数": u_index,
-            "取得元": "ウマニティ画像(Ver1.18.25-馬番Yアンカー行OCR)",
+            "取得元": "ウマニティ画像(Ver1.18.26-スマホ行補正OCR)",
         })
 
     return rows
@@ -4015,21 +4020,21 @@ with tab_img:
         ["📱 スマホ：1枚ずつ", "🖥️ PC：複数枚まとめて"],
         index=0 if mobile_ocr_mode else 1,
         horizontal=True,
-        key="ocr_upload_mode_v1822",
+        key="ocr_upload_mode_v1826",
     )
 
     # --------------------------------------------------
     # ① ウマニティ
     # --------------------------------------------------
     st.markdown("#### ① ウマニティ")
-    st.caption("取得：馬番・馬名・単勝・U指数・斤量・今回騎手。Ver1.18.20では馬番のY位置を基準に行を復元し、7番などの行欠落を防ぎます。")
+    st.caption("取得：馬番・馬名・単勝・U指数・斤量・今回騎手。Ver1.18.26ではスマホ画面の実際の行間に合わせて行位置を補正し、7番などの行欠落を防ぎます。")
 
     if upload_mode == "📱 スマホ：1枚ずつ":
         u_one = st.file_uploader(
             "ウマニティ画像",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=False,
-            key="uploader_u_v1820_mobile",
+            key="uploader_u_v1826_mobile",
         )
         u_files = [u_one] if u_one else []
     else:
@@ -4037,7 +4042,7 @@ with tab_img:
             "ウマニティ画像",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=True,
-            key="uploader_u_v1820_pc",
+            key="uploader_u_v1826_pc",
         ) or []
 
     u_start_map = {}
@@ -4048,7 +4053,7 @@ with tab_img:
             "先頭馬番",
             list(range(1, 19)),
             index=min(idx * 7, 17) if upload_mode == "🖥️ PC：複数枚まとめて" else 0,
-            key=f"u_start_v1820_{idx}",
+            key=f"u_start_v1826_{idx}",
             label_visibility="collapsed",
         )
 
