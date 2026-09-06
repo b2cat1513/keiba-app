@@ -11,10 +11,7 @@ import io
 import difflib
 import shutil
 
-try:
-    import numpy as np
-except Exception:
-    np = None
+np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
 from pathlib import Path
 from streamlit.components.v1 import html
@@ -30,7 +27,7 @@ except Exception:
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
 st.set_page_config(page_title="ジェニーAI予想ver1.18.22", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.22（コード整理・軽量化版）")
+st.title("🏆 ジェニーAI予想ver1.18.24（ウマニティOCR安定版）")
 
 st.markdown("""
 <style>
@@ -1958,7 +1955,7 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
-    """Ver1.18.23 ウマニティ実画像・スマホ縦長レイアウト専用OCR（行開始位置修正版）。
+    """Ver1.18.24 ウマニティ実画像・スマホ縦長レイアウト専用OCR（PIL行境界版）。
 
     実際に提供された955x2048のスクリーンショットを基準にする。
     表の縦罫線:
@@ -2042,24 +2039,30 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
     #    以降は約200pxごと。ただし2枚目・3枚目は上端が途中行なので
     #    「線を実測」する。
     # ------------------------------------------------------------
-    if np is None:
-        return parse_umanity_screenshot_text(raw_text) if raw_text else []
+    # Ver1.18.24: NumPy/OpenCVを使わずPILだけで水平罫線を検出。
+    # 画像全幅を毎回走査せず、数pxおきにサンプリングして高速化する。
+    gray_img=ImageOps.grayscale(image)
+    pix=gray_img.load()
+    sample_step=max(2, min(6, w//180))
+    xs=range(0, w, sample_step)
+    hs=[0.0]*h
+    for y in range(1, h):
+        total=0
+        for x in xs:
+            total += abs(int(pix[x,y])-int(pix[x,y-1]))
+        hs[y]=total
 
-    arr=np.array(image)
-    g=np.array(ImageOps.grayscale(image), dtype=np.int16)
-    # OpenCV不要。上下1pxの輝度差を横方向に合計して水平罫線を検出。
-    hs=np.abs(g[1:, :].astype(np.int16)-g[:-1, :].astype(np.int16)).sum(axis=1)
-    hs=np.concatenate([[0], hs])
-
-    # 強い水平線を連続グループ化
-    ys=np.where(hs > max(18000, w*35))[0].tolist()
+    # 強い水平線を連続グループ化。
+    # スマホ画像は薄い罫線なので、絶対値だけでなく上位候補も後段で利用する。
+    threshold=max(2500, (w//sample_step)*18)
+    ys=[y for y in range(180, max(181,h-350)) if hs[y] >= threshold]
     groups=[]
     for y in ys:
         if not groups or y-groups[-1][-1] > 3:
             groups.append([y])
         else:
             groups[-1].append(y)
-    lines=[int(round(sum(gr)/len(gr))) for gr in groups if len(gr)>=1]
+    lines=[int(round(sum(gr)/len(gr))) for gr in groups if gr]
 
     # 表の行境界として使える間隔(130～240px)を優先。
     usable=[]
@@ -2086,7 +2089,10 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         table_start=max(candidates_start, key=lambda yy: float(hs[int(yy)]) if 0 <= int(yy) < len(hs) else 0.0)
     else:
         lo, hi = 220, min(340, h-1)
-        table_start=int(np.argmax(hs[lo:hi+1])+lo) if hi >= lo else 244
+        if hi >= lo:
+            table_start=max(range(lo, hi+1), key=lambda yy: hs[yy])
+        else:
+            table_start=244
 
     # ------------------------------------------------------------
     # 3) OCR馬番のY位置を取得。取れた場合は行対応を補正。
@@ -2280,7 +2286,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "単勝":odds,
             "人気":None,
             "U指数":u_index,
-            "取得元":"ウマニティ画像(Ver1.18.23-実画像行位置修正)",
+            "取得元":"ウマニティ画像(Ver1.18.24-PIL行境界OCR)",
         })
 
     return rows
