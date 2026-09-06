@@ -10,6 +10,11 @@ import uuid
 import io
 import difflib
 import shutil
+
+try:
+    import numpy as np
+except Exception:
+    np = None
 from datetime import datetime, date
 from pathlib import Path
 from streamlit.components.v1 import html
@@ -24,8 +29,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.16", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.16（コード整理・軽量化版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.22", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.22（コード整理・軽量化版）")
 
 st.markdown("""
 <style>
@@ -1953,7 +1958,7 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
-    """Ver1.18.21 ウマニティ実画像・スマホ縦長レイアウト専用OCR。
+    """Ver1.18.22 ウマニティ実画像・スマホ縦長レイアウト専用OCR。
 
     実際に提供された955x2048のスクリーンショットを基準にする。
     表の縦罫線:
@@ -2037,6 +2042,9 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
     #    以降は約200pxごと。ただし2枚目・3枚目は上端が途中行なので
     #    「線を実測」する。
     # ------------------------------------------------------------
+    if np is None:
+        return parse_umanity_screenshot_text(raw_text) if raw_text else []
+
     arr=np.array(image)
     g=np.array(ImageOps.grayscale(image), dtype=np.int16)
     # OpenCV不要。上下1pxの輝度差を横方向に合計して水平罫線を検出。
@@ -2264,7 +2272,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "単勝":odds,
             "人気":None,
             "U指数":u_index,
-            "取得元":"ウマニティ画像(Ver1.18.21-実画像列位置OCR)",
+            "取得元":"ウマニティ画像(Ver1.18.22-実画像列位置OCR)",
         })
 
     return rows
@@ -4115,7 +4123,7 @@ with tab_img:
         ["📱 スマホ：1枚ずつ", "🖥️ PC：複数枚まとめて"],
         index=0 if mobile_ocr_mode else 1,
         horizontal=True,
-        key="ocr_upload_mode_v1816",
+        key="ocr_upload_mode_v1822",
     )
 
     # --------------------------------------------------
@@ -4313,7 +4321,7 @@ with tab_img:
             "過去5走画像",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=False,
-            key="uploader_h_v1816_mobile",
+            key="uploader_h_v1822_mobile",
         )
         h_files = [h_one] if h_one else []
     else:
@@ -4321,7 +4329,7 @@ with tab_img:
             "過去5走画像",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=True,
-            key="uploader_h_v1816_pc",
+            key="uploader_h_v1822_pc",
         ) or []
 
     h_gate_map = {}
@@ -4333,7 +4341,7 @@ with tab_img:
         h_gate_map[idx] = c2.selectbox(
             "対象馬番", gate_choices,
             index=default_index,
-            key=f"h_gate_v1816_{idx}",
+            key=f"h_gate_v1822_{idx}",
             label_visibility="collapsed",
         )
 
@@ -4473,7 +4481,7 @@ with tab_img:
                 "上がり3F平均": st.column_config.NumberColumn(format="%.2f"),
                 "上がり取得数": st.column_config.NumberColumn(min_value=0, max_value=5, step=1),
             },
-            key="ocr_preview_editor_v1816",
+            key="ocr_preview_editor_v1822",
         )
 
         c1, c2 = st.columns(2)
