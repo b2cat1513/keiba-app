@@ -1955,7 +1955,7 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
-    """Ver1.18.28 ウマニティ実画面レイアウト固定OCR。
+    """Ver1.18.29 ウマニティ実画面レイアウト固定OCR。
 
     ウマニティのスマホ縦長スクリーンショットは、馬番・馬名・騎手・斤量・U指数・単勝が
     毎回ほぼ同じ列位置に表示される。従来版は馬番OCRから行中心を推定していたため、
@@ -2024,16 +2024,26 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             )
         return gray.filter(ImageFilter.UnsharpMask(radius=1, percent=160, threshold=2))
 
-    def ocr(crop, lang="jpn+eng", psm=7, whitelist=""):
+    def ocr(crop, lang="jpn+eng", psm=7, whitelist="", threshold=None):
         try:
             cfg = f"--oem 3 --psm {psm}"
             if whitelist:
                 cfg += f" -c tessedit_char_whitelist={whitelist}"
             return pytesseract.image_to_string(
-                prep(crop), lang=lang, config=cfg, timeout=12
+                prep(crop, threshold=threshold), lang=lang, config=cfg, timeout=12
             ).strip()
         except Exception:
             return ""
+
+    def numeric_ocr(crop):
+        """数字欄専用。色付き数字・小数点の欠落に強くするため複数条件で読む。"""
+        texts = []
+        # 通常画像をまず1回。失敗したときだけ二値化した救済OCRを追加。
+        for psm, th in ((7, None), (6, 200), (11, 200)):
+            t = ocr(crop, "eng", psm, "0123456789.-", threshold=th)
+            if t:
+                texts.append(t)
+        return texts
 
     def clean(s):
         return str(s or "").replace(" ", "").replace("　", "").replace("\n", "").strip()
@@ -2156,17 +2166,32 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
 
         jockey_text = ocr(jockey_crop, "jpn", 6)
         jockey = jockey_from(jockey_text)
-        weight = weight_from(jockey_text)
 
-        u_text = ocr(u_crop, "eng", 6, whitelist="0123456789.,")
-        u_index = u_from(u_text)
-        if u_index is None:
-            # 日本語OCRを1回だけ追加。丸数字や色付き文字でeng OCRが失敗する場合の救済。
-            u_text2 = ocr(u_crop, "jpn+eng", 6)
-            u_index = u_from(u_text2)
+        # 数字3列は「数字専用の狭い領域」を独立して読む。
+        # 1回の行OCRに依存すると、色付き数字や罫線で欠落しやすいため、
+        # psm/二値化を変えた複数候補から値を採用する。
+        weight_crop = image.crop(box(600, cy/sy - 5, 785, cy/sy + 105))
+        weight = None
+        for txt in numeric_ocr(weight_crop):
+            weight = weight_from(txt)
+            if weight is not None:
+                break
 
-        lower_text = ocr(lower_crop, "jpn+eng", 6)
-        odds = odds_from(lower_text)
+        # U指数は右端の「80～110」だけを対象にする。
+        # 赤/青の文字を白黒化しても値は同じなので、色に依存しない。
+        u_index = None
+        for txt in numeric_ocr(u_crop):
+            u_index = u_from(txt)
+            if u_index is not None:
+                break
+
+        # 単勝は馬名欄の下段にある「○○倍」を対象にする。
+        odds_crop = image.crop(box(165, cy/sy + 20, 535, cy/sy + 120))
+        odds = None
+        for txt in numeric_ocr(odds_crop):
+            odds = odds_from(txt)
+            if odds is not None:
+                break
 
         if not name:
             name = f"(馬名未取得・{gate}番)"
@@ -2183,7 +2208,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "単勝": odds,
             "人気": None,
             "U指数": u_index,
-            "取得元": "ウマニティ画像(Ver1.18.28-実画面固定座標OCR)",
+            "取得元": "ウマニティ画像(Ver1.18.29-実画面固定座標+数字列OCR)",
         })
 
     return rows
@@ -4042,7 +4067,7 @@ with tab_img:
     # ① ウマニティ
     # --------------------------------------------------
     st.markdown("#### ① ウマニティ")
-    st.caption("取得：馬番・馬名・単勝・U指数・斤量・今回騎手。Ver1.18.27ではスマホ画面の馬番位置を基準に1頭ずつ切り出し、馬名の途中欠けや行ずれを抑えます。")
+    st.caption("取得：馬番・馬名・単勝・U指数・斤量・今回騎手。Ver1.18.29では馬番・馬名・騎手を固定し、U指数・単勝・斤量を数字欄ごとに独立OCRします。")
 
     if upload_mode == "📱 スマホ：1枚ずつ":
         u_one = st.file_uploader(
