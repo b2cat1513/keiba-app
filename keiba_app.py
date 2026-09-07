@@ -26,8 +26,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.26", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.27（ウマニティOCR安定版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.27", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.27（ウマニティ数値OCR改善版）")
 
 st.markdown("""
 <style>
@@ -1955,14 +1955,12 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
-    """Ver1.18.29 ウマニティ実画面レイアウト固定OCR。
+    """Ver1.18.27 ウマニティ・スマホ縦長画像専用OCR。
 
-    ウマニティのスマホ縦長スクリーンショットは、馬番・馬名・騎手・斤量・U指数・単勝が
-    毎回ほぼ同じ列位置に表示される。従来版は馬番OCRから行中心を推定していたため、
-    馬番を拾えない画像で行が大きくずれ、ヘッダーや下部メニューを馬名として誤認していた。
-
-    本版では、実際の955x2048画面を基準に「先頭馬番ごとの行中心」を固定し、画像サイズに
-    合わせて比例変換する。馬番はユーザー指定値をそのまま使い、各列を独立OCRする。
+    画面全体を一度にOCRすると、固定ヘッダーや下部メニューの文字が
+    馬名欄へ混ざり、「ママコチャ→シカ」のような部分取得が起きる。
+    そのため、まず馬番列だけをOCRして各馬のY中心を求め、そのYを基準に
+    1頭ずつ横一列をOCRする。馬番自体は指定された先頭馬番から連番で固定する。
     """
     if not OCR_AVAILABLE:
         return parse_umanity_screenshot_text(raw_text) if raw_text else []
@@ -1976,222 +1974,226 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         return parse_umanity_screenshot_text(raw_text) if raw_text else []
 
     w, h = image.size
-    try:
-        start_gate = max(1, min(18, int(forced_start_gate or 1)))
-    except Exception:
-        start_gate = 1
-
-    # 今回確認したウマニティ実画面は16頭立てで、画像は 1-7 / 8-14 / 15-16 の3枚。
-    # 15番開始画面は16番までが実データで、その下は「予想コロシアム」等の別コンテンツ。
-    if start_gate == 1:
-        max_rows = min(7, 19 - start_gate)
-        first_center_955 = 390.0
-        row_h_955 = 200.0
-    elif start_gate == 8:
-        max_rows = min(7, 19 - start_gate)
-        first_center_955 = 355.0
-        row_h_955 = 200.0
-    elif start_gate >= 15:
-        max_rows = min(2, 19 - start_gate)
-        first_center_955 = 320.0
-        row_h_955 = 200.0
-    else:
-        # 途中の開始番号にも対応。8番開始と同じスクロール位置を基本値とする。
-        max_rows = min(7, 19 - start_gate)
-        first_center_955 = 355.0
-        row_h_955 = 200.0
-
+    start_gate = max(1, int(forced_start_gate or 1))
+    max_rows = min(8, 19 - start_gate)
     if max_rows <= 0:
         return []
 
-    sy = h / 2048.0
-    sx = w / 955.0
+    def norm_text(s):
+        return str(s or "").replace(" ", "").replace("　", "").strip()
 
-    def box(x1, y1, x2, y2):
-        return (
-            max(0, int(x1 * sx)), max(0, int(y1 * sy)),
-            min(w, int(x2 * sx)), min(h, int(y2 * sy)),
-        )
-
-    def prep(crop, scale=4, threshold=None):
-        gray = ImageOps.autocontrast(ImageOps.grayscale(crop))
-        if threshold is not None:
-            gray = gray.point(lambda px: 255 if px >= threshold else 0)
+    def prep(crop, scale=3):
+        crop = crop.convert("L")
+        crop = ImageOps.autocontrast(crop)
         if scale > 1:
-            gray = gray.resize(
-                (gray.width * scale, gray.height * scale),
-                resample=Image.Resampling.LANCZOS,
-            )
-        return gray.filter(ImageFilter.UnsharpMask(radius=1, percent=160, threshold=2))
+            crop = crop.resize((crop.width * scale, crop.height * scale), Image.Resampling.LANCZOS)
+        return crop.filter(ImageFilter.UnsharpMask(radius=1, percent=140, threshold=2))
 
-    def ocr(crop, lang="jpn+eng", psm=7, whitelist="", threshold=None):
+    def ocr_crop(crop, psm=6, whitelist=""):
         try:
-            cfg = f"--oem 3 --psm {psm}"
+            config = f"--oem 3 --psm {psm}"
             if whitelist:
-                cfg += f" -c tessedit_char_whitelist={whitelist}"
+                config += f" -c tessedit_char_whitelist={whitelist}"
             return pytesseract.image_to_string(
-                prep(crop, threshold=threshold), lang=lang, config=cfg, timeout=12
+                prep(crop), lang="jpn+eng", config=config, timeout=12
             ).strip()
         except Exception:
             return ""
 
-    def numeric_ocr(crop):
-        """数字欄専用。色付き数字・小数点の欠落に強くするため複数条件で読む。"""
-        texts = []
-        # 通常画像をまず1回。失敗したときだけ二値化した救済OCRを追加。
-        for psm, th in ((7, None), (6, 200), (11, 200)):
-            t = ocr(crop, "eng", psm, "0123456789.-", threshold=th)
-            if t:
-                texts.append(t)
-        return texts
+    # ------------------------------------------------------------
+    # ① 馬番列だけをOCRして、実際の行中心を取得
+    # ------------------------------------------------------------
+    gate_centers = {}
+    try:
+        # 左端の馬番列はスマホ画像では概ね幅70px前後。
+        gate_crop = image.crop((0, 0, min(w, int(w * 0.12)), h))
+        gate_data = pytesseract.image_to_data(
+            prep(gate_crop, scale=3),
+            lang="jpn+eng",
+            config="--oem 3 --psm 6",
+            output_type=pytesseract.Output.DICT,
+            timeout=15,
+        )
+        for i, txt in enumerate(gate_data.get("text", [])):
+            z = norm_text(txt).translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+            if not re.fullmatch(r"(?:[1-9]|1[0-8])", z):
+                continue
+            try:
+                yy = (float(gate_data["top"][i]) + float(gate_data["height"][i]) / 2.0) / 3.0
+                xx = (float(gate_data["left"][i]) + float(gate_data["width"][i]) / 2.0) / 3.0
+            except Exception:
+                continue
+            if xx > w * 0.13:
+                continue
+            gate = int(z)
+            if start_gate <= gate < start_gate + max_rows and 150 < yy < h - 250:
+                gate_centers[gate] = yy
+    except Exception:
+        gate_centers = {}
 
-    def clean(s):
-        return str(s or "").replace(" ", "").replace("　", "").replace("\n", "").strip()
+    # 実測中心から行間を決定。馬番OCRが2頭以上取れれば非常に強いアンカーになる。
+    sorted_centers = sorted(gate_centers.items())
+    diffs = [b[1] - a[1] for a, b in zip(sorted_centers, sorted_centers[1:])
+             if 150 <= b[1] - a[1] <= 300]
+    if diffs:
+        row_h = float(sorted(diffs)[len(diffs) // 2])
+    else:
+        # ウマニティの実際のスマホ画面は、828px幅の縦長画像では
+        # 1行がおおむね175〜185px。従来の230pxでは2頭目以降が
+        # 大きくずれて別の行を読むため、ここを実画面に合わせる。
+        row_h = 180.0 if w <= 900 else 200.0
 
-    def name_from(text):
-        s = clean(text)
-        # ヘッダー・固定メニュー由来の語を除外。
-        ng = {"ウマニティ", "ニュース", "レース", "新出馬表", "プロ予想", "コロシアム", "プレミアム",
-              "みんなの人気", "ブリンカー", "予想印", "性齢", "調教師", "斤量", "オッズ"}
+    if gate_centers:
+        first_gate = min(gate_centers)
+        first_center = gate_centers[first_gate]
+        # 実測した馬番中心を基準に連番を再構成
+        centers = {g: first_center + (g - first_gate) * row_h
+                   for g in range(start_gate, start_gate + max_rows)}
+        # 取れている馬番は実測値を優先
+        centers.update(gate_centers)
+    else:
+        # 固定ヘッダーありの先頭ページと、途中スクロールページを分離。
+        if start_gate == 1:
+            # 先頭ページはヘッダー直下の1番の行中心が約350px。
+            first_center = 355.0 if w <= 900 else 405.0
+            row_h = 180.0 if w <= 900 else 200.0
+        else:
+            # 8番以降のスクロール画像は、画面上端に前の行が
+            # 少し残るため、先頭対象行の中心を約300pxに置く。
+            first_center = 300.0 if w <= 900 else 300.0
+            row_h = 180.0 if w <= 900 else 200.0
+        centers = {start_gate + i: first_center + i * row_h for i in range(max_rows)}
+
+    # ------------------------------------------------------------
+    # ② 1頭ずつ横一列OCR
+    # ------------------------------------------------------------
+    def clean_name(text):
+        s = norm_text(text)
+        s = re.sub(r"(?:みんなの人気|VIP|中\d+週|\d+(?:\.\d+)?倍)", "", s)
+        # 馬名候補はカタカナ中心。英字はOCR誤読対策として短いものを除外。
         cands = re.findall(r"[ァ-ヶーヴ]{2,20}", s)
-        cands = [normalize_horse_name(x) for x in cands if normalize_horse_name(x) not in ng]
-        if not cands:
-            return ""
-        # 通常は馬名が最長のカタカナ列。
-        return max(cands, key=len)
+        ng = {"ウマニティ", "ニュース", "レース", "新出馬表", "プロ予想", "コロシアム", "プレミアム"}
+        cands = [normalize_horse_name(x) for x in cands if x not in ng]
+        cands = [x for x in cands if len(x) >= 2]
+        return max(cands, key=len) if cands else ""
 
-    def u_from(text):
+    def extract_u(text):
         s = str(text or "").replace(",", ".").replace("．", ".")
         vals = []
-        # まず「101.2」「95.2」のような小数を優先。
-        for m in re.finditer(r"(?<!\d)(8\d|9\d|10\d)\s*[.]\s*(\d)(?!\d)", s):
+        for m in re.finditer(r"(?<!\d)(8\d|9\d|10\d)(?:\.(\d{1,2}))?(?!\d)", s):
+            dec = (m.group(2) or "")[:1]
             try:
-                v = float(m.group(1) + "." + m.group(2))
+                v = float(m.group(1) + ("." + dec if dec else ""))
                 if 80 <= v <= 110:
                     vals.append(round(v, 1))
             except Exception:
                 pass
-        if not vals:
-            for m in re.finditer(r"(?<!\d)(8\d|9\d|10\d)(?!\d)", s):
-                try:
-                    v = float(m.group(1))
-                    if 80 <= v <= 110:
-                        vals.append(round(v, 1))
-                except Exception:
-                    pass
         return vals[0] if vals else None
 
-    def weight_from(text):
+    def extract_weight(text):
         s = str(text or "").replace(",", ".").replace("．", ".")
-        # 斤量は48～62.5kg。OCRで「57.0」の点が空白になる場合も許容。
-        vals = re.findall(r"(?<!\d)(4[8-9]|5\d|6[0-2])\s*(?:[.]\s*(5|0))?(?!\d)", s)
-        for a, b in vals:
-            try:
-                v = float(a + ("." + b if b in {"5", "0"} else ".0"))
-                if 48 <= v <= 62.5:
-                    return v
-            except Exception:
-                continue
-        return None
+        vals = re.findall(r"(?<!\d)(4[8-9](?:\.5)?|5\d(?:\.5)?|6[0-2](?:\.5)?)(?!\d)", s)
+        return float(vals[0]) if vals else None
 
-    def odds_from(text):
+    def extract_odds(text):
         s = str(text or "").replace(",", ".").replace("．", ".")
-        m = re.search(r"(?<!\d)(\d{1,3})\s*[.]?\s*(\d{1,2})\s*倍", s)
+        m = re.search(r"(\d{1,3}(?:\.\d+)?)\s*倍", s)
         if not m:
-            m = re.search(r"(?<!\d)(\d{1,3})\s*[.]\s*(\d{1,2})(?!\d)", s)
-        if not m:
-            return None
+            # 「倍」が落ちる場合も救済。ただし馬名列の整数を拾わないよう小数限定。
+            m = re.search(r"(?<!\d)(\d+\.\d+)(?!\d)", s)
         try:
-            v = float(m.group(1) + "." + m.group(2))
-            return v if 1 <= v <= 999 else None
+            v = float(m.group(1)) if m else None
+            return v if v is not None and 1 <= v <= 999 else None
         except Exception:
             return None
 
-    def jockey_from(text):
-        s = clean(text)
-        # 数字・斤量・週表示を落とし、最初の日本語名を採用。
-        s = re.sub(r"[0-9０-９]+(?:[.,．]\d+)?", " ", s)
-        candidates = re.findall(r"[一-龥々ぁ-んァ-ヶー]{2,8}", s)
-        if not candidates:
+    def norm_jockey(text):
+        obs = re.sub(r"[0-9０-９]+(?:[.,．]\d+)?", "", str(text or ""))
+        obs = re.sub(r"[^一-龥々ぁ-んァ-ヶーA-Za-z.・]", "", obs)
+        if len(obs) < 2:
             return "(未選択)"
-        # JOCKEY_MASTERとの完全包含を最優先。
-        for cand in JOCKEY_MASTER:
-            if cand == "その他（自由手入力）":
-                continue
+        best_score, best = 0.0, None
+        for cand in [c for c in JOCKEY_MASTER if c != "その他（自由手入力）"]:
             cc = re.sub(r"\s+", "", str(cand))
-            if cc and cc in s:
+            if cc and cc in obs:
                 return cand
-        obs = max(candidates, key=len)
-        best, score = None, 0.0
-        for cand in JOCKEY_MASTER:
-            if cand == "その他（自由手入力）":
-                continue
-            cc = re.sub(r"\s+", "", str(cand))
-            r = difflib.SequenceMatcher(None, obs, cc).ratio()
+            score = difflib.SequenceMatcher(None, obs, cc).ratio()
             if len(obs) >= 2 and len(cc) >= 2 and obs[:2] == cc[:2]:
-                r += 0.15
-            if r > score:
-                score, best = r, cand
-        return best if score >= 0.58 else obs
+                score += 0.12
+            if score > best_score:
+                best_score, best = score, cand
+        return best if best_score >= 0.62 else "(未選択)"
 
-    # 実測レイアウトの列境界（955px基準）。
-    # 馬名: 200-610 / 騎手: 610-785 / U指数: 785-955
     rows = []
     for ri in range(max_rows):
         gate = start_gate + ri
-        cy = (first_center_955 + ri * row_h_955) * sy
+        cy = float(centers.get(gate, 405 + ri * row_h))
+        # 1頭分の高さ。上下の境界を少し内側にして隣馬の文字を混ぜない。
+        half = min(92.0, row_h * 0.43)
+        y1 = max(0, int(cy - half))
+        y2 = min(h, int(cy + half))
+        row_img = image.crop((0, y1, w, y2))
 
-        # 隣の行が混ざらないよう、名前は上側、騎手は行全体、U指数は右上に限定。
-        name_crop = image.crop(box(200, cy/sy - 82, 610, cy/sy + 8))
-        jockey_crop = image.crop(box(610, cy/sy - 78, 785, cy/sy + 90))
-        u_crop = image.crop(box(785, cy/sy - 82, 955, cy/sy + 18))
-        lower_crop = image.crop(box(200, cy/sy + 8, 610, cy/sy + 92))
+        # 列ごとに読む。馬名・騎手は従来位置を維持し、数値列は「取りこぼし時だけ」
+        # 広い範囲を再OCRする。これによりU指数・単勝・斤量の欠落を減らす。
+        name_text = ocr_crop(
+            row_img.crop((int(w*0.20), 0, int(w*0.64), row_img.height)), psm=7
+        )
+        jockey_text = ocr_crop(
+            row_img.crop((int(w*0.64), 0, int(w*0.84), row_img.height)), psm=7
+        )
 
-        name1 = name_from(ocr(name_crop, "jpn", 7))
-        name2 = name_from(ocr(name_crop, "jpn", 6))
-        name = max([name1, name2], key=len) if (name1 or name2) else ""
+        # U指数：まず右側の標準帯。読めなければ左へ広げた数値帯を1回だけ追加。
+        u_text = ocr_crop(
+            row_img.crop((int(w*0.84), 0, w, int(row_img.height*0.60))),
+            psm=7, whitelist="0123456789.,"
+        )
 
-        # 現在確認できているテスト画像のOCR誤読を限定的に補正。
-        name_fix = {
-            "ママコチヤー": "ママコチャ",
-            "ビピューロマジック": "ビューロマジック",
-            "引ル〆メイースター": "ヨシノイースター",
-            "ヨンシノイースター": "ヨシノイースター",
-            "プロトボポロス": "プロトポロス",
-            "ダイヤモン ドノット": "ダイヤモンドノット",
-            "メイショウヨソラ": "メイショウヨゾラ",
-            "カルプスペルシュ": "カルプスペルシュ",
-        }
-        name = name_fix.get(name, name)
+        # 単勝・斤量：旧版は x=84% より右を読んでいなかったため、斤量が欠落しやすかった。
+        # 下段右側を独立して読む。
+        lower_center = row_img.crop(
+            (int(w*0.20), int(row_img.height*0.38), w, row_img.height)
+        )
+        lower_text = ocr_crop(lower_center, psm=6)
 
-        jockey_text = ocr(jockey_crop, "jpn", 6)
-        jockey = jockey_from(jockey_text)
+        name = clean_name(name_text)
+        jockey = norm_jockey(jockey_text)
+        u_index = extract_u(u_text)
+        weight = extract_weight(jockey_text + " " + lower_text)
+        odds = extract_odds(lower_text)
 
-        # 数字3列は「数字専用の狭い領域」を独立して読む。
-        # 1回の行OCRに依存すると、色付き数字や罫線で欠落しやすいため、
-        # psm/二値化を変えた複数候補から値を採用する。
-        weight_crop = image.crop(box(600, cy/sy - 5, 785, cy/sy + 105))
-        weight = None
-        for txt in numeric_ocr(weight_crop):
-            weight = weight_from(txt)
-            if weight is not None:
-                break
+        # 数値の取りこぼし救済。値が取れている場合は追加OCRを行わない。
+        if u_index is None:
+            u_retry = ocr_crop(
+                row_img.crop((int(w*0.76), 0, int(w*0.96), int(row_img.height*0.62))),
+                psm=7, whitelist="0123456789.,"
+            )
+            u_index = extract_u(u_retry)
 
-        # U指数は右端の「80～110」だけを対象にする。
-        # 赤/青の文字を白黒化しても値は同じなので、色に依存しない。
-        u_index = None
-        for txt in numeric_ocr(u_crop):
-            u_index = u_from(txt)
-            if u_index is not None:
-                break
+        if odds is None or weight is None:
+            right_num = ocr_crop(
+                row_img.crop((int(w*0.72), int(row_img.height*0.28), w, row_img.height)),
+                psm=6, whitelist="0123456789.,倍"
+            )
+            if odds is None:
+                odds = extract_odds(right_num)
+            if weight is None:
+                weight = extract_weight(right_num)
 
-        # 単勝は馬名欄の下段にある「○○倍」を対象にする。
-        odds_crop = image.crop(box(165, cy/sy + 20, 535, cy/sy + 120))
-        odds = None
-        for txt in numeric_ocr(odds_crop):
-            odds = odds_from(txt)
-            if odds is not None:
-                break
+        # 斤量は右端に単独表示されるケースを最後に救済。
+        if weight is None:
+            weight_retry = ocr_crop(
+                row_img.crop((int(w*0.88), 0, w, row_img.height)),
+                psm=7, whitelist="0123456789.,"
+            )
+            weight = extract_weight(weight_retry)
+
+        # 名前OCRが短すぎる場合だけ中央列をもう1回読む。
+        if len(name) < 3:
+            broad = ocr_crop(row_img.crop((int(w*0.18), 0, int(w*0.64), int(row_img.height*0.65))), psm=6)
+            broad_name = clean_name(broad)
+            if len(broad_name) > len(name):
+                name = broad_name
 
         if not name:
             name = f"(馬名未取得・{gate}番)"
@@ -2208,11 +2210,10 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "単勝": odds,
             "人気": None,
             "U指数": u_index,
-            "取得元": "ウマニティ画像(Ver1.18.29-実画面固定座標+数字列OCR)",
+            "取得元": "ウマニティ画像(Ver1.18.27-スマホ行補正OCR)",
         })
 
     return rows
-
 
 def parse_umanity_screenshot_image(uploaded_file, raw_text="", forced_start_gate=None):
     """ウマニティの縦長スクリーンショットを「1頭=1行」で分割してOCRする。
@@ -4060,21 +4061,21 @@ with tab_img:
         ["📱 スマホ：1枚ずつ", "🖥️ PC：複数枚まとめて"],
         index=0 if mobile_ocr_mode else 1,
         horizontal=True,
-        key="ocr_upload_mode_v1828",
+        key="ocr_upload_mode_v1827",
     )
 
     # --------------------------------------------------
     # ① ウマニティ
     # --------------------------------------------------
     st.markdown("#### ① ウマニティ")
-    st.caption("取得：馬番・馬名・単勝・U指数・斤量・今回騎手。Ver1.18.29では馬番・馬名・騎手を固定し、U指数・単勝・斤量を数字欄ごとに独立OCRします。")
+    st.caption("取得：馬番・馬名・単勝・U指数・斤量・今回騎手。Ver1.18.27ではスマホ画面の実際の行間に合わせて行位置を補正し、7番などの行欠落を防ぎます。")
 
     if upload_mode == "📱 スマホ：1枚ずつ":
         u_one = st.file_uploader(
             "ウマニティ画像",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=False,
-            key="uploader_u_v1828_mobile",
+            key="uploader_u_v1827_mobile",
         )
         u_files = [u_one] if u_one else []
     else:
@@ -4082,7 +4083,7 @@ with tab_img:
             "ウマニティ画像",
             type=["png", "jpg", "jpeg", "webp"],
             accept_multiple_files=True,
-            key="uploader_u_v1828_pc",
+            key="uploader_u_v1827_pc",
         ) or []
 
     u_start_map = {}
@@ -4093,7 +4094,7 @@ with tab_img:
             "先頭馬番",
             list(range(1, 19)),
             index=min(idx * 7, 17) if upload_mode == "🖥️ PC：複数枚まとめて" else 0,
-            key=f"u_start_v1828_{idx}",
+            key=f"u_start_v1827_{idx}",
             label_visibility="collapsed",
         )
 
@@ -4110,7 +4111,7 @@ with tab_img:
                         sg = int(u_start_map[f.name])
                         status_box.write(f"🔎 ウマニティ解析 {idx + 1}/{len(u_files)}：先頭 {sg}番")
                         recs = parse_umanity_screenshot_image(f, "", forced_start_gate=sg)
-                        expected = min(7, 19 - sg)
+                        expected = min(8, 19 - sg)
                         raw = ""
                         if len(recs) < expected:
                             try:
