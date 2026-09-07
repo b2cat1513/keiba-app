@@ -27,7 +27,7 @@ except Exception:
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
 st.set_page_config(page_title="ジェニーAI予想ver1.18.26", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.27（ウマニティOCR安定版）")
+st.title("🏆 ジェニーAI予想ver1.18.31（ウマニティOCR安定版）")
 
 st.markdown("""
 <style>
@@ -2064,13 +2064,23 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         s = str(text or "").replace(",", ".").replace("．", ".")
         vals = []
         # まず「101.2」「95.2」のような小数を優先。
-        for m in re.finditer(r"(?<!\d)(8\d|9\d|10\d)\s*[.]\s*(\d)(?!\d)", s):
+        for m in re.finditer(r"(?<!\d)(8\d|9\d|10\d)\s*[.]\s*(\d)", s):
             try:
                 v = float(m.group(1) + "." + m.group(2))
                 if 80 <= v <= 110:
                     vals.append(round(v, 1))
             except Exception:
                 pass
+        if not vals:
+            # OCRで小数点が消えた「1012」「952」「9816」などを復元。
+            # U指数は80～110の範囲なので、整数部の直後の1桁を小数第1位として読む。
+            for m in re.finditer(r"(?<!\d)(8\d|9\d|10\d)(\d)", s):
+                try:
+                    v = float(m.group(1) + "." + m.group(2))
+                    if 80 <= v <= 110:
+                        vals.append(round(v, 1))
+                except Exception:
+                    pass
         if not vals:
             for m in re.finditer(r"(?<!\d)(8\d|9\d|10\d)(?!\d)", s):
                 try:
@@ -2167,15 +2177,26 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         jockey_text = ocr(jockey_crop, "jpn", 6)
         jockey = jockey_from(jockey_text)
 
-        # 数字3列は「数字専用の狭い領域」を独立して読む。U指数と単勝は右端列を上下に分離する。
-        # 1回の行OCRに依存すると、色付き数字や罫線で欠落しやすいため、
-        # psm/二値化を変えた複数候補から値を採用する。
-        weight_crop = image.crop(box(600, cy/sy - 5, 785, cy/sy + 105))
+        # 斤量は「騎手・斤量・ローテーション」欄の上側にある。
+        # 数字専用OCRだけでは「56.0」を「96」などに誤読しやすいため、
+        # 日本語OCRで実際の欄を読み、48～62.5kgの値だけを採用する。
+        weight_crop = image.crop(box(600, cy/sy - 8, 785, cy/sy + 72))
         weight = None
-        for txt in numeric_ocr(weight_crop):
+        weight_candidates = [
+            ocr(weight_crop, "jpn", 6),
+            ocr(weight_crop, "jpn", 7),
+            ocr(weight_crop, "jpn", 11),
+        ]
+        for txt in weight_candidates:
             weight = weight_from(txt)
             if weight is not None:
                 break
+        if weight is None:
+            # 最後の救済として数字専用OCRも試す。
+            for txt in numeric_ocr(weight_crop):
+                weight = weight_from(txt)
+                if weight is not None:
+                    break
 
         # U指数は右端の「80～110」だけを対象にする。
         # 赤/青の文字を白黒化しても値は同じなので、色に依存しない。
@@ -2185,15 +2206,23 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             if u_index is not None:
                 break
 
-        # 単勝はU指数と同じ右端列の「下段」に表示される。
-        # Ver1.18.27/29では左側の馬名欄下段を読んでいたため、
-        # 斤量や馬体重を単勝として拾う誤りが発生していた。
-        odds_crop = image.crop(box(785, cy/sy + 8, 955, cy/sy + 92))
+        # 単勝は実画像では「馬名・基本情報」欄の下段にある。
+        # 「倍」が含まれるため、英数字専用OCRではなく日本語OCRを使用する。
+        odds_crop = image.crop(box(165, cy/sy + 8, 535, cy/sy + 112))
         odds = None
-        for txt in numeric_ocr(odds_crop):
+        for psm in (6, 7, 11):
+            txt = ocr(odds_crop, "jpn", psm)
             odds = odds_from(txt)
             if odds is not None:
                 break
+
+        # 「倍」が欠落した場合は小数だけを読む救済。
+        if odds is None:
+            for psm in (6, 7, 11):
+                txt = ocr(odds_crop, "eng", psm, "0123456789.-")
+                odds = odds_from(txt)
+                if odds is not None:
+                    break
 
         # U指数は同じ右端列の上段。少し下へ広げた救済を1回だけ行う。
         if u_index is None:
@@ -2203,11 +2232,11 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
                 if u_index is not None:
                     break
 
-        # 「倍」が画像処理で落ちた場合だけ、右端下段の小数を救済する。
-        # 80～110のU指数はoddsとして採用しない。
+        # 単勝のさらに下側を1回だけ救済。
         if odds is None:
-            odds_retry_crop = image.crop(box(770, cy/sy + 5, 955, cy/sy + 105))
-            for txt in numeric_ocr(odds_retry_crop):
+            odds_retry_crop = image.crop(box(150, cy/sy + 20, 560, cy/sy + 125))
+            for psm in (6, 7):
+                txt = ocr(odds_retry_crop, "jpn", psm)
                 odds = odds_from(txt)
                 if odds is not None:
                     break
@@ -2227,7 +2256,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "単勝": odds,
             "人気": None,
             "U指数": u_index,
-            "取得元": "ウマニティ画像(Ver1.18.30-実画面固定座標+数字列OCR)",
+            "取得元": "ウマニティ画像(Ver1.18.31-実画面固定座標+日本語数値OCR)",
         })
 
     return rows
@@ -4086,7 +4115,7 @@ with tab_img:
     # ① ウマニティ
     # --------------------------------------------------
     st.markdown("#### ① ウマニティ")
-    st.caption("取得：馬番・馬名・単勝・U指数・斤量・今回騎手。Ver1.18.29では馬番・馬名・騎手を固定し、U指数・単勝・斤量を数字欄ごとに独立OCRします。")
+    st.caption("取得：馬番・馬名・単勝・U指数・斤量・今回騎手。Ver1.18.31では実画面の列位置に合わせ、U指数・単勝・斤量を専用領域からOCRします。")
 
     if upload_mode == "📱 スマホ：1枚ずつ":
         u_one = st.file_uploader(
