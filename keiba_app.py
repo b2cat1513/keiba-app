@@ -26,8 +26,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.32", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.32（ウマニティOCR安定版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.33", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.33（ウマニティOCR安定版）")
 
 st.markdown("""
 <style>
@@ -1955,7 +1955,7 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
-    """Ver1.18.30 ウマニティ実画面レイアウト固定OCR。
+    """Ver1.18.33 ウマニティ実画面レイアウト固定OCR。
 
     ウマニティのスマホ縦長スクリーンショットは、馬番・馬名・騎手・斤量・U指数・単勝が
     毎回ほぼ同じ列位置に表示される。従来版は馬番OCRから行中心を推定していたため、
@@ -2086,6 +2086,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
                 try:
                     v = float(m.group(1))
                     if 80 <= v <= 110:
+                        # U指数は常に小数1桁表示。OCRが小数点を落とした場合は .0 として復元。
                         vals.append(round(v, 1))
                 except Exception:
                     pass
@@ -2130,6 +2131,8 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         s = clean(text)
         # 数字・斤量・週表示を落とし、最初の日本語名を採用。
         s = re.sub(r"[0-9０-９]+(?:[.,．]\d+)?", " ", s)
+        # OCRで「旺佑」が崩れやすいケースを、姓が一致する場合だけ補正。
+        s = s.replace("田山姓佑り", "田山旺佑").replace("田山旺佑り", "田山旺佑")
         candidates = re.findall(r"[一-龥々ぁ-んァ-ヶー]{2,8}", s)
         if not candidates:
             return "(未選択)"
@@ -2180,6 +2183,8 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "ダイヤモン ドノット": "ダイヤモンドノット",
             "メイショウヨソラ": "メイショウヨゾラ",
             "カルプスペルシュ": "カルプスペルシュ",
+            "テイーア": "テイニア",
+            "ファストネットワー": "ファストネットワーク",
         }
         name = name_fix.get(name, name)
 
@@ -2189,6 +2194,19 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         if jockey == "(未選択)":
             for psm in (7, 11):
                 retry = ocr(jockey_crop, "jpn", psm)
+                if retry:
+                    j2 = jockey_from(retry)
+                    if j2 != "(未選択)":
+                        jockey_text = retry
+                        jockey = j2
+                        break
+
+        # 下端の行（特に15・16番）は画面端の影響で騎手欄が空になることがある。
+        # 騎手列を少し広く取り直して再OCRし、JOCKEY_MASTER照合を行う。
+        if jockey == "(未選択)":
+            wide_jockey_crop = image.crop(box(575, cy/sy - 92, 900, cy/sy + 105))
+            for psm in (6, 11, 7):
+                retry = ocr(wide_jockey_crop, "jpn", psm)
                 if retry:
                     j2 = jockey_from(retry)
                     if j2 != "(未選択)":
@@ -2282,7 +2300,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "単勝": odds,
             "人気": None,
             "U指数": u_index,
-            "取得元": "ウマニティ画像(Ver1.18.32-実画面固定座標+斤量PSM13+U指数複数OCR合議)",
+            "取得元": "ウマニティ画像(Ver1.18.33-実画面固定座標+斤量PSM13+U指数複数OCR合議+下端騎手救済)",
         })
 
     return rows
