@@ -1955,7 +1955,7 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
-    """Ver1.18.33 ウマニティ実画面レイアウト固定OCR。
+    """Ver1.18.34 ウマニティ実画面レイアウト固定OCR。
 
     ウマニティのスマホ縦長スクリーンショットは、馬番・馬名・騎手・斤量・U指数・単勝が
     毎回ほぼ同じ列位置に表示される。従来版は馬番OCRから行中心を推定していたため、
@@ -2190,6 +2190,9 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
 
         jockey_text = ocr(jockey_crop, "jpn", 6)
         jockey = jockey_from(jockey_text)
+        # 実画像で「亀田温心」が「寺田温心」と誤認識されるケースを補正。
+        if jockey == "寺田温心" or "寺田温心" in str(jockey_text):
+            jockey = "亀田温心"
         # 最終行などで1回目OCRが空になる場合に備えて、軽い再試行。
         if jockey == "(未選択)":
             for psm in (7, 11):
@@ -2300,7 +2303,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "単勝": odds,
             "人気": None,
             "U指数": u_index,
-            "取得元": "ウマニティ画像(Ver1.18.33-実画面固定座標+斤量PSM13+U指数複数OCR合議+下端騎手救済)",
+            "取得元": "ウマニティ画像(Ver1.18.34-実画面固定座標+斤量PSM13+U指数複数OCR合議+下端騎手救済)",
         })
 
     return rows
