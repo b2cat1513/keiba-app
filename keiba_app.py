@@ -26,8 +26,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.33", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.33（ウマニティOCR安定版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.34", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.34（ウマニティOCR安定版）")
 
 st.markdown("""
 <style>
@@ -2202,18 +2202,51 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "ダイヤモン ドノット": "ダイヤモンドノット",
             "メイショウヨソラ": "メイショウヨゾラ",
             "カルプスペルシュ": "カルプスペルシュ",
+            "テイーア": "テイニア",
+            "テイアー": "テイニア",
+            "テイニヤ": "テイニア",
+            "プロトボロス": "プロトポロス",
+            "ファストネットワー": "ファストネットワーク",
+            "ファストネットワーク": "ファストネットワーク",
         }
         name = name_fix.get(name, name)
 
-        jockey_text = ocr(jockey_crop, "jpn", 6)
-        jockey = jockey_alias.get(clean(jockey_text), jockey_from(jockey_text))
+        # 騎手はPSM6だけだと最終行などで「未選択」になることがあるため、
+        # 3パターンを読み、JOCKEY_MASTERとの一致を優先して採用する。
+        jockey_texts = []
+        for psm in (6, 7, 11):
+            try:
+                txt = pytesseract.image_to_string(
+                    jockey_crop, lang="jpn", config=f"--oem 3 --psm {psm}", timeout=12
+                ).strip()
+            except Exception:
+                txt = ""
+            if txt:
+                jockey_texts.append(txt)
+
+        jockey = "(未選択)"
+        # まず完全な騎手名が含まれるOCR結果を探す。
+        for txt in jockey_texts:
+            ct = clean(txt)
+            if ct in jockey_alias:
+                jockey = jockey_alias[ct]
+                break
+            found = jockey_from(ct)
+            if found in JOCKEY_MASTER and found != "その他（自由手入力）":
+                jockey = found
+                break
+
+        # 上で決まらなければ、最も情報量の多いOCR結果から従来方式で推定。
+        if jockey == "(未選択)" and jockey_texts:
+            best_txt = max(jockey_texts, key=lambda x: len(clean(x)))
+            jockey = jockey_alias.get(clean(best_txt), jockey_from(best_txt))
 
         # 斤量は「騎手・斤量・ローテーション」欄の上側にある。
         # 数字専用OCRだけでは「56.0」を「96」などに誤読しやすいため、
         # 日本語OCRで実際の欄を読み、48～62.5kgの値だけを採用する。
         weight_crop = image.crop(box(600, cy/sy - 8, 785, cy/sy + 72))
         weight = None
-        # Ver1.18.33: 斤量は元画像のまま日本語OCRした方が「55.0」「57.0」を正確に読める。
+        # Ver1.18.34: 斤量は元画像のまま日本語OCRした方が「55.0」「57.0」を正確に読める。
         # autocontrast + sharpening 後のOCRでは 55→59、57→57 などの誤読が出るため、
         # まず元画像の同じ切り出しを複数PSMで読む。
         try:
