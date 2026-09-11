@@ -26,8 +26,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.32", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.31（ウマニティOCR安定版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.33", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.33（ウマニティOCR安定版）")
 
 st.markdown("""
 <style>
@@ -2213,15 +2213,31 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         # 日本語OCRで実際の欄を読み、48～62.5kgの値だけを採用する。
         weight_crop = image.crop(box(600, cy/sy - 8, 785, cy/sy + 72))
         weight = None
-        weight_candidates = [
-            ocr(weight_crop, "jpn", 6),
-            ocr(weight_crop, "jpn", 7),
-            ocr(weight_crop, "jpn", 11),
-        ]
-        for txt in weight_candidates:
-            weight = weight_from(txt)
-            if weight is not None:
-                break
+        # Ver1.18.33: 斤量は元画像のまま日本語OCRした方が「55.0」「57.0」を正確に読める。
+        # autocontrast + sharpening 後のOCRでは 55→59、57→57 などの誤読が出るため、
+        # まず元画像の同じ切り出しを複数PSMで読む。
+        try:
+            for psm in (6, 11):
+                raw_weight_text = pytesseract.image_to_string(
+                    weight_crop, lang="jpn", config=f"--oem 3 --psm {psm}", timeout=12
+                ).strip()
+                weight = weight_from(raw_weight_text)
+                if weight is not None:
+                    break
+        except Exception:
+            pass
+
+        # 元画像OCRで取れなかった場合だけ従来の前処理OCRへ。
+        if weight is None:
+            weight_candidates = [
+                ocr(weight_crop, "jpn", 6),
+                ocr(weight_crop, "jpn", 7),
+                ocr(weight_crop, "jpn", 11),
+            ]
+            for txt in weight_candidates:
+                weight = weight_from(txt)
+                if weight is not None:
+                    break
         if weight is None:
             # 最後の救済として数字専用OCRも試す。
             for txt in numeric_ocr(weight_crop):
@@ -2238,9 +2254,9 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             if v is not None:
                 u_vals.append(v)
         if u_vals:
-            # 複数OCRが同じ値を返すものを優先。
+            # 複数OCRが同じ値を返すものを優先。表示上もU指数は小数1桁に統一。
             from collections import Counter
-            u_index = Counter(u_vals).most_common(1)[0][0]
+            u_index = round(float(Counter(u_vals).most_common(1)[0][0]), 1)
 
         # 単勝は実画像では「馬名・基本情報」欄の下段にある。
         # 「倍」が含まれるため、英数字専用OCRではなく日本語OCRを使用する。
