@@ -26,8 +26,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.36", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.36（ウマニティOCR安定版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.37", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.37（ウマニティOCR安定版）")
 
 st.markdown("""
 <style>
@@ -2259,12 +2259,53 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         if jockey == "(未選択)" and "田山" in joined_jockey:
             jockey = "田山旺佑"
         # 今回の実画像で確認されたOCR崩れを最終救済。
-        if "畠田温心" in joined_jockey or "亀田温心" in joined_jockey:
+        # 文字が少し崩れても、特徴的な並びから騎手名を復元する。
+        _jcompact = re.sub(r"\s+", "", joined_jockey)
+        if "畠田温心" in _jcompact or "亀田温心" in _jcompact or ("温心" in _jcompact and "畠田" in _jcompact):
             jockey = "亀田温心"
-        elif "石田由来" in joined_jockey or "石田望来" in joined_jockey or "岩田望来" in joined_jockey:
+        elif "石田由来" in _jcompact or "石田望来" in _jcompact or "岩田望来" in _jcompact:
             jockey = "岩田望来"
-        elif "池添" in joined_jockey:
+        elif "田山時佑" in _jcompact or "田山星佑" in _jcompact or "田山旺佑" in _jcompact:
+            jockey = "田山旺佑"
+        elif "幸英明" in _jcompact:
+            jockey = "幸英明"
+        elif "池添" in _jcompact:
             jockey = "池添謙一"
+        elif "下豊" in _jcompact or "豊つ" in _jcompact:
+            jockey = "武豊"
+
+        # 16番のように騎手名が標準帯から外れて読めない場合は、
+        # 騎手列を少し広く切り直して追加OCRする。数字・斤量はこの処理に触れない。
+        if jockey == "(未選択)":
+            rescue_crops = [
+                image.crop(box(590, cy/sy - 105, 805, cy/sy + 125)),
+                image.crop(box(605, cy/sy - 95, 795, cy/sy + 110)),
+            ]
+            rescue_texts = []
+            for rc in rescue_crops:
+                for psm in (6, 11, 7):
+                    try:
+                        rt = ocr(rc, "jpn", psm)
+                        if rt:
+                            rescue_texts.append(rt)
+                    except Exception:
+                        pass
+            rescue_joined = re.sub(r"\s+", "", " ".join(rescue_texts))
+            if "池添" in rescue_joined:
+                jockey = "池添謙一"
+            elif "武豊" in rescue_joined or "下豊" in rescue_joined or "豊つ" in rescue_joined:
+                jockey = "武豊"
+            elif "亀田" in rescue_joined or "畠田" in rescue_joined:
+                jockey = "亀田温心"
+            elif "岩田" in rescue_joined or "石田由来" in rescue_joined:
+                jockey = "岩田望来"
+            elif "田山" in rescue_joined:
+                jockey = "田山旺佑"
+
+        # 末尾にOCRノイズ「り」「つ」だけが付くケースを除去して再照合。
+        if jockey not in ("(未選択)", ""):
+            jockey = re.sub(r"[りつ]+$", "", jockey)
+
 
         # 斤量は「騎手・斤量・ローテーション」欄の上側にある。
         # 数字専用OCRだけでは「56.0」を「96」などに誤読しやすいため、
@@ -2366,7 +2407,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "単勝": odds,
             "人気": None,
             "U指数": u_index,
-            "取得元": "ウマニティ画像(Ver1.18.32-実画面固定座標+日本語数値OCR)",
+            "取得元": "ウマニティ画像(Ver1.18.37-実画面固定座標+騎手強化)",
         })
 
     return rows
