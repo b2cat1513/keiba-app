@@ -26,8 +26,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.37", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.37（ウマニティOCR安定版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.32", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.32（ウマニティOCR安定版）")
 
 st.markdown("""
 <style>
@@ -1955,7 +1955,7 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
-    """Ver1.18.32 ウマニティ実画面レイアウト固定OCR。
+    """Ver1.18.30 ウマニティ実画面レイアウト固定OCR。
 
     ウマニティのスマホ縦長スクリーンショットは、馬番・馬名・騎手・斤量・U指数・単勝が
     毎回ほぼ同じ列位置に表示される。従来版は馬番OCRから行中心を推定していたため、
@@ -2093,8 +2093,8 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
 
     def weight_from(text):
         s = str(text or "").replace(",", ".").replace("．", ".")
-        # OCRでは斤量の「5」が「S/9」、「7」が「/」等に化けることがある。
-        # まず通常の数値を読む。
+        # 斤量は48～62.5kg。OCRで「57.0」の点が空白になる場合も許容。
+        # まず通常の「56.0 / 57.0 / 55.0」。
         vals = re.findall(r"(?<!\d)(4[8-9]|5\d|6[0-2])\s*(?:[.]\s*(5|0))?(?!\d)", s)
         for a, b in vals:
             try:
@@ -2102,29 +2102,15 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
                 if 48 <= v <= 62.5:
                     return v
             except Exception:
-                pass
-
-        # よくあるOCR誤読を限定的に補正。
-        # Umanityの斤量欄では 56→96 / 57→97 / 55→99 の誤読が頻発する。
-        s2 = (s.replace("S", "5").replace("s", "5")
-                .replace("O", "0").replace("U", "0"))
-        vals2 = re.findall(r"(?<!\d)(9[5-9])\s*(?:[.]\s*(5|0))?(?!\d)", s2)
-        for a, b in vals2:
+                continue
+        # OCRで小数点と末尾0がつぶれて「570 / 560 / 550」になるケース。
+        for m in re.finditer(r"(?<!\d)(4[8-9]|5\d|6[0-2])0(?!\d)", s):
             try:
-                # 95～99は5x系の斤量として読む（48～62.5kgの範囲に限定）。
-                v = float("5" + a[1] + ("." + b if b in {"5", "0"} else ".0"))
-                if 55 <= v <= 59.5:
+                v = float(m.group(1))
+                if 48 <= v <= 62.5:
                     return v
             except Exception:
                 pass
-
-        # 「っ6.0」「り/.U」「SS.U」のようなOCR崩れにも対応。
-        if re.search(r"[っS]\s*6\s*[.]?\s*0", s, re.I):
-            return 56.0
-        if re.search(r"[り7]\s*/\s*[.]?\s*[U0]", s, re.I):
-            return 57.0
-        if re.search(r"S+\s*[.]?\s*[SU]\s*[.]?\s*[U0]", s, re.I):
-            return 55.0
         return None
 
     def odds_from(text):
@@ -2167,23 +2153,6 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
                 score, best = r, cand
         return best if score >= 0.58 else obs
 
-    # ウマニティ実画像で確認した騎手OCRの代表的な誤読を限定補正。
-    jockey_alias = {
-        "臣豊": "武豊", "下豊つ": "武豊",
-        "圭央明": "幸英明", "圭央明り": "幸英明",
-        "り.レデーン": "D.レーン", "り.レーン": "D.レーン",
-        "田山星佑": "田山旺佑",
-        "田山時佑": "田山旺佑",
-        "田山旺佑": "田山旺佑",
-        "畠田温心り": "亀田温心",
-        "畠田温心": "亀田温心",
-        "亀田温心り": "亀田温心",
-        "石田由来": "岩田望来",
-        "石田望来": "岩田望来",
-        "岩田望来": "岩田望来",
-        "池添謙一": "池添謙一",
-    }
-
     # 実測レイアウトの列境界（955px基準）。
     # 馬名: 200-610 / 騎手: 610-785 / U指数: 785-955
     rows = []
@@ -2208,154 +2177,60 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "引ル〆メイースター": "ヨシノイースター",
             "ヨンシノイースター": "ヨシノイースター",
             "プロトボポロス": "プロトポロス",
-            "プロトボロス": "プロトポロス",
-            "プロトボロスり": "プロトポロス",
-            "プロトボポロス": "プロトポロス",
             "ダイヤモン ドノット": "ダイヤモンドノット",
             "メイショウヨソラ": "メイショウヨゾラ",
             "カルプスペルシュ": "カルプスペルシュ",
-            "テイーア": "テイニア",
-            "テイニア": "テイニア",
         }
         name = name_fix.get(name, name)
-        # 実画像で確認済みの短い誤読は、完全一致しなくても部分一致で補正。
-        _name_compact = re.sub(r"\s+", "", str(name))
-        if _name_compact.startswith("プロト") and ("ボロ" in _name_compact or "ポロ" in _name_compact):
-            name = "プロトポロス"
-        elif "テイーア" in _name_compact:
-            name = "テイニア"
-        elif "ヨンシノ" in _name_compact or "メイースター" in _name_compact:
-            name = "ヨシノイースター"
 
-        # 騎手はPSM6を基本にし、未選択・不確実な場合だけPSM11も試す。
-        # 16番の「池添謙一」のように縦方向の文字配置ではPSM11が有効。
-        jockey_texts = []
-        for psm in (6, 11, 7):
-            try:
-                t = ocr(jockey_crop, "jpn", psm)
-                if t:
-                    jockey_texts.append(t)
-            except Exception:
-                pass
-
-        jockey = "(未選択)"
-        jockey_scores = []
-        for jt in jockey_texts:
-            cleaned_jt = clean(jt)
-            alias = jockey_alias.get(cleaned_jt)
-            candidate = alias if alias else jockey_from(jt)
-            if candidate and candidate != "(未選択)":
-                # マスター名がOCR文字列に含まれる場合を最優先。
-                compact = re.sub(r"\s+", "", cleaned_jt)
-                exact_bonus = 1.0 if candidate in compact else 0.0
-                jockey_scores.append((exact_bonus, len(candidate), candidate))
-        if jockey_scores:
-            jockey = sorted(jockey_scores, reverse=True)[0][2]
-
-        # PSM11で「池添 添謙 お」等に崩れた場合でも、マスター照合で池添謙一を救済。
-        joined_jockey = re.sub(r"\s+", "", " ".join(jockey_texts))
-        if jockey == "(未選択)" and "池添" in joined_jockey:
-            jockey = "池添謙一"
-        if jockey == "(未選択)" and "田山" in joined_jockey:
-            jockey = "田山旺佑"
-        # 今回の実画像で確認されたOCR崩れを最終救済。
-        # 文字が少し崩れても、特徴的な並びから騎手名を復元する。
-        _jcompact = re.sub(r"\s+", "", joined_jockey)
-        if "畠田温心" in _jcompact or "亀田温心" in _jcompact or ("温心" in _jcompact and "畠田" in _jcompact):
-            jockey = "亀田温心"
-        elif "石田由来" in _jcompact or "石田望来" in _jcompact or "岩田望来" in _jcompact:
-            jockey = "岩田望来"
-        elif "田山時佑" in _jcompact or "田山星佑" in _jcompact or "田山旺佑" in _jcompact:
-            jockey = "田山旺佑"
-        elif "幸英明" in _jcompact:
-            jockey = "幸英明"
-        elif "池添" in _jcompact:
-            jockey = "池添謙一"
-        elif "下豊" in _jcompact or "豊つ" in _jcompact:
-            jockey = "武豊"
-
-        # 16番のように騎手名が標準帯から外れて読めない場合は、
-        # 騎手列を少し広く切り直して追加OCRする。数字・斤量はこの処理に触れない。
+        jockey_text = ocr(jockey_crop, "jpn", 6)
+        jockey = jockey_from(jockey_text)
+        # 最終行などで1回目OCRが空になる場合に備えて、軽い再試行。
         if jockey == "(未選択)":
-            rescue_crops = [
-                image.crop(box(590, cy/sy - 105, 805, cy/sy + 125)),
-                image.crop(box(605, cy/sy - 95, 795, cy/sy + 110)),
-            ]
-            rescue_texts = []
-            for rc in rescue_crops:
-                for psm in (6, 11, 7):
-                    try:
-                        rt = ocr(rc, "jpn", psm)
-                        if rt:
-                            rescue_texts.append(rt)
-                    except Exception:
-                        pass
-            rescue_joined = re.sub(r"\s+", "", " ".join(rescue_texts))
-            if "池添" in rescue_joined:
-                jockey = "池添謙一"
-            elif "武豊" in rescue_joined or "下豊" in rescue_joined or "豊つ" in rescue_joined:
-                jockey = "武豊"
-            elif "亀田" in rescue_joined or "畠田" in rescue_joined:
-                jockey = "亀田温心"
-            elif "岩田" in rescue_joined or "石田由来" in rescue_joined:
-                jockey = "岩田望来"
-            elif "田山" in rescue_joined:
-                jockey = "田山旺佑"
+            for psm in (7, 11):
+                retry = ocr(jockey_crop, "jpn", psm)
+                if retry:
+                    j2 = jockey_from(retry)
+                    if j2 != "(未選択)":
+                        jockey_text = retry
+                        jockey = j2
+                        break
 
-        # 末尾にOCRノイズ「り」「つ」だけが付くケースを除去して再照合。
-        if jockey not in ("(未選択)", ""):
-            jockey = re.sub(r"[りつ]+$", "", jockey)
-
-
-        # 斤量は「騎手・斤量・ローテーション」欄の上側にある。
-        # 数字専用OCRだけでは「56.0」を「96」などに誤読しやすいため、
-        # 日本語OCRで実際の欄を読み、48～62.5kgの値だけを採用する。
-        weight_crop = image.crop(box(600, cy/sy - 8, 785, cy/sy + 72))
+        # 斤量は騎手欄の「騎手名の直下」にある。
+        # 実画像ではこの高さだけを切り出して PSM13(単一行) で読むと、
+        # 「56.0 / 57.0 / 55.0」が安定して取得できる。
+        weight_crop = image.crop(box(600, cy/sy - 5, 785, cy/sy + 50))
         weight = None
-        # Ver1.18.35: 斤量は元画像のまま日本語OCRした方が「55.0」「57.0」を正確に読める。
-        # autocontrast + sharpening 後のOCRでは 55→59、57→57 などの誤読が出るため、
-        # まず元画像の同じ切り出しを複数PSMで読む。
-        try:
-            for psm in (6, 11):
-                raw_weight_text = pytesseract.image_to_string(
-                    weight_crop, lang="jpn", config=f"--oem 3 --psm {psm}", timeout=12
-                ).strip()
-                weight = weight_from(raw_weight_text)
-                if weight is not None:
-                    break
-        except Exception:
-            pass
-
-        # 元画像OCRで取れなかった場合だけ従来の前処理OCRへ。
+        weight_candidates = [
+            ocr(weight_crop, "jpn", 13),
+            ocr(weight_crop, "jpn", 6),
+            ocr(weight_crop, "jpn", 7),
+        ]
+        for txt in weight_candidates:
+            weight = weight_from(txt)
+            if weight is not None:
+                break
         if weight is None:
-            weight_candidates = [
-                ocr(weight_crop, "jpn", 6),
-                ocr(weight_crop, "jpn", 7),
-                ocr(weight_crop, "jpn", 11),
-            ]
-            for txt in weight_candidates:
-                weight = weight_from(txt)
-                if weight is not None:
-                    break
-        if weight is None:
-            # 最後の救済として数字専用OCRも試す。
             for txt in numeric_ocr(weight_crop):
                 weight = weight_from(txt)
                 if weight is not None:
                     break
 
-        # U指数は右端の「80～110」だけを対象にする。
-        # 赤/青の文字を白黒化しても値は同じなので、色に依存しない。
+        # U指数は複数OCR結果を比較し、同じ値が複数回出たものを優先する。
+        # 1回目だけを採用すると「95.2」が「93.9」のように誤認識されることがあるため。
         u_index = None
-        u_vals = []
+        u_values = []
         for txt in numeric_ocr(u_crop):
             v = u_from(txt)
             if v is not None:
-                u_vals.append(v)
-        if u_vals:
-            # 複数OCRが同じ値を返すものを優先。表示上もU指数は小数1桁に統一。
-            from collections import Counter
-            u_index = round(float(Counter(u_vals).most_common(1)[0][0]), 1)
+                u_values.append(v)
+        if u_values:
+            # 同値をまとめて出現回数→先頭順で選択。
+            counts = {}
+            for v in u_values:
+                counts[v] = counts.get(v, 0) + 1
+            u_index = max(range(len(u_values)), key=lambda i: (counts[u_values[i]], -i))
+            u_index = u_values[u_index]
 
         # 単勝は実画像では「馬名・基本情報」欄の下段にある。
         # 「倍」が含まれるため、英数字専用OCRではなく日本語OCRを使用する。
@@ -2407,7 +2282,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "単勝": odds,
             "人気": None,
             "U指数": u_index,
-            "取得元": "ウマニティ画像(Ver1.18.37-実画面固定座標+騎手強化)",
+            "取得元": "ウマニティ画像(Ver1.18.32-実画面固定座標+斤量PSM13+U指数複数OCR合議)",
         })
 
     return rows
