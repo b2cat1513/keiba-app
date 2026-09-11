@@ -26,8 +26,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.33", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.0（ウマニティ文字貼り付け対応版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.1", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.19.1（ウマニティ文字貼り付け強化版）")
 
 st.markdown("""
 <style>
@@ -1388,7 +1388,10 @@ def parse_umanity_multi_line(raw_text):
 
 
 def parse_umanity_full_copied_text(raw_text):
-    """ウマニティ出馬表をブラウザの「コピー」文字列から抽出するVer1.19.0。
+    """ウマニティ出馬表をブラウザの「コピー」文字列から抽出するVer1.19.1。
+
+    同じ画面を複数回コピーして貼り付けた場合も、馬番をキーに重複を自動統合する。
+    U指数がVIP表示等で欠落している馬は無理に推測せず None のまま保持する。
 
     実際のスマホコピーでは、1頭が概ね
       馬名 -> 騎手 -> U指数+人気 -> 馬番 -> 性齢/厩舎 -> 斤量 -> オッズ...
@@ -1431,8 +1434,9 @@ def parse_umanity_full_copied_text(raw_text):
     def parse_u(line):
         # 101.22 / 95.210 / 101.91 / 98.66 のように
         # U指数の小数1桁の直後に「みんなの人気」が連結する形式。
-        compact = re.sub(r"\s+", "", str(line))
-        m = re.search(r"(?<!\d)(\d{2,3})\.(\d)", compact)
+        s = str(line or "").replace("．", ".").replace("。", ".")
+        compact = re.sub(r"\s+", "", s)
+        m = re.search(r"(?<!\d)(\d{2,3})[.](\d)", compact)
         if not m:
             return None
         value = float(f"{m.group(1)}.{m.group(2)}")
@@ -4212,8 +4216,12 @@ with tab_um:
         "ウマニティの出馬表をそのまま貼り付けてください",
         height=320,
         placeholder="ウマニティ画面でCtrl+C → ここでCtrl+V\n\n馬名\n騎手\n101.22\n1\n牝7 栗 池江泰寿\n56.0\n10.3倍5\n…",
-        key="um_text_v190",
+        key="um_text_v191",
     )
+
+    if copied_text_um.strip():
+        char_count = len(copied_text_um)
+        st.caption(f"📎 貼り付け文字数：{char_count:,}文字　｜　同じ出馬表を複数回貼り付けても馬番ごとに自動統合します")
 
     c_um1, c_um2 = st.columns([2.2, 1])
     with c_um1:
@@ -4222,7 +4230,7 @@ with tab_um:
         clear_full = st.button("🧹 入力をクリア", use_container_width=True)
 
     if clear_full:
-        st.session_state["um_text_v190"] = ""
+        st.session_state["um_text_v191"] = ""
         st.rerun()
 
     if analyze_full:
@@ -4297,13 +4305,31 @@ with tab_um:
     full_records = st.session_state.get("v190_umanity_full_records", [])
     if full_records:
         display_cols = ["馬番", "馬名", "今回騎手", "U指数", "単勝", "斤量"]
+        total = len(full_records)
+        u_ok = sum(r.get("U指数") is not None for r in full_records)
+        odds_ok = sum(r.get("単勝") is not None for r in full_records)
+        weight_ok = sum(r.get("斤量") is not None for r in full_records)
+        jockey_ok = sum(bool(r.get("今回騎手")) for r in full_records)
         st.markdown("#### 📊 文字から解析した結果")
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("取得頭数", f"{total}頭")
+        m2.metric("騎手", f"{jockey_ok}/{total}")
+        m3.metric("U指数", f"{u_ok}/{total}")
+        m4.metric("単勝", f"{odds_ok}/{total}")
+        m5.metric("斤量", f"{weight_ok}/{total}")
         st.dataframe(
             pd.DataFrame(full_records)[display_cols],
             use_container_width=True,
             hide_index=True,
         )
-        st.caption("※『--- 倍』の馬は単勝オッズを空欄のままにしています。VIP表示などでU指数がコピーされない馬も空欄のまま保持します。")
+        missing_u = [str(r.get("馬番")) for r in full_records if r.get("U指数") is None]
+        missing_j = [str(r.get("馬番")) for r in full_records if not r.get("今回騎手")]
+        notes = ["※『--- 倍』は単勝オッズなしとして空欄にします。"]
+        if missing_u:
+            notes.append(f"U指数未取得：{', '.join(missing_u)}番（コピー文字にU指数が含まれていない可能性があります）")
+        if missing_j:
+            notes.append(f"騎手未取得：{', '.join(missing_j)}番")
+        st.caption("\n".join(notes))
 
     st.divider()
     st.markdown("#### 旧方式：U指数だけ貼り付け")
