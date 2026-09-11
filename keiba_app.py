@@ -27,7 +27,7 @@ except Exception:
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
 st.set_page_config(page_title="ジェニーAI予想ver1.18.33", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.33（ウマニティOCR安定版）")
+st.title("🏆 ジェニーAI予想ver1.19.0（ウマニティ文字貼り付け対応版）")
 
 st.markdown("""
 <style>
@@ -1386,6 +1386,180 @@ def parse_umanity_multi_line(raw_text):
         key=lambda item: item["gate"],
     )
 
+
+def parse_umanity_full_copied_text(raw_text):
+    """ウマニティ出馬表をブラウザの「コピー」文字列から抽出するVer1.19.0。
+
+    実際のスマホコピーでは、1頭が概ね
+      馬名 -> 騎手 -> U指数+人気 -> 馬番 -> 性齢/厩舎 -> 斤量 -> オッズ...
+    の順で並ぶ。U指数がVIP等の表示で欠ける馬にも対応する。
+    """
+    text = normalize_copied_text(raw_text)
+    if not text:
+        return []
+
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    results = {}
+    ignored = {
+        "ウマニティ", "ニュース", "レース", "新出馬表", "予想コロシアム",
+        "プロ予想MAX", "プロ予想", "会員登録(無料)でご覧頂けます。",
+        "VIP", "New!", "NO PHOTO", "番 予想印", "性齢 調教師", "斤量",
+        "みんなの人気 ブリンカー", "ローテ", "オッズ", "予想コロシアムに登録",
+    }
+
+    name_fix = {
+        "ファストネットワー": "ファストネットワーク",
+        "ピューロマジック": "ピューロマジック",
+        "ビューロマジック": "ビューロマジック",
+        "ティニア": "ティニア",
+        "テイニア": "ティニア",
+        "M.デムー": "M.デムーロ",
+        "池添謙-": "池添謙一",
+    }
+    jockey_fix = {
+        "池添謙-": "池添謙一",
+        "M.デムー": "M.デムーロ",
+    }
+
+    def is_gate(line):
+        m = re.fullmatch(r"(\d{1,2})", line)
+        if not m:
+            return None
+        n = int(m.group(1))
+        return n if 1 <= n <= 18 else None
+
+    def parse_u(line):
+        # 101.22 / 95.210 / 101.91 / 98.66 のように
+        # U指数の小数1桁の直後に「みんなの人気」が連結する形式。
+        compact = re.sub(r"\s+", "", str(line))
+        m = re.search(r"(?<!\d)(\d{2,3})\.(\d)", compact)
+        if not m:
+            return None
+        value = float(f"{m.group(1)}.{m.group(2)}")
+        return value if 20.0 <= value <= 200.0 else None
+
+    def parse_weight(line):
+        compact = re.sub(r"\s+", "", str(line))
+        m = re.fullmatch(r"(4[89]|5\d|6[0-2])(?:\.0|\.5)?", compact)
+        if not m:
+            return None
+        try:
+            return float(compact)
+        except ValueError:
+            return None
+
+    def parse_odds(line):
+        # --- 倍 は無視し、実数オッズだけ取得
+        m = re.search(r"(?<!\d)(\d{1,3})\s*\.\s*(\d{1,2})\s*倍", str(line))
+        if not m:
+            return None
+        try:
+            return float(f"{m.group(1)}.{m.group(2)}")
+        except ValueError:
+            return None
+
+    def is_sex_age_line(line):
+        return bool(re.search(r"[牡牝セ騙]\s*\d{1,2}", str(line)))
+
+    def clean_name(line):
+        x = str(line).strip()
+        if x in ignored or is_gate(x) is not None or is_sex_age_line(x):
+            return ""
+        if parse_u(x) is not None or parse_weight(x) is not None or parse_odds(x) is not None:
+            return ""
+        if re.fullmatch(r"(?:---\s*倍\d+[A-Za-z]*)", x):
+            return ""
+        if len(x) < 2 or len(x) > 30:
+            return ""
+        # 明らかな画面説明文を除外
+        if any(k in x for k in ["メニュー", "会員", "データは", "必ず主催者", "プロ予想家", "セントウルS"]):
+            return ""
+        return name_fix.get(x, normalize_horse_name(x))
+
+    def clean_jockey(line):
+        x = str(line).strip()
+        if not x or x in ignored or is_gate(x) is not None:
+            return ""
+        if parse_u(x) is not None or parse_weight(x) is not None or parse_odds(x) is not None:
+            return ""
+        if is_sex_age_line(x):
+            return ""
+        if re.fullmatch(r"(?:---\s*倍\d+[A-Za-z]*)", x):
+            return ""
+        return jockey_fix.get(x, x)
+
+    def score(r):
+        return sum([
+            bool(r.get("馬名")), bool(r.get("今回騎手")), r.get("U指数") is not None,
+            r.get("斤量") is not None, r.get("単勝") is not None,
+            len(str(r.get("馬名", ""))) >= 4,
+        ])
+
+    gate_positions = []
+    for i, line in enumerate(lines):
+        g = is_gate(line)
+        if g is not None:
+            gate_positions.append((i, g))
+
+    for i, gate in gate_positions:
+        rec = {"馬番": gate, "馬名": "", "U指数": None, "今回騎手": "", "単勝": None, "斤量": None}
+
+        # 馬名・騎手・U指数は馬番の直前に並ぶ。
+        prev_u = parse_u(lines[i-1]) if i >= 1 else None
+        if prev_u is not None:
+            rec["U指数"] = prev_u
+            if i >= 2:
+                rec["今回騎手"] = clean_jockey(lines[i-2])
+            if i >= 3:
+                rec["馬名"] = clean_name(lines[i-3])
+        else:
+            if i >= 1:
+                rec["今回騎手"] = clean_jockey(lines[i-1])
+            if i >= 2:
+                rec["馬名"] = clean_name(lines[i-2])
+
+        # U指数が直前でない場合の近傍救済（最大3行）。
+        if rec["U指数"] is None:
+            for j in range(max(0, i-4), i):
+                u = parse_u(lines[j])
+                if u is not None:
+                    rec["U指数"] = u
+                    break
+
+        # 斤量・単勝は馬番の後ろ側から取得。性齢/厩舎行を跨いで検索。
+        for j in range(i+1, min(len(lines), i+7)):
+            if rec["斤量"] is None:
+                w = parse_weight(lines[j])
+                if w is not None:
+                    rec["斤量"] = w
+            if rec["単勝"] is None:
+                o = parse_odds(lines[j])
+                if o is not None:
+                    rec["単勝"] = o
+            if rec["斤量"] is not None and rec["単勝"] is not None:
+                break
+
+        # 名前が欠けた場合、直前4行から最も名前らしい文字列を拾う。
+        if not rec["馬名"]:
+            for j in range(i-1, max(-1, i-5), -1):
+                cand = clean_name(lines[j])
+                if cand and cand != rec.get("今回騎手", ""):
+                    rec["馬名"] = cand
+                    break
+
+        if rec["今回騎手"]:
+            rec["今回騎手"] = jockey_fix.get(rec["今回騎手"], rec["今回騎手"])
+        if rec["馬名"]:
+            rec["馬名"] = name_fix.get(rec["馬名"], normalize_horse_name(rec["馬名"]))
+
+        # 少なくとも馬名または騎手がある馬番だけ採用。
+        if rec["馬名"] or rec["今回騎手"] or rec["U指数"] is not None:
+            old = results.get(gate)
+            if old is None or score(rec) > score(old):
+                results[gate] = rec
+
+    return [results[g] for g in sorted(results) if 1 <= g <= 18]
+
 def safe_int_convert(value, default=0):
     """馬番等の安全な数値変換関数"""
     try:
@@ -1955,7 +2129,7 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
-    """Ver1.18.34 ウマニティ実画面レイアウト固定OCR。
+    """Ver1.18.33 ウマニティ実画面レイアウト固定OCR。
 
     ウマニティのスマホ縦長スクリーンショットは、馬番・馬名・騎手・斤量・U指数・単勝が
     毎回ほぼ同じ列位置に表示される。従来版は馬番OCRから行中心を推定していたため、
@@ -2190,9 +2364,6 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
 
         jockey_text = ocr(jockey_crop, "jpn", 6)
         jockey = jockey_from(jockey_text)
-        # 実画像で「亀田温心」が「寺田温心」と誤認識されるケースを補正。
-        if jockey == "寺田温心" or "寺田温心" in str(jockey_text):
-            jockey = "亀田温心"
         # 最終行などで1回目OCRが空になる場合に備えて、軽い再試行。
         if jockey == "(未選択)":
             for psm in (7, 11):
@@ -2303,7 +2474,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "単勝": odds,
             "人気": None,
             "U指数": u_index,
-            "取得元": "ウマニティ画像(Ver1.18.34-実画面固定座標+斤量PSM13+U指数複数OCR合議+下端騎手救済)",
+            "取得元": "ウマニティ画像(Ver1.18.33-実画面固定座標+斤量PSM13+U指数複数OCR合議+下端騎手救済)",
         })
 
     return rows
@@ -4034,75 +4205,149 @@ with tab_nk:
                 st.rerun()
 
 with tab_um:
+    st.markdown("### 📋 ウマニティ文字貼り付け（おすすめ）")
+    st.caption("ウマニティの出馬表をコピー → 下欄へCtrl+V → 解析。画像OCRより文字の誤読が少なく、馬名・騎手・U指数・単勝・斤量を一括取得します。")
+
     copied_text_um = st.text_area(
-        "ウマニティの出馬表・Ｕ指数ページからコピーしたテキストを貼り付けてください",
-        height=180,
-        placeholder="1 ランフォーヴァウ 88.5\n2 サトノカルナバ 92.1",
-        key="um_text"
+        "ウマニティの出馬表をそのまま貼り付けてください",
+        height=320,
+        placeholder="ウマニティ画面でCtrl+C → ここでCtrl+V\n\n馬名\n騎手\n101.22\n1\n牝7 栗 池江泰寿\n56.0\n10.3倍5\n…",
+        key="um_text_v190",
     )
 
-    if st.button("🚀 ウマニティ Ｕ指数を解析して注入", use_container_width=True):
+    c_um1, c_um2 = st.columns([2.2, 1])
+    with c_um1:
+        analyze_full = st.button("🚀 ウマニティ全文を解析", use_container_width=True, type="primary")
+    with c_um2:
+        clear_full = st.button("🧹 入力をクリア", use_container_width=True)
+
+    if clear_full:
+        st.session_state["um_text_v190"] = ""
+        st.rerun()
+
+    if analyze_full:
         if not copied_text_um.strip():
-            st.warning("テキストエリアが空欄です。")
+            st.warning("まずウマニティの文字を貼り付けてください。")
         else:
-            parsed_um = parse_umanity_multi_line(copied_text_um)
-            if not parsed_um:
-                st.error("Ｕ指数データが見つかりませんでした。馬番・馬名・Ｕ指数を含む範囲をコピーしてください。")
+            parsed_um_full = parse_umanity_full_copied_text(copied_text_um)
+            if not parsed_um_full:
+                st.error("馬データを解析できませんでした。ウマニティの出馬表部分をまとめてコピーしてください。")
             else:
                 st.session_state["loaded_data"].setdefault("rows", {})
                 updated_count = 0
                 created_count = 0
-                mismatch_messages = []
+                warnings = []
 
+                for item in parsed_um_full:
+                    gate = int(item["馬番"])
+                    row_key = str(gate)
+                    existing = st.session_state["loaded_data"]["rows"].get(row_key, {})
+                    old_name = normalize_horse_name(existing.get("name", ""))
+                    new_name = normalize_horse_name(item.get("馬名", ""))
+
+                    if old_name and new_name and old_name != new_name:
+                        # 既存データがある場合は、名前の不一致でも文字貼り付け側を優先せず警告。
+                        # Netkeiba側とウマニティ側の確認をしやすくする。
+                        warnings.append(f"{gate}番：既存『{old_name}』 / ウマニティ『{new_name}』")
+                        continue
+
+                    jockey = item.get("今回騎手", "") or existing.get("jock", "(未選択)")
+                    jockey_registered = jockey in JOCKEY_MASTER
+                    note_parts = ["ウマニティ文字貼り付け取込"]
+                    if jockey and not jockey_registered and jockey != "(未選択)":
+                        note_parts.append(f"騎手:{jockey}")
+
+                    row = {
+                        "num": str(gate),
+                        "name": new_name or existing.get("name", ""),
+                        "wgt": float(item["斤量"]) if item.get("斤量") is not None else float(existing.get("wgt", 56.0)),
+                        "wgh": existing.get("wgh", 480),
+                        "jock": jockey if jockey_registered else "その他（自由手入力）",
+                        "sel_frame": existing.get("sel_frame", calculate_frame_position(gate)),
+                        "pop": existing.get("pop", 10),
+                        "idx": float(item["U指数"]) if item.get("U指数") is not None else float(existing.get("idx", 0.0)),
+                        "win_odds": float(item["単勝"]) if item.get("単勝") is not None else float(existing.get("win_odds", 0.0)),
+                        "l3f": existing.get("l3f", 35.0),
+                        "sire": existing.get("sire", ""),
+                        "heavy_record": existing.get("heavy_record", False),
+                        "custom_note": " / ".join(note_parts),
+                        "sel_track": existing.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし"),
+                        "sel_style": existing.get("sel_style", "選択なし"),
+                        "sel_dist_change": existing.get("sel_dist_change", "同距離"),
+                        "previous_jockey": existing.get("previous_jockey", "(未選択)"),
+                        "trainer": existing.get("trainer", "(未選択)"),
+                        "owner": existing.get("owner", "(未選択)"),
+                    }
+                    st.session_state["loaded_data"]["rows"][row_key] = row
+                    if existing:
+                        updated_count += 1
+                    else:
+                        created_count += 1
+
+                # 解析結果の確認表も表示
+                st.session_state["v190_umanity_full_records"] = parsed_um_full
+                st.success(f"🎯 ウマニティ文字解析：更新 {updated_count}頭 / 新規 {created_count}頭")
+                if warnings:
+                    st.warning(f"馬名不一致のため {len(warnings)}頭は既存データを維持しました。")
+                    with st.expander("⚠️ 不一致の詳細"):
+                        for w in warnings:
+                            st.write(w)
+                st.rerun()
+
+    full_records = st.session_state.get("v190_umanity_full_records", [])
+    if full_records:
+        display_cols = ["馬番", "馬名", "今回騎手", "U指数", "単勝", "斤量"]
+        st.markdown("#### 📊 文字から解析した結果")
+        st.dataframe(
+            pd.DataFrame(full_records)[display_cols],
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption("※『--- 倍』の馬は単勝オッズを空欄のままにしています。VIP表示などでU指数がコピーされない馬も空欄のまま保持します。")
+
+    st.divider()
+    st.markdown("#### 旧方式：U指数だけ貼り付け")
+    st.caption("従来のU指数専用貼り付けも残しています。")
+    copied_text_old = st.text_area(
+        "馬番・馬名・U指数を貼り付け",
+        height=120,
+        placeholder="1 ママコチャ 101.2\n2 クラスペディア 95.2",
+        key="um_text_old_v190",
+    )
+    if st.button("🚀 U指数だけ解析して注入", use_container_width=True):
+        if not copied_text_old.strip():
+            st.warning("テキストエリアが空欄です。")
+        else:
+            parsed_um = parse_umanity_multi_line(copied_text_old)
+            if not parsed_um:
+                st.error("U指数データが見つかりませんでした。")
+            else:
+                st.session_state["loaded_data"].setdefault("rows", {})
+                updated_count = 0
+                created_count = 0
                 for item in parsed_um:
                     gate = int(item["gate"])
                     row_key = str(gate)
                     u_index = float(item["u_index"])
                     umanity_name = normalize_horse_name(item.get("name", ""))
                     existing_row = st.session_state["loaded_data"]["rows"].get(row_key)
-
                     if existing_row:
-                        existing_name = normalize_horse_name(existing_row.get("name", ""))
-                        if existing_name and umanity_name and existing_name != umanity_name:
-                            mismatch_messages.append(
-                                f"{gate}番：Netkeiba『{existing_name}』 / ウマニティ『{umanity_name}』"
-                            )
-                            continue
-
                         existing_row["idx"] = u_index
                         if not existing_row.get("name") and umanity_name:
                             existing_row["name"] = umanity_name
                         updated_count += 1
                     else:
                         st.session_state["loaded_data"]["rows"][row_key] = {
-                            "num": str(gate),
-                            "name": umanity_name,
-                            "wgt": 56.0,
-                            "wgh": 480,
-                            "jock": "その他（自由手入力）",
-                            "sel_frame": calculate_frame_position(gate),
-                            "pop": 10,
-                            "win_odds": 0.0,
-                            "idx": u_index,
-                            "l3f": 35.0,
-                            "sire": "",
-                            "heavy_record": False,
-                            "custom_note": "ウマニティＵ指数取込",
+                            "num": str(gate), "name": umanity_name, "wgt": 56.0, "wgh": 480,
+                            "jock": "その他（自由手入力）", "sel_frame": calculate_frame_position(gate),
+                            "pop": 10, "win_odds": 0.0, "idx": u_index, "l3f": 35.0,
+                            "sire": "", "heavy_record": False, "custom_note": "ウマニティＵ指数取込",
                             "sel_track": auto_track if auto_track in ["芝", "ダート"] else "選択なし",
-                            "sel_style": "選択なし",
-                            "sel_dist_change": "同距離",
-                            "previous_jockey": "(未選択)",
-                            "trainer": "(未選択)",
-                            "owner": "(未選択)",
+                            "sel_style": "選択なし", "sel_dist_change": "同距離",
+                            "previous_jockey": "(未選択)", "trainer": "(未選択)", "owner": "(未選択)",
                         }
                         created_count += 1
-
-                st.success(f"🎯 ウマニティＵ指数を反映しました。更新:{updated_count}頭 / 新規:{created_count}頭")
-                if mismatch_messages:
-                    st.warning(f"馬名不一致のため、{len(mismatch_messages)}頭は更新しませんでした。")
-                    with st.expander("馬名不一致の詳細"):
-                        for message in mismatch_messages:
-                            st.write(message)
+                st.success(f"🎯 U指数を反映しました。更新:{updated_count}頭 / 新規:{created_count}頭")
                 st.rerun()
 
 with tab_img:
