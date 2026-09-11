@@ -26,8 +26,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.35", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.35（ウマニティOCR安定版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.36", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.36（ウマニティOCR安定版）")
 
 st.markdown("""
 <style>
@@ -2173,6 +2173,14 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         "圭央明": "幸英明", "圭央明り": "幸英明",
         "り.レデーン": "D.レーン", "り.レーン": "D.レーン",
         "田山星佑": "田山旺佑",
+        "田山時佑": "田山旺佑",
+        "田山旺佑": "田山旺佑",
+        "畠田温心り": "亀田温心",
+        "畠田温心": "亀田温心",
+        "亀田温心り": "亀田温心",
+        "石田由来": "岩田望来",
+        "石田望来": "岩田望来",
+        "岩田望来": "岩田望来",
         "池添謙一": "池添謙一",
     }
 
@@ -2201,6 +2209,8 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "ヨンシノイースター": "ヨシノイースター",
             "プロトボポロス": "プロトポロス",
             "プロトボロス": "プロトポロス",
+            "プロトボロスり": "プロトポロス",
+            "プロトボポロス": "プロトポロス",
             "ダイヤモン ドノット": "ダイヤモンドノット",
             "メイショウヨソラ": "メイショウヨゾラ",
             "カルプスペルシュ": "カルプスペルシュ",
@@ -2208,6 +2218,14 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "テイニア": "テイニア",
         }
         name = name_fix.get(name, name)
+        # 実画像で確認済みの短い誤読は、完全一致しなくても部分一致で補正。
+        _name_compact = re.sub(r"\s+", "", str(name))
+        if _name_compact.startswith("プロト") and ("ボロ" in _name_compact or "ポロ" in _name_compact):
+            name = "プロトポロス"
+        elif "テイーア" in _name_compact:
+            name = "テイニア"
+        elif "ヨンシノ" in _name_compact or "メイースター" in _name_compact:
+            name = "ヨシノイースター"
 
         # 騎手はPSM6を基本にし、未選択・不確実な場合だけPSM11も試す。
         # 16番の「池添謙一」のように縦方向の文字配置ではPSM11が有効。
@@ -2240,6 +2258,13 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             jockey = "池添謙一"
         if jockey == "(未選択)" and "田山" in joined_jockey:
             jockey = "田山旺佑"
+        # 今回の実画像で確認されたOCR崩れを最終救済。
+        if "畠田温心" in joined_jockey or "亀田温心" in joined_jockey:
+            jockey = "亀田温心"
+        elif "石田由来" in joined_jockey or "石田望来" in joined_jockey or "岩田望来" in joined_jockey:
+            jockey = "岩田望来"
+        elif "池添" in joined_jockey:
+            jockey = "池添謙一"
 
         # 斤量は「騎手・斤量・ローテーション」欄の上側にある。
         # 数字専用OCRだけでは「56.0」を「96」などに誤読しやすいため、
