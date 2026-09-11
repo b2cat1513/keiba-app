@@ -26,7 +26,7 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.26", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.32", layout="wide", initial_sidebar_state="collapsed")
 st.title("🏆 ジェニーAI予想ver1.18.31（ウマニティOCR安定版）")
 
 st.markdown("""
@@ -1955,7 +1955,7 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
-    """Ver1.18.30 ウマニティ実画面レイアウト固定OCR。
+    """Ver1.18.32 ウマニティ実画面レイアウト固定OCR。
 
     ウマニティのスマホ縦長スクリーンショットは、馬番・馬名・騎手・斤量・U指数・単勝が
     毎回ほぼ同じ列位置に表示される。従来版は馬番OCRから行中心を推定していたため、
@@ -2093,7 +2093,8 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
 
     def weight_from(text):
         s = str(text or "").replace(",", ".").replace("．", ".")
-        # 斤量は48～62.5kg。OCRで「57.0」の点が空白になる場合も許容。
+        # OCRでは斤量の「5」が「S/9」、「7」が「/」等に化けることがある。
+        # まず通常の数値を読む。
         vals = re.findall(r"(?<!\d)(4[8-9]|5\d|6[0-2])\s*(?:[.]\s*(5|0))?(?!\d)", s)
         for a, b in vals:
             try:
@@ -2101,7 +2102,29 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
                 if 48 <= v <= 62.5:
                     return v
             except Exception:
-                continue
+                pass
+
+        # よくあるOCR誤読を限定的に補正。
+        # Umanityの斤量欄では 56→96 / 57→97 / 55→99 の誤読が頻発する。
+        s2 = (s.replace("S", "5").replace("s", "5")
+                .replace("O", "0").replace("U", "0"))
+        vals2 = re.findall(r"(?<!\d)(9[5-9])\s*(?:[.]\s*(5|0))?(?!\d)", s2)
+        for a, b in vals2:
+            try:
+                # 95～99は5x系の斤量として読む（48～62.5kgの範囲に限定）。
+                v = float("5" + a[1] + ("." + b if b in {"5", "0"} else ".0"))
+                if 55 <= v <= 59.5:
+                    return v
+            except Exception:
+                pass
+
+        # 「っ6.0」「り/.U」「SS.U」のようなOCR崩れにも対応。
+        if re.search(r"[っS]\s*6\s*[.]?\s*0", s, re.I):
+            return 56.0
+        if re.search(r"[り7]\s*/\s*[.]?\s*[U0]", s, re.I):
+            return 57.0
+        if re.search(r"S+\s*[.]?\s*[SU]\s*[.]?\s*[U0]", s, re.I):
+            return 55.0
         return None
 
     def odds_from(text):
@@ -2144,6 +2167,14 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
                 score, best = r, cand
         return best if score >= 0.58 else obs
 
+    # ウマニティ実画像で確認した騎手OCRの代表的な誤読を限定補正。
+    jockey_alias = {
+        "臣豊": "武豊", "下豊つ": "武豊",
+        "圭央明": "幸英明", "圭央明り": "幸英明",
+        "り.レデーン": "D.レーン", "り.レーン": "D.レーン",
+        "池添謙一": "池添謙一",
+    }
+
     # 実測レイアウトの列境界（955px基準）。
     # 馬名: 200-610 / 騎手: 610-785 / U指数: 785-955
     rows = []
@@ -2175,7 +2206,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         name = name_fix.get(name, name)
 
         jockey_text = ocr(jockey_crop, "jpn", 6)
-        jockey = jockey_from(jockey_text)
+        jockey = jockey_alias.get(clean(jockey_text), jockey_from(jockey_text))
 
         # 斤量は「騎手・斤量・ローテーション」欄の上側にある。
         # 数字専用OCRだけでは「56.0」を「96」などに誤読しやすいため、
@@ -2201,10 +2232,15 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         # U指数は右端の「80～110」だけを対象にする。
         # 赤/青の文字を白黒化しても値は同じなので、色に依存しない。
         u_index = None
+        u_vals = []
         for txt in numeric_ocr(u_crop):
-            u_index = u_from(txt)
-            if u_index is not None:
-                break
+            v = u_from(txt)
+            if v is not None:
+                u_vals.append(v)
+        if u_vals:
+            # 複数OCRが同じ値を返すものを優先。
+            from collections import Counter
+            u_index = Counter(u_vals).most_common(1)[0][0]
 
         # 単勝は実画像では「馬名・基本情報」欄の下段にある。
         # 「倍」が含まれるため、英数字専用OCRではなく日本語OCRを使用する。
@@ -2256,7 +2292,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "単勝": odds,
             "人気": None,
             "U指数": u_index,
-            "取得元": "ウマニティ画像(Ver1.18.31-実画面固定座標+日本語数値OCR)",
+            "取得元": "ウマニティ画像(Ver1.18.32-実画面固定座標+日本語数値OCR)",
         })
 
     return rows
