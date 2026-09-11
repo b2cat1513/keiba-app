@@ -26,8 +26,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.18.34", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.18.34（ウマニティOCR安定版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.18.35", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.18.35（ウマニティOCR安定版）")
 
 st.markdown("""
 <style>
@@ -2172,6 +2172,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
         "臣豊": "武豊", "下豊つ": "武豊",
         "圭央明": "幸英明", "圭央明り": "幸英明",
         "り.レデーン": "D.レーン", "り.レーン": "D.レーン",
+        "田山星佑": "田山旺佑",
         "池添謙一": "池添謙一",
     }
 
@@ -2199,54 +2200,53 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
             "引ル〆メイースター": "ヨシノイースター",
             "ヨンシノイースター": "ヨシノイースター",
             "プロトボポロス": "プロトポロス",
+            "プロトボロス": "プロトポロス",
             "ダイヤモン ドノット": "ダイヤモンドノット",
             "メイショウヨソラ": "メイショウヨゾラ",
             "カルプスペルシュ": "カルプスペルシュ",
             "テイーア": "テイニア",
-            "テイアー": "テイニア",
-            "テイニヤ": "テイニア",
-            "プロトボロス": "プロトポロス",
-            "ファストネットワー": "ファストネットワーク",
-            "ファストネットワーク": "ファストネットワーク",
+            "テイニア": "テイニア",
         }
         name = name_fix.get(name, name)
 
-        # 騎手はPSM6だけだと最終行などで「未選択」になることがあるため、
-        # 3パターンを読み、JOCKEY_MASTERとの一致を優先して採用する。
+        # 騎手はPSM6を基本にし、未選択・不確実な場合だけPSM11も試す。
+        # 16番の「池添謙一」のように縦方向の文字配置ではPSM11が有効。
         jockey_texts = []
-        for psm in (6, 7, 11):
+        for psm in (6, 11, 7):
             try:
-                txt = pytesseract.image_to_string(
-                    jockey_crop, lang="jpn", config=f"--oem 3 --psm {psm}", timeout=12
-                ).strip()
+                t = ocr(jockey_crop, "jpn", psm)
+                if t:
+                    jockey_texts.append(t)
             except Exception:
-                txt = ""
-            if txt:
-                jockey_texts.append(txt)
+                pass
 
         jockey = "(未選択)"
-        # まず完全な騎手名が含まれるOCR結果を探す。
-        for txt in jockey_texts:
-            ct = clean(txt)
-            if ct in jockey_alias:
-                jockey = jockey_alias[ct]
-                break
-            found = jockey_from(ct)
-            if found in JOCKEY_MASTER and found != "その他（自由手入力）":
-                jockey = found
-                break
+        jockey_scores = []
+        for jt in jockey_texts:
+            cleaned_jt = clean(jt)
+            alias = jockey_alias.get(cleaned_jt)
+            candidate = alias if alias else jockey_from(jt)
+            if candidate and candidate != "(未選択)":
+                # マスター名がOCR文字列に含まれる場合を最優先。
+                compact = re.sub(r"\s+", "", cleaned_jt)
+                exact_bonus = 1.0 if candidate in compact else 0.0
+                jockey_scores.append((exact_bonus, len(candidate), candidate))
+        if jockey_scores:
+            jockey = sorted(jockey_scores, reverse=True)[0][2]
 
-        # 上で決まらなければ、最も情報量の多いOCR結果から従来方式で推定。
-        if jockey == "(未選択)" and jockey_texts:
-            best_txt = max(jockey_texts, key=lambda x: len(clean(x)))
-            jockey = jockey_alias.get(clean(best_txt), jockey_from(best_txt))
+        # PSM11で「池添 添謙 お」等に崩れた場合でも、マスター照合で池添謙一を救済。
+        joined_jockey = re.sub(r"\s+", "", " ".join(jockey_texts))
+        if jockey == "(未選択)" and "池添" in joined_jockey:
+            jockey = "池添謙一"
+        if jockey == "(未選択)" and "田山" in joined_jockey:
+            jockey = "田山旺佑"
 
         # 斤量は「騎手・斤量・ローテーション」欄の上側にある。
         # 数字専用OCRだけでは「56.0」を「96」などに誤読しやすいため、
         # 日本語OCRで実際の欄を読み、48～62.5kgの値だけを採用する。
         weight_crop = image.crop(box(600, cy/sy - 8, 785, cy/sy + 72))
         weight = None
-        # Ver1.18.34: 斤量は元画像のまま日本語OCRした方が「55.0」「57.0」を正確に読める。
+        # Ver1.18.35: 斤量は元画像のまま日本語OCRした方が「55.0」「57.0」を正確に読める。
         # autocontrast + sharpening 後のOCRでは 55→59、57→57 などの誤読が出るため、
         # まず元画像の同じ切り出しを複数PSMで読む。
         try:
