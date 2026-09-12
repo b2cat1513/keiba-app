@@ -4497,6 +4497,16 @@ with tab_um:
                 st.success(f"🎯 U指数を反映しました。更新:{updated_count}頭 / 新規:{created_count}頭")
                 st.rerun()
 
+# OCR/文字入力 共通セッション状態
+# ※ 重要：タブUIより前に初期化しておく。タブ内で初期化すると、
+#    競馬ラボ欄を表示した時点でKeyErrorになるため。
+for key in [
+    "v187_umanity_records", "v187_profile_records", "v187_history_records",
+    "v187_raw_texts", "v187_diagnostics", "v187_profile_text_records", "v187_history_text_records"
+]:
+    if key not in st.session_state:
+        st.session_state[key] = []
+
 with tab_kl:
     st.header("🔬 競馬ラボ文字入力")
     st.info("画像OCRとは完全に分離しました。競馬ラボの文字をコピーして、②プロフィール → ③過去5走の順に貼り付けてください。")
@@ -4657,14 +4667,6 @@ with tab_img:
             if name:
                 out[name] = r
         return list(out.values())
-
-# OCR/文字入力 共通セッション状態
-for key in [
-    "v187_umanity_records", "v187_profile_records", "v187_history_records",
-    "v187_raw_texts", "v187_diagnostics", "v187_profile_text_records", "v187_history_text_records"
-]:
-    if key not in st.session_state:
-        st.session_state[key] = []
 
     mobile_ocr_mode = st.session_state.get("input_screen_mode", "📱 スマホ") == "📱 スマホ"
     upload_mode = st.radio(
