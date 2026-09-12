@@ -3578,12 +3578,19 @@ def _split_copied_text_by_known_horses(raw_text, horse_gate_map):
     return segments
 
 
-def parse_keibalab_profile_copied_text(raw_text, horse_gate_map):
+def parse_keibalab_profile_copied_text(raw_text, horse_gate_map, fallback_horse=None):
     """競馬ラボのプロフィールをコピー文字列から抽出。
-    取得項目：父馬・調教師・馬主。画像OCRを使わず、文字列をそのまま解析する。
+    取得項目：父馬・調教師・馬主。
+    馬名がコピーされない形式にも対応し、fallback_horseを対象馬として使用する。
     """
     results = {}
-    for horse, segment in _split_copied_text_by_known_horses(raw_text, horse_gate_map):
+    segments = _split_copied_text_by_known_horses(raw_text, horse_gate_map)
+    if not segments and fallback_horse:
+        horse = normalize_horse_name(fallback_horse)
+        if horse in horse_gate_map:
+            segments = [(horse, normalize_copied_text(raw_text))]
+
+    for horse, segment in segments:
         recs = parse_keibalab_profile_screenshot_text(
             segment, horse_gate_map, fallback_horse=horse
         )
@@ -3594,14 +3601,12 @@ def parse_keibalab_profile_copied_text(raw_text, horse_gate_map):
         rec["馬名"] = horse
         rec["取得元"] = "競馬ラボ・プロフィール文字貼り付け"
         gate = int(rec["馬番"])
-        # 同じ馬の重複コピーは情報量の多い方を採用。
         score = sum(bool(rec.get(k)) and rec.get(k) != "(未選択)" for k in ("父馬", "厩舎", "馬主"))
         old = results.get(gate)
         old_score = sum(bool(old.get(k)) and old.get(k) != "(未選択)" for k in ("父馬", "厩舎", "馬主")) if old else -1
         if old is None or score > old_score:
             results[gate] = rec
     return [results[g] for g in sorted(results)]
-
 
 def parse_keibalab_history_copied_text(raw_text, horse_gate_map, fallback_horse=None):
     """競馬ラボの過去走コピーから前走騎手・上がり3Fを抽出。
@@ -3635,10 +3640,7 @@ def parse_keibalab_history_copied_text(raw_text, horse_gate_map, fallback_horse=
 
 def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=None):
     """競馬ラボプロフィールから父馬・厩舎・馬主を抽出。
-    Ver1.18.5:
-    - 「母父」を父馬として拾わない
-    - 対象馬を指定した場合はその馬へだけ結合
-    - ラベル行と直後行を優先
+    ラベルと値が同じ行でも、別行でも取得できるようにする。
     """
     lines = [_ocr_clean_line(x) for x in str(text).splitlines()]
     lines = [x for x in lines if x]
@@ -3652,74 +3654,78 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
     if not horse_name or not gate:
         return []
 
-    def _after_exact_label(label_patterns, max_len=32):
-        for idx, line in enumerate(lines):
-            # 母父は絶対に父として扱わない
-            if "母父" in line:
-                continue
-            for pat in label_patterns:
-                m = re.search(pat, line)
-                if not m:
-                    continue
-                tail = m.group(1).strip() if m.groups() else ""
+    def next_value_after_label(labels, idx, max_len=40):
+        """ラベル行/同一行/直後行の順で値を取得。"""
+        line = lines[idx].strip()
+        # 同一行: 「父 クロフネ」「馬主：塚田義広」など
+        for label in labels:
+            m = re.match(rf'^{re.escape(label)}(?:[：:\\s]+)(.+)$', line)
+            if m:
+                return m.group(1).strip()[:max_len]
+            m = re.match(rf'^{re.escape(label)}(.+)$', line)
+            if m:
+                tail = m.group(1).lstrip('：: \t').strip()
                 if tail:
                     return tail[:max_len]
-                if idx + 1 < len(lines):
-                    nxt = lines[idx + 1].strip()
-                    if nxt and "母父" not in nxt:
-                        return nxt[:max_len]
-        return ""
+        # ラベルだけの行なら次の行
+        if any(line == label or line.startswith(label + '：') or line.startswith(label + ':') for label in labels):
+            if idx + 1 < len(lines):
+                nxt = lines[idx + 1].strip()
+                if nxt and not any(nxt.startswith(x) for x in ('母', '母父', '調教師', '厩舎', '馬主', '生産者', '生産')):
+                    return nxt[:max_len]
+        return ''
 
-    # 「父」「父馬」が行頭または区切り直後にある場合だけ採用。
-    sire = _after_exact_label([
-        r"(?:^|[\s｜|])父馬?[：:\s]+(.+)$",
-        r"^父馬?[：:\s]*(.+)$",
-    ], 30)
-    sire = re.split(r"(?:母|母父|調教師|厩舎|馬主|生産|距離別|コース別)", sire)[0].strip()
-    sire = re.sub(r"[^ぁ-んァ-ヶーヴ一-龥A-Za-z0-9・.'-]", "", sire)
-    # 母父由来らしい値・短すぎるノイズは捨てる
-    if len(sire) < 2:
-        sire = ""
+    # 父は「母父」を絶対に拾わない
+    sire = ''
+    for i, line in enumerate(lines):
+        if '母父' in line:
+            continue
+        val = next_value_after_label(['父馬', '父'], i, 40)
+        if val:
+            sire = val
+            break
+    sire = re.split(r'(?:母父|母|調教師|厩舎|馬主|生産者|生産|距離別|コース別)', sire)[0].strip()
+    sire = re.sub(r'^[：:\\s]+|[：:\\s]+$', '', sire)
+    if len(sire) < 2 or sire in {'データ', '過去走', '過去走+'}:
+        sire = ''
 
-    trainer_raw = ""
-    for idx, line in enumerate(lines):
-        m = re.search(r"(?:調教師|厩舎)[：:\s]*([一-龥ぁ-んァ-ヶー・]{2,16})", line)
+    # 調教師は「調教師」または「厩舎」の同一行/次行に対応。
+    trainer_raw = ''
+    for i, line in enumerate(lines):
+        if line.startswith('調教師') or line.startswith('厩舎'):
+            trainer_raw = next_value_after_label(['調教師', '厩舎'], i, 40)
+            break
+        m = re.search(r'([一-龥ぁ-んァ-ヶー・]{2,16})\s*[（(](?:美|栗|美浦|栗東)[）)]', line)
         if m:
             trainer_raw = m.group(1).strip()
             break
-        m2 = re.search(r"([一-龥]{2,8})\s*[（(](?:美|栗|美浦|栗東)[）)]", line)
-        if m2:
-            trainer_raw = m2.group(1).strip()
-            break
-    trainer = "(未選択)"
+    trainer_raw = re.sub(r'[（(](?:美|栗|美浦|栗東)[）)]', '', trainer_raw).strip()
+    trainer = '(未選択)'
     if trainer_raw:
-        candidates = [x for x in TRAINER_OPTIONS if x not in {"(未選択)", "その他"}]
-        matched = _best_master_match(trainer_raw, candidates, 0.62)
-        # 誤読した人名（例:「知人」「哲也」）を出馬表へ入れない。
-        # マスターに十分近い場合だけ自動採用し、それ以外は確認表で手修正する。
-        trainer = matched if matched != "(未選択)" else "(未選択)"
+        # マスターに存在する場合は正式名称へ寄せる。
+        # 未登録の調教師でも、コピー文字列を捨てずそのまま保持する。
+        candidates = [x for x in TRAINER_OPTIONS if x not in {'(未選択)', 'その他'}]
+        matched = _best_master_match(trainer_raw, candidates, 0.62) if candidates else '(未選択)'
+        trainer = matched if matched != '(未選択)' else trainer_raw
 
-    owner_raw = ""
-    for idx, line in enumerate(lines):
-        m = re.search(r"馬主[：:\s]*(.+)$", line)
-        if m:
-            owner_raw = m.group(1).strip()
-            if not owner_raw and idx + 1 < len(lines):
-                owner_raw = lines[idx + 1].strip()
+    # 馬主は同一行/次行に対応。マスターに無ければ文字列をそのまま保持。
+    owner_raw = ''
+    for i, line in enumerate(lines):
+        if line.startswith('馬主'):
+            owner_raw = next_value_after_label(['馬主'], i, 60)
             break
-    owner_raw = re.split(r"(?:生産者|生産|調教師|厩舎|距離別|コース別)", owner_raw)[0].strip()
-    owner = "(未選択)"
+    owner_raw = re.split(r'(?:生産者|生産|調教師|厩舎|距離別|コース別)', owner_raw)[0].strip()
+    owner = '(未選択)'
     if owner_raw:
-        candidates = [x for x in OWNER_OPTIONS if x not in {"(未選択)", "その他"}]
+        candidates = [x for x in OWNER_OPTIONS if x not in {'(未選択)', 'その他'}]
         matched = _best_master_match(owner_raw, candidates, 0.42)
-        owner = matched if matched != "(未選択)" else owner_raw
+        owner = matched if matched != '(未選択)' else owner_raw
 
     return [{
-        "馬番": int(gate), "馬名": horse_name,
-        "父馬": sire, "厩舎": trainer, "馬主": owner,
-        "取得元": "競馬ラボ・プロフィール画像",
+        '馬番': int(gate), '馬名': horse_name,
+        '父馬': sire, '厩舎': trainer, '馬主': owner,
+        '取得元': '競馬ラボ・プロフィール文字貼り付け',
     }]
-
 
 def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=None):
     """競馬ラボ過去走から前走騎手と直近5走の上がり3F平均を抽出。"""
@@ -4273,7 +4279,7 @@ st.divider()
 # ==========================================
 st.subheader("📋 一括自動入力エリア")
 
-tab_nk, tab_um, tab_img = st.tabs(["📋 Netkeiba一括入力", "🐎 ウマニティ (Ｕ指数) 一括入力", "📷 画像から自動入力"])
+tab_nk, tab_um, tab_kl, tab_img = st.tabs(["📋 Netkeiba一括入力", "🐎 ウマニティ文字入力", "🔬 競馬ラボ文字入力", "📷 画像OCR（予備）"])
 
 with tab_nk:
     copied_text_nk = st.text_area(
@@ -4491,9 +4497,133 @@ with tab_um:
                 st.success(f"🎯 U指数を反映しました。更新:{updated_count}頭 / 新規:{created_count}頭")
                 st.rerun()
 
+with tab_kl:
+    st.header("🔬 競馬ラボ文字入力")
+    st.info("画像OCRとは完全に分離しました。競馬ラボの文字をコピーして、②プロフィール → ③過去5走の順に貼り付けてください。")
+
+    # 対象馬一覧は「画像OCR」だけに依存しない。
+    # ウマニティ文字貼り付けで作った v190 の結果、または現在の出馬表からも取得する。
+    kl_u_records = st.session_state.get("v187_umanity_records", [])
+    if not kl_u_records:
+        kl_u_records = st.session_state.get("v190_umanity_full_records", [])
+
+    if not kl_u_records:
+        loaded_rows = st.session_state.get("loaded_data", {}).get("rows", {})
+        kl_u_records = [
+            {"馬番": int(k), "馬名": v.get("name", "")}
+            for k, v in loaded_rows.items()
+            if str(k).isdigit() and v.get("name")
+        ]
+
+    kl_gate_horse_map = {
+        int(r["馬番"]): normalize_horse_name(r.get("馬名", ""))
+        for r in kl_u_records if r.get("馬番") and r.get("馬名")
+    }
+    kl_horse_gate_map = {name: gate for gate, name in kl_gate_horse_map.items() if name}
+    kl_gate_choices = sorted(kl_gate_horse_map.keys()) if kl_gate_horse_map else list(range(1, 19))
+
+    if not kl_u_records:
+        st.warning("先に「🐎 ウマニティ文字入力」で出馬表を解析してください。")
+
+    st.markdown("## ② 競馬ラボプロフィール文字貼り付け")
+    st.caption("取得する項目：**父・調教師・馬主**")
+    profile_target = st.selectbox(
+        "プロフィールの対象馬（コピー文字に馬名が含まれない場合に使用）",
+        kl_gate_choices,
+        format_func=lambda g: f"{g}番 {kl_gate_horse_map.get(g, '')}".strip(),
+        key="kl_profile_target_v196",
+    )
+    copied_profile = st.text_area(
+        "競馬ラボプロフィールをここへ Ctrl+V",
+        height=260,
+        placeholder="例：\n15\n父\nクロフネ\n母\n……\n調教師\n河嶋宏樹(栗)\n馬主\n塚田義広\n……",
+        key="kl_profile_text_v196",
+    )
+    if st.button("📝 ② プロフィール文字を取り込む", use_container_width=True, type="primary", key="kl_profile_parse_v196"):
+        if not kl_u_records:
+            st.error("先にウマニティ文字入力を解析してください。")
+        elif not copied_profile.strip():
+            st.warning("競馬ラボプロフィールの文字を貼り付けてください。")
+        else:
+            target_name = kl_gate_horse_map.get(profile_target, "")
+            parsed_profile_text = parse_keibalab_profile_copied_text(
+                copied_profile, kl_horse_gate_map, fallback_horse=target_name
+            )
+            if not parsed_profile_text:
+                st.error("父・調教師・馬主を取り込めませんでした。対象馬を選んで、プロフィールの文字を貼り付けてください。")
+            else:
+                old = {int(r["馬番"]): r for r in st.session_state["v187_profile_records"] if r.get("馬番")}
+                for r in parsed_profile_text:
+                    old[int(r["馬番"])] = r
+                st.session_state["v187_profile_records"] = [old[k] for k in sorted(old)]
+                st.session_state["v187_profile_text_records"] = parsed_profile_text
+
+                # 文字貼り付け結果を即座に現在の出馬表へ反映する。
+                apply_specialized_image_records(parsed_profile_text, auto_track)
+
+                st.success(f"② プロフィール取り込み成功：{len(parsed_profile_text)}頭")
+                st.dataframe(
+                    pd.DataFrame(parsed_profile_text)[["馬番", "馬名", "父馬", "厩舎", "馬主"]],
+                    use_container_width=True, hide_index=True,
+                )
+
+    st.divider()
+    st.markdown("## ③ 競馬ラボ過去5走文字貼り付け")
+    st.caption("取得する項目：**前走騎手・直近5走の上がり3F・平均**。5走分ない場合は、実際に取得できた値だけで平均します。")
+    history_target = st.selectbox(
+        "過去5走の対象馬（コピー文字に馬名が含まれない場合）",
+        kl_gate_choices,
+        format_func=lambda g: f"{g}番 {kl_gate_horse_map.get(g, '')}".strip(),
+        key="kl_history_target_v196",
+    )
+    copied_history = st.text_area(
+        "競馬ラボ過去5走をここへ Ctrl+V",
+        height=320,
+        placeholder="例：\n3京都11 26/5/30 芝1200m 葵ステークス … 1:07.8 32.7 … 高杉吏麒 57.0\n2走前 … 33.9 … 小沢大仁\n3走前 … 33.3 … 藤岡佑介\n4走前 … 34.5 … 高杉吏麒",
+        key="kl_history_text_v196",
+    )
+    if st.button("📝 ③ 過去5走文字を取り込む", use_container_width=True, type="primary", key="kl_history_parse_v196"):
+        if not kl_u_records:
+            st.error("先にウマニティ文字入力を解析してください。")
+        elif not copied_history.strip():
+            st.warning("競馬ラボ過去5走の文字を貼り付けてください。")
+        else:
+            target_name = kl_gate_horse_map.get(history_target, "")
+            parsed_history_text = parse_keibalab_history_copied_text(
+                copied_history, kl_horse_gate_map, fallback_horse=target_name
+            )
+            if not parsed_history_text:
+                st.error("前走騎手・上がり3Fを取り込めませんでした。過去走の表をまとめてコピーしてください。")
+            else:
+                old = {int(r["馬番"]): r for r in st.session_state["v187_history_records"] if r.get("馬番")}
+                for r in parsed_history_text:
+                    old[int(r["馬番"])] = r
+                st.session_state["v187_history_records"] = [old[k] for k in sorted(old)]
+                st.session_state["v187_history_text_records"] = parsed_history_text
+
+                # 過去5走の平均上がり3F・前走騎手も即座に現在の出馬表へ反映する。
+                apply_specialized_image_records(parsed_history_text, auto_track)
+
+                st.success(f"③ 過去5走取り込み成功：{len(parsed_history_text)}頭")
+                st.dataframe(
+                    pd.DataFrame(parsed_history_text)[["馬番", "馬名", "前走騎手", "上がり3F内訳", "上がり3F平均"]],
+                    use_container_width=True, hide_index=True,
+                )
+
+    st.divider()
+    st.markdown("### 📊 文字取り込み結果")
+    merged_kl = merge_source_records(
+        st.session_state.get("v187_umanity_records", []),
+        st.session_state.get("v187_profile_records", []),
+        st.session_state.get("v187_history_records", []),
+    )
+    if merged_kl:
+        cols = [c for c in ["馬番", "馬名", "父馬", "厩舎", "馬主", "前走騎手", "上がり3F内訳", "上がり3F平均"] if c in pd.DataFrame(merged_kl).columns]
+        st.dataframe(pd.DataFrame(merged_kl)[cols], use_container_width=True, hide_index=True)
+
 with tab_img:
-    st.write("### 📷 画像から自動入力")
-    st.caption("Ver1.18.16：①ウマニティを1行1回OCR化して高速化。先頭馬番を指定した画像では、不要な馬番OCR・厩舎OCR・騎手の多重OCRを省きます。②③はVer1.18.11の安定ロジックを維持します。")
+    st.write("### 📷 画像OCR（予備入力）")
+    st.caption("文字コピーできない場合だけ使用してください。Ver1.18.16：①ウマニティを1行1回OCR化して高速化。先頭馬番を指定した画像では、不要な馬番OCR・厩舎OCR・騎手の多重OCRを省きます。②③はVer1.18.11の安定ロジックを維持します。")
 
     ocr_status = get_ocr_environment_status()
     with st.expander("🩺 OCR環境診断", expanded=not OCR_AVAILABLE):
@@ -4528,12 +4658,13 @@ with tab_img:
                 out[name] = r
         return list(out.values())
 
-    for key in [
-        "v187_umanity_records", "v187_profile_records", "v187_history_records",
-        "v187_raw_texts", "v187_diagnostics", "v187_profile_text_records", "v187_history_text_records"
-    ]:
-        if key not in st.session_state:
-            st.session_state[key] = [] if key != "v187_raw_texts" else []
+# OCR/文字入力 共通セッション状態
+for key in [
+    "v187_umanity_records", "v187_profile_records", "v187_history_records",
+    "v187_raw_texts", "v187_diagnostics", "v187_profile_text_records", "v187_history_text_records"
+]:
+    if key not in st.session_state:
+        st.session_state[key] = []
 
     mobile_ocr_mode = st.session_state.get("input_screen_mode", "📱 スマホ") == "📱 スマホ"
     upload_mode = st.radio(
@@ -4646,49 +4777,6 @@ with tab_img:
             use_container_width=True, hide_index=True,
         )
 
-    # --------------------------------------------------
-    # ② 競馬ラボ・プロフィール
-    # --------------------------------------------------
-    st.markdown("#### ② 競馬ラボ・プロフィール")
-    st.subheader("② 競馬ラボ・プロフィール入力")
-    st.info("競馬ラボのプロフィール画面をコピーして、下の欄へ Ctrl+V で貼り付けてください。\n取得：父・調教師・馬主")
-    st.divider()
-    st.header("🏇 競馬ラボ情報（文字コピペ）")
-    st.caption("ここから下が競馬ラボ専用の入力欄です。画像OCRは使わず、コピーした文字を解析します。")
-
-    copied_profile = st.text_area(
-        "競馬ラボ・プロフィールの文字をここに貼り付けてください",
-        height=260,
-        placeholder="馬名\n父\nサートゥルナーリア\n調教師\n西園翔太(栗)\n馬主\nウエスト・フォレスト\n…",
-        key="kl_profile_text_v192",
-    )
-    if st.button("📝 ② プロフィール文字を解析", use_container_width=True, key="kl_profile_parse_v192"):
-        if not u_records:
-            st.error("先に①ウマニティ文字貼り付けを解析してください。")
-        elif not copied_profile.strip():
-            st.warning("競馬ラボ・プロフィールの文字を貼り付けてください。")
-        else:
-            parsed_profile_text = parse_keibalab_profile_copied_text(copied_profile, horse_gate_map)
-            if not parsed_profile_text:
-                st.error("父・調教師・馬主を解析できませんでした。馬名を含むプロフィール部分をコピーしてください。")
-            else:
-                old = {int(r["馬番"]): r for r in st.session_state["v187_profile_records"] if r.get("馬番")}
-                for r in parsed_profile_text:
-                    old[int(r["馬番"])] = r
-                st.session_state["v187_profile_records"] = [old[k] for k in sorted(old)]
-                st.session_state["v187_profile_text_records"] = parsed_profile_text
-                st.success(f"📝 ② プロフィール文字解析：{len(parsed_profile_text)}頭を取得しました。")
-                st.rerun()
-
-    profile_text_records = st.session_state.get("v187_profile_text_records", [])
-    if profile_text_records:
-        st.dataframe(
-            pd.DataFrame(profile_text_records)[["馬番", "馬名", "父馬", "厩舎", "馬主"]],
-            use_container_width=True, hide_index=True,
-        )
-
-    st.caption("画像OCRも残しています。文字コピーできる場合は、上の文字貼り付け方式を優先してください。")
-
     if upload_mode == "📱 スマホ：1枚ずつ":
         p_one = st.file_uploader(
             "プロフィール画像",
@@ -4764,51 +4852,7 @@ with tab_img:
                     st.code(e)
             st.success(f"② プロフィール：{len(new_records)}頭分を解析しました。")
 
-    # --------------------------------------------------
-    # ③ 競馬ラボ・過去5走
-    # --------------------------------------------------
-    st.markdown("#### ③ 競馬ラボ・過去5走")
-    st.subheader("③ 競馬ラボ・過去5走入力")
-    st.info("競馬ラボの「過去走」画面をコピーして、下の欄へ Ctrl+V で貼り付けてください。\n取得：前走騎手・過去5走の上がり3F・5走平均")
-    history_target = st.selectbox(
-        "馬名がコピー文字列に含まれない場合の対象馬",
-        gate_choices,
-        format_func=lambda g: f"{g}番 {gate_horse_map.get(g, '')}".strip(),
-        key="kl_history_target_v193",
-    )
-    copied_history = st.text_area(
-        "競馬ラボ・過去5走の文字をここに貼り付けてください",
-        height=320,
-        placeholder="馬名（表示されない場合あり）\n前走\n日付・レース名…\n騎手名 57.0\n…\n上がり3F 32.7\n2走前… 33.9\n3走前… 33.3\n4走前… 34.5\n5走前…",
-        key="kl_history_text_v193",
-    )
-    if st.button("📝 ③ 過去5走文字を解析", use_container_width=True, key="kl_history_parse_v192"):
-        if not u_records:
-            st.error("先に①ウマニティ文字貼り付けを解析してください。")
-        elif not copied_history.strip():
-            st.warning("競馬ラボ・過去5走の文字を貼り付けてください。")
-        else:
-            parsed_history_text = parse_keibalab_history_copied_text(copied_history, horse_gate_map, fallback_horse=gate_horse_map.get(history_target, ""))
-            if not parsed_history_text:
-                st.error("前走騎手・上がり3Fを解析できませんでした。『過去走』の表を含めてコピーしてください。")
-            else:
-                old = {int(r["馬番"]): r for r in st.session_state["v187_history_records"] if r.get("馬番")}
-                for r in parsed_history_text:
-                    old[int(r["馬番"])] = r
-                st.session_state["v187_history_records"] = [old[k] for k in sorted(old)]
-                st.session_state["v187_history_text_records"] = parsed_history_text
-                st.success(f"📝 ③ 過去5走文字解析：{len(parsed_history_text)}頭を取得しました。")
-                st.rerun()
-
-    history_text_records = st.session_state.get("v187_history_text_records", [])
-    if history_text_records:
-        st.dataframe(
-            pd.DataFrame(history_text_records)[["馬番", "馬名", "前走騎手", "上がり3F内訳", "上がり3F平均"]],
-            use_container_width=True, hide_index=True,
-        )
-
-    st.caption("画像OCRも残しています。文字コピーできる場合は、上の文字貼り付け方式を優先してください。")
-
+    # ③ 競馬ラボ・過去5走（画像OCR）
     if upload_mode == "📱 スマホ：1枚ずつ":
         h_one = st.file_uploader(
             "過去5走画像",
