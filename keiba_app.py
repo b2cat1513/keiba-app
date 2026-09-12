@@ -1,4 +1,6 @@
 import streamlit as st
+
+APP_PATCH_VERSION = "Ver1.19.08"
 import pandas as pd
 import json
 import urllib.parse
@@ -4572,10 +4574,11 @@ with tab_kl:
                 apply_specialized_image_records(parsed_profile_text, auto_track)
 
                 st.success(f"② プロフィール取り込み成功：{len(parsed_profile_text)}頭")
-                st.dataframe(
-                    pd.DataFrame(parsed_profile_text)[["馬番", "馬名", "父馬", "厩舎", "馬主"]],
-                    use_container_width=True, hide_index=True,
+                # パーサーが一部項目を取得できなくても画面表示でKeyErrorにならないようにする。
+                profile_df = pd.DataFrame(parsed_profile_text).reindex(
+                    columns=["馬番", "馬名", "父馬", "厩舎", "馬主"]
                 )
+                st.dataframe(profile_df, use_container_width=True, hide_index=True)
 
     st.divider()
     st.markdown("## ③ 競馬ラボ過去5走文字貼り付け")
@@ -4615,10 +4618,11 @@ with tab_kl:
                 apply_specialized_image_records(parsed_history_text, auto_track)
 
                 st.success(f"③ 過去5走取り込み成功：{len(parsed_history_text)}頭")
-                st.dataframe(
-                    pd.DataFrame(parsed_history_text)[["馬番", "馬名", "前走騎手", "上がり3F内訳", "上がり3F平均"]],
-                    use_container_width=True, hide_index=True,
+                # パーサーが一部項目を取得できなくても画面表示でKeyErrorにならないようにする。
+                history_df = pd.DataFrame(parsed_history_text).reindex(
+                    columns=["馬番", "馬名", "前走騎手", "上がり3F内訳", "上がり3F平均"]
                 )
+                st.dataframe(history_df, use_container_width=True, hide_index=True)
 
     st.divider()
     st.markdown("### 📊 文字取り込み結果")
@@ -4629,7 +4633,10 @@ with tab_kl:
     )
     if merged_kl:
         cols = [c for c in ["馬番", "馬名", "父馬", "厩舎", "馬主", "前走騎手", "上がり3F内訳", "上がり3F平均"] if c in pd.DataFrame(merged_kl).columns]
-        st.dataframe(pd.DataFrame(merged_kl)[cols], use_container_width=True, hide_index=True)
+        st.dataframe(
+            pd.DataFrame(merged_kl).reindex(columns=cols),
+            use_container_width=True, hide_index=True,
+        )
 
 with tab_img:
     st.write("### 📷 画像OCR（予備入力）")
