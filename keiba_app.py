@@ -1,6 +1,4 @@
 import streamlit as st
-
-APP_PATCH_VERSION = "Ver1.19.08"
 import pandas as pd
 import json
 import urllib.parse
@@ -29,7 +27,7 @@ except Exception:
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
 st.set_page_config(page_title="ジェニーAI予想ver1.19.8", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.8（ウマニティ文字貼り付け対応版）")
+st.title("🏆 ジェニーAI予想ver1.19.8（ウマニティ・競馬ラボ文字貼り付け対応版）")
 
 st.markdown("""
 <style>
@@ -3800,9 +3798,10 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
     return [{
         "馬番": int(gate), "馬名": horse_name,
         "前走騎手": previous_jockey,
+        "上がり3F内訳": " / ".join(f"{v:.1f}" for v in finish_times),
         "上がり3F平均": avg_l3f,
         "上がり取得数": len(finish_times),
-        "取得元": "競馬ラボ・過去5走画像",
+        "取得元": "競馬ラボ・過去5走文字貼り付け",
     }]
 
 
@@ -4214,6 +4213,7 @@ def apply_specialized_image_records(records, auto_track_value):
             "trainer": trainer if trainer in TRAINER_OPTIONS else prev.get("trainer", "(未選択)"),
             "owner": owner if owner in OWNER_OPTIONS else prev.get("owner", "(未選択)"),
             "l3f": float(rec.get("上がり3F平均") if rec.get("上がり3F平均") is not None else prev.get("l3f", 35.0)),
+            "l3f_breakdown": rec.get("上がり3F内訳") or prev.get("l3f_breakdown", ""),
             "sel_style": rec.get("脚質") if rec.get("脚質") in {"逃げ", "先行", "差し", "追い込み"} else prev.get("sel_style", "選択なし"),
             "wgh": int(prev.get("wgh", 480)),
             "pop": int(prev.get("pop", 10)),
@@ -4574,11 +4574,10 @@ with tab_kl:
                 apply_specialized_image_records(parsed_profile_text, auto_track)
 
                 st.success(f"② プロフィール取り込み成功：{len(parsed_profile_text)}頭")
-                # パーサーが一部項目を取得できなくても画面表示でKeyErrorにならないようにする。
-                profile_df = pd.DataFrame(parsed_profile_text).reindex(
-                    columns=["馬番", "馬名", "父馬", "厩舎", "馬主"]
+                st.dataframe(
+                    pd.DataFrame(parsed_profile_text)[["馬番", "馬名", "父馬", "厩舎", "馬主"]],
+                    use_container_width=True, hide_index=True,
                 )
-                st.dataframe(profile_df, use_container_width=True, hide_index=True)
 
     st.divider()
     st.markdown("## ③ 競馬ラボ過去5走文字貼り付け")
@@ -4618,11 +4617,14 @@ with tab_kl:
                 apply_specialized_image_records(parsed_history_text, auto_track)
 
                 st.success(f"③ 過去5走取り込み成功：{len(parsed_history_text)}頭")
-                # パーサーが一部項目を取得できなくても画面表示でKeyErrorにならないようにする。
-                history_df = pd.DataFrame(parsed_history_text).reindex(
-                    columns=["馬番", "馬名", "前走騎手", "上がり3F内訳", "上がり3F平均"]
+                history_df = pd.DataFrame(parsed_history_text)
+                for col in ["馬番", "馬名", "前走騎手", "上がり3F内訳", "上がり3F平均"]:
+                    if col not in history_df.columns:
+                        history_df[col] = "" if col != "上がり3F平均" else None
+                st.dataframe(
+                    history_df[["馬番", "馬名", "前走騎手", "上がり3F内訳", "上がり3F平均"]],
+                    use_container_width=True, hide_index=True,
                 )
-                st.dataframe(history_df, use_container_width=True, hide_index=True)
 
     st.divider()
     st.markdown("### 📊 文字取り込み結果")
@@ -4633,10 +4635,7 @@ with tab_kl:
     )
     if merged_kl:
         cols = [c for c in ["馬番", "馬名", "父馬", "厩舎", "馬主", "前走騎手", "上がり3F内訳", "上がり3F平均"] if c in pd.DataFrame(merged_kl).columns]
-        st.dataframe(
-            pd.DataFrame(merged_kl).reindex(columns=cols),
-            use_container_width=True, hide_index=True,
-        )
+        st.dataframe(pd.DataFrame(merged_kl)[cols], use_container_width=True, hide_index=True)
 
 with tab_img:
     st.write("### 📷 画像OCR（予備入力）")
