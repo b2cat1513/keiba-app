@@ -1390,231 +1390,185 @@ def parse_umanity_multi_line(raw_text):
 
 
 def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
-    """ウマニティ出馬表をブラウザの「コピー」文字列から抽出するVer1.19.0。
+    """ウマニティのスマホ/PCコピー文字列を馬番単位で復元するVer1.19.11。
 
-    実際のスマホコピーでは、1頭が概ね
-      馬名 -> 騎手 -> U指数+人気 -> 馬番 -> 性齢/厩舎 -> 斤量 -> オッズ...
-    の順で並ぶ。U指数がVIP等の表示で欠ける馬にも対応する。
+    スマホのコピー順は「U指数→馬番→VIP→馬名→騎手+斤量+間隔→…」となる
+    場合があるため、馬番の前後を固定位置で決め打ちせず、項目の種類で抽出する。
     """
     text = normalize_copied_text(raw_text)
     if not text:
         return []
-
     lines = [x.strip() for x in text.splitlines() if x.strip()]
     results = {}
-    # 既存の出馬表（Netkeiba等）に正しい馬名がある場合は、馬番をアンカーにして利用する。
-    # OCRで「NO」「PHOTO」などを馬名と誤認しても、既存の正しい馬名を優先する。
+
     known_names = {}
     for _gate, _name in (known_names_by_gate or {}).items():
         try:
-            _g = int(_gate)
+            g = int(_gate)
         except (TypeError, ValueError):
             continue
-        _n = normalize_horse_name(_name)
-        if 1 <= _g <= 18 and _n:
-            known_names[_g] = _n
+        n = normalize_horse_name(_name)
+        if 1 <= g <= 18 and n:
+            known_names[g] = n
+
     ignored = {
         "ウマニティ", "ニュース", "レース", "新出馬表", "予想コロシアム",
-        "プロ予想MAX", "プロ予想", "会員登録(無料)でご覧頂けます。",
-        "VIP", "New!", "NO PHOTO", "番 予想印", "性齢 調教師", "斤量",
-        "みんなの人気 ブリンカー", "ローテ", "オッズ", "予想コロシアムに登録",
+        "プロ予想MAX", "プロ予想", "VIP", "New!", "NO PHOTO", "NO",
+        "PHOTO", "番 予想印", "性齢 調教師", "斤量", "みんなの人気 ブリンカー",
+        "ローテ", "オッズ", "予想コロシアムに登録", "会員登録(無料)でご覧頂けます。",
     }
-
     name_fix = {
         "ファストネットワー": "ファストネットワーク",
         "ピューロマジック": "ピューロマジック",
-        "ビューロマジック": "ビューロマジック",
-        "ティニア": "ティニア",
-        "テイニア": "ティニア",
-        "M.デムー": "M.デムーロ",
-        "Mデムー": "M.デムーロ",
-        "池添謙-": "池添謙一",
-        "池添謙一": "池添謙一",
+        "ビューロマジック": "ピューロマジック",
+        "ティニア": "ティニア", "テイニア": "ティニア",
     }
-    jockey_fix = {
-        "池添謙-": "池添謙一",
-        "M.デムー": "M.デムーロ",
-        "Mデムー": "M.デムーロ",
-    }
+    jockey_fix = {"池添謙-": "池添謙一", "M.デムー": "M.デムーロ", "Mデムー": "M.デムーロ"}
+    jockey_candidates = [c for c in JOCKEY_MASTER if c and c != "その他（自由手入力）"]
 
     def is_gate(line):
-        m = re.fullmatch(r"(\d{1,2})", line)
+        m = re.fullmatch(r"(\d{1,2})", str(line).strip())
         if not m:
             return None
         n = int(m.group(1))
         return n if 1 <= n <= 18 else None
 
     def parse_u(line):
-        # 101.22 / 95.210 / 101.91 / 98.66 のように
-        # U指数の小数1桁の直後に「みんなの人気」が連結する形式。
         compact = re.sub(r"\s+", "", str(line))
+        compact = compact.replace(",", ".")
         m = re.search(r"(?<!\d)(\d{2,3})\.(\d)", compact)
         if m:
-            value = float(f"{m.group(1)}.{m.group(2)}")
-            return value if 80.0 <= value <= 110.0 else None
-        # コピー時に小数点が欠落する例（例: 098 -> 98.0、1003 -> 100.3）
+            v = float(f"{m.group(1)}.{m.group(2)}")
+            return v if 80.0 <= v <= 110.0 else None
         m = re.fullmatch(r"0?(\d{2})(?:([0-9]))?", compact)
         if m:
-            integer = int(m.group(1))
-            digit = m.group(2)
-            value = float(f"{integer}.{digit}") if digit is not None else float(integer)
-            return value if 80.0 <= value <= 110.0 else None
+            v = float(f"{int(m.group(1))}.{m.group(2)}") if m.group(2) else float(m.group(1))
+            return v if 80.0 <= v <= 110.0 else None
         return None
 
     def parse_weight(line):
-        compact = re.sub(r"\s+", "", str(line))
+        compact = re.sub(r"\s+", "", str(line)).replace(",", ".")
         m = re.fullmatch(r"(4[89]|5\d|6[0-2])(?:\.0|\.5)?", compact)
-        if not m:
-            return None
-        try:
-            return float(compact)
-        except ValueError:
-            return None
+        return float(compact) if m else None
 
     def parse_odds(line):
-        # --- 倍 は無視し、実数オッズだけ取得
-        m = re.search(r"(?<!\d)(\d{1,3})\s*\.\s*(\d{1,2})\s*倍", str(line))
-        if not m:
-            return None
-        try:
-            return float(f"{m.group(1)}.{m.group(2)}")
-        except ValueError:
-            return None
+        m = re.search(r"(?<!\d)(\d{1,3})\s*[.]\s*(\d{1,2})\s*倍", str(line))
+        return float(f"{m.group(1)}.{m.group(2)}") if m else None
 
     def split_jockey_weight(line):
-        """騎手名と斤量が同一行に連結されたコピー（例: Mデムー57.0）を分離する。"""
         x = str(line or "").strip()
-        # 斤量は48.0～62.5kgの範囲。末尾だけを分離する。
-        m = re.match(r"^(.*?)(4[89]|5\d|6[0-2])(?:\.0|\.5)?$", x)
-        if not m:
-            return "", None
-        prefix = m.group(1).strip()
-        weight_text = x[len(prefix):].strip()
-        try:
-            weight = float(weight_text)
-        except ValueError:
-            return prefix, None
-        return prefix, weight if 48.0 <= weight <= 62.5 else None
+        # 斤量は末尾に連結されるケースを優先。
+        m = re.match(r"^(.*?)(4[89]|5\d|6[0-2])(?:[.,]0|[.,]5)?(?:\s|$)", x)
+        if m:
+            prefix = m.group(1).strip()
+            wt = x[m.start(2):m.end()].strip()
+            wt = re.match(r"(4[89]|5\d|6[0-2])(?:[.,]0|[.,]5)?", wt)
+            if wt:
+                try:
+                    return prefix, float(wt.group(0).replace(',', '.'))
+                except ValueError:
+                    pass
+        return "", None
 
-    def is_sex_age_line(line):
-        return bool(re.search(r"[牡牝セ騙]\s*\d{1,2}", str(line)))
+    def extract_master_jockey(line):
+        x = str(line).strip()
+        if not x:
+            return ""
+        compact = re.sub(r"\s+", "", x)
+        direct = [c for c in jockey_candidates if c.replace(" ", "") in compact]
+        if direct:
+            return max(direct, key=lambda c: len(c.replace(" ", "")))
+        stripped = re.sub(r"\d+(?:[.,]\d+)?", " ", x)
+        stripped = re.sub(r"(?:中\d+週|中\d+周|\d+ヶ月|\d+か月|VIP|NO\s*PHOTO)", " ", stripped, flags=re.I)
+        guessed = _best_master_match(stripped, jockey_candidates, 0.55) if jockey_candidates else ""
+        return guessed if guessed and guessed != "(未選択)" else ""
 
     def clean_name(line):
-        x = str(line).strip()
-        if x in ignored or is_gate(x) is not None or is_sex_age_line(x):
-            return ""
-        if "人気" in x or "---" in x and "倍" in x:
+        x = str(line or "").strip()
+        if not x or x in ignored or is_gate(x) is not None:
             return ""
         if parse_u(x) is not None or parse_weight(x) is not None or parse_odds(x) is not None:
             return ""
-        if re.fullmatch(r"(?:---\s*倍\d+[A-Za-z]*)", x):
+        if re.fullmatch(r"[0-9.,]+", x):
             return ""
-        if len(x) < 2 or len(x) > 30:
+        if re.search(r"\d{1,2}:\d{2}", x):
             return ""
-        # 明らかな画面説明文・写真プレースホルダー・OCRノイズを除外
-        if any(k in x for k in ["メニュー", "会員", "データは", "必ず主催者", "プロ予想家", "セントウルS"]):
+        if x.upper() in {"NO", "PHOTO", "NO PHOTO", "PH0TO", "N0"}:
             return ""
-        if x.upper() in {"NO", "PHOTO", "NO PHOTO", "PH0TO", "N0"} or re.fullmatch(r"[<>＜＞].*", x):
+        if len(x) < 2 or len(x) > 40:
             return ""
-        if re.search(r"\d{1,2}:\d{2}", x) or "回" in x and re.search(r"\d", x):
+        # 騎手+斤量+間隔の行は馬名にしない。
+        if extract_master_jockey(x):
+            prefix, wt = split_jockey_weight(x)
+            if wt is not None or re.search(r"中\d+週|\d+ヶ月|\d+か月", x):
+                return ""
+        # 「馬名 牝3」等の連結行は馬名部分だけを切り出す。
+        m = re.match(r"^(.+?)[\s　]*(?:[牡牝セ騙]\s*\d{1,2})(?:\s|$)", x)
+        if m:
+            x = m.group(1).strip()
+        # 数字だけ/画面説明文/明らかなノイズを除外。
+        if any(k in x for k in ["メニュー", "会員登録", "データは", "必ず主催者", "プロ予想", "新出馬表"]):
+            return ""
+        if re.search(r"^[<>＜＞]", x):
             return ""
         return name_fix.get(x, normalize_horse_name(x))
 
-    def clean_jockey(line):
-        x = str(line).strip()
-        if not x or x in ignored or is_gate(x) is not None:
-            return ""
-        if "人気" in x or ("---" in x and "倍" in x):
-            return ""
-        if parse_u(x) is not None or parse_weight(x) is not None or parse_odds(x) is not None:
-            return ""
-        if is_sex_age_line(x):
-            return ""
-        if re.fullmatch(r"(?:---\s*倍\d+[A-Za-z]*)", x):
-            return ""
-
-        # スマホコピーでは「騎手 57.0 中6週」のように余計な情報が同じ行へ連結する。
-        # 騎手マスターに含まれる名前を優先して抽出し、それ以外は採用しない。
-        compact = re.sub(r"\s+", "", x)
-        # JOCKEY_MASTERは関数外の共通マスター。ここでローカル候補を作る。
-        jockey_candidates = [c for c in JOCKEY_MASTER if c and c != "その他（自由手入力）"]
-        candidates = jockey_candidates
-        direct = [c for c in candidates if c.replace(" ", "") in compact]
-        if direct:
-            # 短い名前が長い名前の一部に含まれる場合を避け、最長一致を優先。
-            return max(direct, key=lambda c: len(c.replace(" ", "")))
-
-        # マスターに完全一致しないOCRでも、数字・間隔情報を落としてから近似照合。
-        stripped = re.sub(r"\d+(?:\.\d+)?", " ", x)
-        stripped = re.sub(r"(?:中\d+週|中\d+周|\d+ヶ月|\d+か月|VIP|NO\s*PHOTO)", " ", stripped, flags=re.I)
-        if candidates:
-            guessed = _best_master_match(stripped, candidates, 0.55)
-            if guessed and guessed != "(未選択)":
-                return guessed
-        return jockey_fix.get(x, "")
-
-    def score(r):
-        return sum([
-            bool(r.get("馬名")), bool(r.get("今回騎手")), r.get("U指数") is not None,
-            r.get("斤量") is not None, r.get("単勝") is not None,
-            len(str(r.get("馬名", ""))) >= 4,
-        ])
-
-    gate_positions = []
-    for i, line in enumerate(lines):
-        g = is_gate(line)
-        if g is not None:
-            gate_positions.append((i, g))
+    gate_positions = [(i, is_gate(line)) for i, line in enumerate(lines)]
+    gate_positions = [(i, g) for i, g in gate_positions if g is not None]
 
     for pos, (i, gate) in enumerate(gate_positions):
+        prev_i = gate_positions[pos - 1][0] if pos > 0 else 0
         next_i = gate_positions[pos + 1][0] if pos + 1 < len(gate_positions) else len(lines)
-        # 1頭分の範囲を「前半＝馬名・騎手・U指数」「後半＝斤量・オッズ」として扱う。
-        before = lines[max(0, i - 5):i]
-        after = lines[i + 1:next_i]
+        before = lines[max(prev_i + 1, i - 8):i]
+        after = lines[i + 1:min(next_i, i + 14)]
         rec = {"馬番": gate, "馬名": "", "U指数": None, "今回騎手": "", "単勝": None, "斤量": None}
 
-        # 馬番直前の数行を後ろから調べ、U指数・騎手・馬名をそれぞれ独立して拾う。
-        # コピー時には「騎手+斤量」「人気欄のノイズ」「U指数」が同じ並びになるため、
-        # 固定位置ではなく候補の種類で判定する。
-        u_pos = None
-        for bi in range(len(before) - 1, -1, -1):
-            u = parse_u(before[bi])
+        # U指数はスマホコピーでは馬番の直前にあることが多い。
+        for line in reversed(before):
+            u = parse_u(line)
             if u is not None:
                 rec["U指数"] = u
-                u_pos = bi
                 break
 
-        # 騎手候補はU指数より前を優先。連結形式にも対応。
-        jockey_pos = None
-        search_before = before[:u_pos] if u_pos is not None else before
-        for bi in range(len(search_before) - 1, -1, -1):
-            candidate = search_before[bi]
-            prefix, inline_weight = split_jockey_weight(candidate)
-            if prefix and clean_jockey(prefix):
-                rec["今回騎手"] = clean_jockey(prefix)
+        # 馬番の後ろから、まず騎手を探す。
+        jockey_index = None
+        for ai, line in enumerate(after):
+            j = extract_master_jockey(line)
+            if j:
+                rec["今回騎手"] = jockey_fix.get(j, j)
+                jockey_index = ai
+                prefix, inline_weight = split_jockey_weight(line)
                 if inline_weight is not None:
                     rec["斤量"] = inline_weight
-                jockey_pos = bi
-                break
-            cj = clean_jockey(candidate)
-            if cj:
-                rec["今回騎手"] = cj
-                jockey_pos = bi
                 break
 
-        # 馬名は騎手より前にある、最も名前らしい行を採用。
-        name_before = search_before[:jockey_pos] if jockey_pos is not None else search_before
-        for bi in range(len(name_before) - 1, -1, -1):
-            cand = clean_name(name_before[bi])
-            if cand and cand != rec.get("今回騎手", ""):
+        # 馬名は馬番直後～騎手までの範囲から取得。VIP等は除外。
+        name_area = after[:jockey_index] if jockey_index is not None else after
+        for line in name_area:
+            cand = clean_name(line)
+            if cand:
+                # 「騎手名だけ」の行を再除外。
+                if cand in jockey_candidates:
+                    continue
                 rec["馬名"] = cand
                 break
 
-        # 馬番が既存データと一致する場合は、OCR馬名より既知の正しい馬名を優先。
+        # 既存データの正しい馬名があれば最優先。
         if gate in known_names:
             rec["馬名"] = known_names[gate]
 
-        # 斤量・単勝は「この馬番から次の馬番まで」の範囲だけを検索。
+        # 騎手が馬番直後ではなく後方にある場合も全範囲から再探索。
+        if not rec["今回騎手"]:
+            for line in after:
+                j = extract_master_jockey(line)
+                if j:
+                    rec["今回騎手"] = jockey_fix.get(j, j)
+                    prefix, inline_weight = split_jockey_weight(line)
+                    if inline_weight is not None:
+                        rec["斤量"] = inline_weight
+                    break
+
+        # 斤量・単勝はこの馬番ブロックだけから取得。
         for line in after:
             if rec["斤量"] is None:
                 w = parse_weight(line)
@@ -1627,25 +1581,16 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             if rec["斤量"] is not None and rec["単勝"] is not None:
                 break
 
-        # 「騎手+斤量」が馬番直前にあった場合、斤量を優先保持。
-        if rec["斤量"] is None:
-            for candidate in reversed(before):
-                prefix, inline_weight = split_jockey_weight(candidate)
-                if prefix and inline_weight is not None:
-                    if not rec["今回騎手"]:
-                        rec["今回騎手"] = clean_jockey(prefix)
-                    rec["斤量"] = inline_weight
+        # まだ馬名がない場合、馬番の前側にもフォールバック。
+        if not rec["馬名"] and gate not in known_names:
+            for line in reversed(before):
+                cand = clean_name(line)
+                if cand and cand not in jockey_candidates:
+                    rec["馬名"] = cand
                     break
 
-        if rec["今回騎手"]:
-            rec["今回騎手"] = jockey_fix.get(rec["今回騎手"], rec["今回騎手"])
-        if rec["馬名"]:
-            rec["馬名"] = name_fix.get(rec["馬名"], normalize_horse_name(rec["馬名"]))
-
         if rec["馬名"] or rec["今回騎手"] or rec["U指数"] is not None:
-            old = results.get(gate)
-            if old is None or score(rec) > score(old):
-                results[gate] = rec
+            results[gate] = rec
 
     return [results[g] for g in sorted(results) if 1 <= g <= 18]
 
