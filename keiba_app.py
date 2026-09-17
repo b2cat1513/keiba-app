@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.13"
+APP_PATCH_VERSION = "Ver1.19.14"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -28,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.13", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.13（ウマニティ・競馬ラボ文字貼り付け対応版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.14", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.19.14（ウマニティ・競馬ラボ文字貼り付け対応版）")
 
 st.markdown("""
 <style>
@@ -1522,7 +1522,22 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
 
     def clean_name(line):
         x = str(line).strip()
-        if x in ignored or is_gate(x) is not None or is_sex_age_line(x):
+        if x in ignored or is_gate(x) is not None:
+            return ""
+
+        # ウマニティのスマホコピーでは、馬名と性齢・厩舎が同じ行になる。
+        # 例:「ウェイクフィールド 牡3 美| 嘉藤貴行 --倍」
+        # この場合は性齢の直前までを馬名として抽出する。
+        sex_match = re.search(r"[牡牝セ騙]\s*\d{1,2}", x)
+        if sex_match:
+            prefix = x[:sex_match.start()].strip()
+            prefix = re.sub(r"[|｜【】\[\]（）()]+$", "", prefix).strip()
+            if prefix:
+                m_name = re.search(rf"({HORSE_NAME_PATTERN})\s*$", prefix)
+                if m_name:
+                    candidate = normalize_horse_name(m_name.group(1))
+                    if len(candidate) >= 2:
+                        return name_fix.get(candidate, candidate)
             return ""
         if "人気" in x or "---" in x and "倍" in x:
             return ""
