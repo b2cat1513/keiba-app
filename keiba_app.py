@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.12"
+APP_PATCH_VERSION = "Ver1.19.13"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -28,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.12", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.12（ウマニティ・競馬ラボ文字貼り付け対応版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.13", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.19.13（ウマニティ・競馬ラボ文字貼り付け対応版）")
 
 st.markdown("""
 <style>
@@ -1462,12 +1462,29 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         return None
 
     def parse_weight(line):
-        compact = re.sub(r"\s+", "", str(line))
-        m = re.fullmatch(r"(4[89]|5\d|6[0-2])(?:\.0|\.5)?", compact)
+        """ウマニティのスマホコピーから斤量を安全に抽出する。
+
+        例:
+          57.0
+          騎手名 57.0 中6週
+          騎手名57.0中6週
+          57.0kg
+        """
+        raw = str(line or "").strip()
+        compact = re.sub(r"\s+", "", raw)
+        # 斤量として妥当な値だけを拾う。後ろに「中6週」等が連結していても可。
+        m = re.search(
+            r"(?<!\d)(4[89]|5\d|6[0-2])(?:\.0|\.5)(?=(?:kg|ＫＧ|中\d+[週周]|\d+ヶ月|\d+か月|$))",
+            compact,
+            flags=re.I,
+        )
+        if not m:
+            # 単独の整数表記も保険として許可（48～62）。
+            m = re.fullmatch(r"(4[89]|5\d|6[0-2])", compact)
         if not m:
             return None
         try:
-            return float(compact)
+            return float(m.group(0))
         except ValueError:
             return None
 
@@ -1482,18 +1499,22 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             return None
 
     def split_jockey_weight(line):
-        """騎手名と斤量が同一行に連結されたコピー（例: Mデムー57.0）を分離する。"""
+        """騎手名と斤量が同一行に連結されたスマホコピーを分離する。"""
         x = str(line or "").strip()
-        # 斤量は48.0～62.5kgの範囲。末尾だけを分離する。
-        m = re.match(r"^(.*?)(4[89]|5\d|6[0-2])(?:\.0|\.5)?$", x)
+        # 例:「横山和生57.0中6週」「武豊 57.0」「Mデムー57.0」
+        m = re.match(
+            r"^(.*?)(4[89]|5\d|6[0-2])(?:\.0|\.5)(?:(?:中\d+[週周])|(?:\d+ヶ月)|(?:\d+か月)|kg|ＫＧ)?$",
+            re.sub(r"\s+", "", x),
+            flags=re.I,
+        )
         if not m:
             return "", None
         prefix = m.group(1).strip()
-        weight_text = x[len(prefix):].strip()
-        try:
-            weight = float(weight_text)
-        except ValueError:
-            return prefix, None
+        weight = float(m.group(2) + (".0" if re.search(r"\d\.0", x) else ".5"))
+        # 末尾の小数を正確に復元
+        wm = re.search(r"(4[89]|5\d|6[0-2])(\.0|\.5)", x)
+        if wm:
+            weight = float(wm.group(1) + wm.group(2))
         return prefix, weight if 48.0 <= weight <= 62.5 else None
 
     def is_sex_age_line(line):
@@ -4454,7 +4475,7 @@ with tab_um:
         "ウマニティの出馬表をそのまま貼り付けてください",
         height=320,
         placeholder="ウマニティ画面でCtrl+C → ここでCtrl+V\n\n馬名\n騎手\n101.22\n1\n牝7 栗 池江泰寿\n56.0\n10.3倍5\n…",
-        key="um_text_v1912",
+        key="um_text_v1913",
     )
 
     c_um1, c_um2 = st.columns([2.2, 1])
@@ -4464,7 +4485,7 @@ with tab_um:
         clear_full = st.button("🧹 入力をクリア", use_container_width=True)
 
     if clear_full:
-        st.session_state["um_text_v1912"] = ""
+        st.session_state["um_text_v1913"] = ""
         st.rerun()
 
     if analyze_full:
@@ -4493,6 +4514,13 @@ with tab_um:
                     existing = st.session_state["loaded_data"]["rows"].get(row_key, {})
                     old_name = normalize_horse_name(existing.get("name", ""))
                     new_name = normalize_horse_name(item.get("馬名", ""))
+
+                    # スマホコピー由来の明らかなノイズ名は絶対に採用しない。
+                    junk_name = str(new_name or "").strip().upper() in {
+                        "NO", "PHOTO", "NO PHOTO", "PH0TO", "N0", "DNEWL", "NEWS", "IPAT"
+                    } or bool(re.fullmatch(r"[0-9,./<>＜＞]+", str(new_name or "").strip()))
+                    if junk_name:
+                        new_name = ""
 
                     if old_name and new_name and old_name != new_name:
                         # 既存データがある場合は、名前の不一致でも文字貼り付け側を優先せず警告。
