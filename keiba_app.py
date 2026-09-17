@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.11"
+APP_PATCH_VERSION = "Ver1.19.12"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -28,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.11", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.10（ウマニティ・競馬ラボ文字貼り付け対応版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.12", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.19.12（ウマニティ・競馬ラボ文字貼り付け対応版）")
 
 st.markdown("""
 <style>
@@ -1518,6 +1518,20 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             return ""
         if re.search(r"\d{1,2}:\d{2}", x) or "回" in x and re.search(r"\d", x):
             return ""
+        # スマホコピーで馬名欄へ混入する定型ノイズを強制排除
+        compact = re.sub(r"\s+", "", x).upper()
+        if any(k in compact for k in [
+            "PHOTO", "PH0TO", "IPAT", "NEWW", "DNEWL", "NEWS",
+            "予想コロシアム", "プロ予想MAX", "会員登録", "みんなの人気",
+            "馬券を購入", "馬券購入", "登録", "VIP"
+        ]):
+            return ""
+        # 騎手+斤量+間隔が連結した行は馬名ではない
+        if re.search(r"(?:4[89]|5\d|6[0-2])(?:\.0|\.5)?(?:中\d+週|中\d+周|\d+ヶ月|\d+か月)?$", compact):
+            return ""
+        # 数字・記号中心のOCRノイズを排除
+        if not re.search(r"[一-龥々ぁ-んァ-ヶーA-Za-z]", x):
+            return ""
         return name_fix.get(x, normalize_horse_name(x))
 
     def clean_jockey(line):
@@ -1647,102 +1661,42 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             if old is None or score(rec) > score(old):
                 results[gate] = rec
 
-    # ------------------------------------------------------------------
-    # Ver1.19.11: スマホの「全文コピー」専用の再照合。
-    # 実機では列ごとのコピー順が混ざることがあり、馬番の直前5行だけを
-    # 見る方式だと「今回騎手」が1頭ずつ後ろへずれる場合がある。
-    # U指数は馬番順に安定して取れているため、U指数をアンカーとして
-    # 「そのU指数の直前にある騎手・馬名」を再取得する。
-    # 既存の結果が正しい場合は上書きしない。
-    # ------------------------------------------------------------------
-    try:
-        u_observations = []
-        for li, line in enumerate(lines):
-            u = parse_u(line)
-            if u is not None:
-                u_observations.append((li, float(u)))
-
-        jockey_candidates = [c for c in JOCKEY_MASTER if c and c != "その他（自由手入力）"]
-
-        def extract_jockey_mobile(line):
-            x = str(line or "").strip()
-            if not x:
-                return ""
-            # 「横山和生57.0 中6週」「横山和生 57.0 中6週」等に対応。
-            compact = re.sub(r"\s+", "", x)
-            direct = [c for c in jockey_candidates if c.replace(" ", "") in compact]
+    # --- Ver1.19.12 スマホ文字貼り付け最終補正 ---
+    # ブラウザのスマホコピーは列単位に平坦化されることがあるため、
+    # 既存の馬番別データがあれば、それを「馬名の正解アンカー」として利用する。
+    # また、騎手名はマスター完全一致を優先し、OCRノイズを採用しない。
+    for gate, rec in list(results.items()):
+        if gate in known_names:
+            rec["馬名"] = known_names[gate]
+        cj = rec.get("今回騎手", "")
+        if cj:
+            compact = re.sub(r"\s+", "", str(cj))
+            direct = [c for c in jockey_candidates if re.sub(r"\s+", "", str(c)) in compact]
             if direct:
-                return max(direct, key=lambda c: len(c.replace(" ", "")))
-            return ""
+                rec["今回騎手"] = max(direct, key=lambda c: len(re.sub(r"\s+", "", str(c))))
+            elif cj not in jockey_candidates:
+                rec["今回騎手"] = ""
 
-        def extract_horse_mobile(line):
-            x = str(line or "").strip()
-            if not x:
-                return ""
-            # clean_name は画面ノイズをかなり除外するので、そのまま利用。
-            c = clean_name(x)
-            if not c:
-                return ""
-            # 騎手名を馬名として採用しない。
-            if extract_jockey_mobile(x):
-                return ""
-            return c
-
-        # U指数の並びは通常、出馬表の馬番順と一致する。
-        # 既存結果の「U指数 -> 馬番」を利用して、騎手だけを再照合する。
-        gate_by_u = {}
-        for gate, rec in results.items():
-            rv = rec.get("U指数")
-            if rv is None:
+    # 既存データが無い場合でも、コピー文字列中の馬名候補を馬番順へ再配分する。
+    # 定型ノイズ・騎手名・数字行は除外し、重複しない候補だけを採用。
+    if not known_names:
+        horse_candidates = []
+        jockey_compact = {re.sub(r"\s+", "", c) for c in jockey_candidates}
+        for line in lines:
+            x = str(line).strip()
+            cleaned = clean_name(x)
+            if not cleaned:
                 continue
-            gate_by_u.setdefault(round(float(rv), 1), []).append(gate)
-
-        for ui, (u_line_idx, u_val) in enumerate(u_observations):
-            gates = gate_by_u.get(round(u_val, 1), [])
-            if not gates:
+            cc = re.sub(r"\s+", "", cleaned)
+            if cc in jockey_compact or cleaned in horse_candidates:
                 continue
-            gate = gates[0]
-            rec = results.get(gate)
-            if not rec:
+            if len(cleaned) < 3:
                 continue
-
-            # U指数の直前4行を優先。スマホコピーの「騎手+斤量+間隔」に対応。
-            found_jockey = ""
-            jockey_line_idx = None
-            for j in range(u_line_idx - 1, max(-1, u_line_idx - 5), -1):
-                cand = extract_jockey_mobile(lines[j])
-                if cand:
-                    found_jockey = cand
-                    jockey_line_idx = j
-                    break
-
-            # 見つからなければ、同じU指数ブロックの少し広い範囲を救済。
-            if not found_jockey:
-                for j in range(u_line_idx - 6, max(-1, u_line_idx - 11), -1):
-                    cand = extract_jockey_mobile(lines[j])
-                    if cand:
-                        found_jockey = cand
-                        jockey_line_idx = j
-                        break
-
-            if found_jockey:
-                rec["今回騎手"] = jockey_fix.get(found_jockey, found_jockey)
-
-                # 騎手の直前にある馬名を補完。ただし既知の正しい馬名を最優先。
-                if gate not in known_names and jockey_line_idx is not None:
-                    for j in range(jockey_line_idx - 1, max(-1, jockey_line_idx - 5), -1):
-                        cand_name = extract_horse_mobile(lines[j])
-                        if cand_name:
-                            rec["馬名"] = name_fix.get(cand_name, normalize_horse_name(cand_name))
-                            break
-
-        # known_names がある場合は最終的にも馬番アンカーで固定。
-        for gate, name in known_names.items():
-            if gate in results and name:
+            horse_candidates.append(cleaned)
+        missing = [g for g in sorted(results) if not results[g].get("馬名")]
+        if len(horse_candidates) == len(results):
+            for gate, name in zip(sorted(results), horse_candidates):
                 results[gate]["馬名"] = name
-    except Exception:
-        # 再照合は補助処理なので、失敗しても従来の解析結果を返す。
-        pass
 
     return [results[g] for g in sorted(results) if 1 <= g <= 18]
 
@@ -4490,14 +4444,14 @@ with tab_nk:
                 st.rerun()
 
 with tab_um:
-    st.markdown("### 📋 ウマニティ文字貼り付け（おすすめ・スマホ最適化）")
+    st.markdown("### 📋 ウマニティ文字貼り付け（おすすめ）")
     st.caption("ウマニティの出馬表をコピー → 下欄へCtrl+V → 解析。画像OCRより文字の誤読が少なく、馬名・騎手・U指数・単勝・斤量を一括取得します。")
 
     copied_text_um = st.text_area(
         "ウマニティの出馬表をそのまま貼り付けてください",
         height=320,
         placeholder="ウマニティ画面でCtrl+C → ここでCtrl+V\n\n馬名\n騎手\n101.22\n1\n牝7 栗 池江泰寿\n56.0\n10.3倍5\n…",
-        key="um_text_v190",
+        key="um_text_v1912",
     )
 
     c_um1, c_um2 = st.columns([2.2, 1])
@@ -4507,7 +4461,7 @@ with tab_um:
         clear_full = st.button("🧹 入力をクリア", use_container_width=True)
 
     if clear_full:
-        st.session_state["um_text_v190"] = ""
+        st.session_state["um_text_v1912"] = ""
         st.rerun()
 
     if analyze_full:
