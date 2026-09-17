@@ -1665,6 +1665,9 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
     # ブラウザのスマホコピーは列単位に平坦化されることがあるため、
     # 既存の馬番別データがあれば、それを「馬名の正解アンカー」として利用する。
     # また、騎手名はマスター完全一致を優先し、OCRノイズを採用しない。
+    # 最終補正でも騎手マスターを参照するため、ここで候補を定義する。
+    jockey_candidates = [c for c in JOCKEY_MASTER if c and c != "その他（自由手入力）"]
+
     for gate, rec in list(results.items()):
         if gate in known_names:
             rec["馬名"] = known_names[gate]
