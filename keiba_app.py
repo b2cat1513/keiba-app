@@ -11,6 +11,8 @@ import io
 import difflib
 import shutil
 
+APP_PATCH_VERSION = "Ver1.19.09"
+
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
 from pathlib import Path
@@ -26,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.8", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.8（ウマニティ・競馬ラボ文字貼り付け対応版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.9", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.19.9（ウマニティ・競馬ラボ文字貼り付け対応版）")
 
 st.markdown("""
 <style>
@@ -1387,7 +1389,7 @@ def parse_umanity_multi_line(raw_text):
     )
 
 
-def parse_umanity_full_copied_text(raw_text):
+def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
     """ウマニティ出馬表をブラウザの「コピー」文字列から抽出するVer1.19.0。
 
     実際のスマホコピーでは、1頭が概ね
@@ -1400,6 +1402,17 @@ def parse_umanity_full_copied_text(raw_text):
 
     lines = [x.strip() for x in text.splitlines() if x.strip()]
     results = {}
+    # 既存の出馬表（Netkeiba等）に正しい馬名がある場合は、馬番をアンカーにして利用する。
+    # OCRで「NO」「PHOTO」などを馬名と誤認しても、既存の正しい馬名を優先する。
+    known_names = {}
+    for _gate, _name in (known_names_by_gate or {}).items():
+        try:
+            _g = int(_gate)
+        except (TypeError, ValueError):
+            continue
+        _n = normalize_horse_name(_name)
+        if 1 <= _g <= 18 and _n:
+            known_names[_g] = _n
     ignored = {
         "ウマニティ", "ニュース", "レース", "新出馬表", "予想コロシアム",
         "プロ予想MAX", "プロ予想", "会員登録(無料)でご覧頂けます。",
@@ -1498,8 +1511,12 @@ def parse_umanity_full_copied_text(raw_text):
             return ""
         if len(x) < 2 or len(x) > 30:
             return ""
-        # 明らかな画面説明文を除外
+        # 明らかな画面説明文・写真プレースホルダー・OCRノイズを除外
         if any(k in x for k in ["メニュー", "会員", "データは", "必ず主催者", "プロ予想家", "セントウルS"]):
+            return ""
+        if x.upper() in {"NO", "PHOTO", "NO PHOTO", "PH0TO", "N0"} or re.fullmatch(r"[<>＜＞].*", x):
+            return ""
+        if re.search(r"\d{1,2}:\d{2}", x) or "回" in x and re.search(r"\d", x):
             return ""
         return name_fix.get(x, normalize_horse_name(x))
 
@@ -1515,7 +1532,23 @@ def parse_umanity_full_copied_text(raw_text):
             return ""
         if re.fullmatch(r"(?:---\s*倍\d+[A-Za-z]*)", x):
             return ""
-        return jockey_fix.get(x, x)
+
+        # スマホコピーでは「騎手 57.0 中6週」のように余計な情報が同じ行へ連結する。
+        # 騎手マスターに含まれる名前を優先して抽出し、それ以外は採用しない。
+        compact = re.sub(r"\s+", "", x)
+        candidates = [c for c in jockey_candidates if c and c != "その他（自由手入力）"]
+        direct = [c for c in candidates if c.replace(" ", "") in compact]
+        if direct:
+            return min(direct, key=lambda c: len(c))
+
+        # マスターに完全一致しないOCRでも、数字・間隔情報を落としてから近似照合。
+        stripped = re.sub(r"\d+(?:\.\d+)?", " ", x)
+        stripped = re.sub(r"(?:中\d+週|中\d+周|\d+ヶ月|\d+か月|VIP|NO\s*PHOTO)", " ", stripped, flags=re.I)
+        if candidates:
+            guessed = _best_master_match(stripped, candidates, 0.55)
+            if guessed and guessed != "(未選択)":
+                return guessed
+        return jockey_fix.get(x, "")
 
     def score(r):
         return sum([
@@ -1573,6 +1606,10 @@ def parse_umanity_full_copied_text(raw_text):
             if cand and cand != rec.get("今回騎手", ""):
                 rec["馬名"] = cand
                 break
+
+        # 馬番が既存データと一致する場合は、OCR馬名より既知の正しい馬名を優先。
+        if gate in known_names:
+            rec["馬名"] = known_names[gate]
 
         # 斤量・単勝は「この馬番から次の馬番まで」の範囲だけを検索。
         for line in after:
@@ -4213,7 +4250,6 @@ def apply_specialized_image_records(records, auto_track_value):
             "trainer": trainer if trainer in TRAINER_OPTIONS else prev.get("trainer", "(未選択)"),
             "owner": owner if owner in OWNER_OPTIONS else prev.get("owner", "(未選択)"),
             "l3f": float(rec.get("上がり3F平均") if rec.get("上がり3F平均") is not None else prev.get("l3f", 35.0)),
-            "l3f_breakdown": rec.get("上がり3F内訳") or prev.get("l3f_breakdown", ""),
             "sel_style": rec.get("脚質") if rec.get("脚質") in {"逃げ", "先行", "差し", "追い込み"} else prev.get("sel_style", "選択なし"),
             "wgh": int(prev.get("wgh", 480)),
             "pop": int(prev.get("pop", 10)),
@@ -4378,7 +4414,14 @@ with tab_um:
         if not copied_text_um.strip():
             st.warning("まずウマニティの文字を貼り付けてください。")
         else:
-            parsed_um_full = parse_umanity_full_copied_text(copied_text_um)
+            known_names_by_gate = {
+                int(k): v.get("name", "")
+                for k, v in st.session_state.get("loaded_data", {}).get("rows", {}).items()
+                if str(v.get("name", "")).strip()
+            }
+            parsed_um_full = parse_umanity_full_copied_text(
+                copied_text_um, known_names_by_gate=known_names_by_gate
+            )
             if not parsed_um_full:
                 st.error("馬データを解析できませんでした。ウマニティの出馬表部分をまとめてコピーしてください。")
             else:
