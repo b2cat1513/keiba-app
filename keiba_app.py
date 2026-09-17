@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.09"
+APP_PATCH_VERSION = "Ver1.19.10"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -28,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.9", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.9（ウマニティ・競馬ラボ文字貼り付け対応版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.10", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.19.10（ウマニティ・競馬ラボ文字貼り付け対応版）")
 
 st.markdown("""
 <style>
@@ -1536,10 +1536,13 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         # スマホコピーでは「騎手 57.0 中6週」のように余計な情報が同じ行へ連結する。
         # 騎手マスターに含まれる名前を優先して抽出し、それ以外は採用しない。
         compact = re.sub(r"\s+", "", x)
-        candidates = [c for c in jockey_candidates if c and c != "その他（自由手入力）"]
+        # JOCKEY_MASTERは関数外の共通マスター。ここでローカル候補を作る。
+        jockey_candidates = [c for c in JOCKEY_MASTER if c and c != "その他（自由手入力）"]
+        candidates = jockey_candidates
         direct = [c for c in candidates if c.replace(" ", "") in compact]
         if direct:
-            return min(direct, key=lambda c: len(c))
+            # 短い名前が長い名前の一部に含まれる場合を避け、最長一致を優先。
+            return max(direct, key=lambda c: len(c.replace(" ", "")))
 
         # マスターに完全一致しないOCRでも、数字・間隔情報を落としてから近似照合。
         stripped = re.sub(r"\d+(?:\.\d+)?", " ", x)
