@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.15"
+APP_PATCH_VERSION = "Ver1.19.19"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -28,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.15", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.15（ウマニティ・競馬ラボ文字貼り付け対応版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.19", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.19.19（ウマニティ・競馬ラボ文字貼り付け対応版）")
 
 st.markdown("""
 <style>
@@ -633,6 +633,11 @@ COURSE_MASTER = {
         "note": "皐月賞はマイル〜1800m重賞実績馬◯。荒れ馬場は外差し◯。エピファネイア/ハービンジャー/モーリス/キタサンブラック/ドゥラメンテ/ルーラーシップ/キズナ。", 
         "track": "芝", "dist": "中距離", "fav_style": "先行",
         "good_lineage": ["エピファネイア", "ハービンジャー", "モーリス", "キタサンブラック", "ドゥラメンテ", "ルーラーシップ", "キズナ"]
+    },
+    "中山芝2200m": {
+        "note": "9月10月開催は内枠有利○。逃げ馬苦戦。セントライト記念は前走ダービーで今回1、2番人気◎。",
+        "track": "芝", "dist": "長距離", "fav_style": "先行・差し",
+        "good_lineage": ["エピファネイア", "モーリス", "レイデオロ", "ドゥラメンテ", "シルバーステート", "キングカメハメハ"]
     },
     "中山芝2500m": {
         "note": "有馬記念コース。高速馬場は内枠有利、荒れ馬場は外枠有利。東京中距離G1実績馬◯. エピファネイア/キズナ/ドゥラメンテ/ゴールドシップ/ジャスタウェイ。", 
@@ -1418,6 +1423,8 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         "プロ予想MAX", "プロ予想", "会員登録(無料)でご覧頂けます。",
         "VIP", "New!", "NO PHOTO", "番 予想印", "性齢 調教師", "斤量",
         "みんなの人気 ブリンカー", "ローテ", "オッズ", "予想コロシアムに登録",
+        "前走", "2走前", "3走前", "4走前", "5走前",
+        "- = III", "-=III", "- = III", "D Newl", "ニュース",
     }
 
     name_fix = {
@@ -1616,12 +1623,46 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         if g is not None:
             gate_positions.append((i, g))
 
+    # --- Ver1.19.17 馬名確定ロジック ---
+    # ウマニティのスマホコピーでは、馬番や「前走」「2走前」等の画面ノイズが
+    # 馬名候補として混ざることがある。そこで「性齢を含む本体行」だけを
+    # 馬名の一次情報として全体から順番に抽出し、馬番の並びへ直接対応させる。
+    # 例:「キヤントウェイト 牡5 （美| 萱野浩二 ---倍」
+    #     ->「キヤントウェイト」
+    inline_horse_names = []
+    for line in lines:
+        sm = re.search(r"[牡牝セ騸騙]\s*\d{1,2}", str(line))
+        if not sm:
+            continue
+        prefix = str(line)[:sm.start()].strip()
+        # 性齢より前にあるUI記号だけを除去。馬名内部の記号は残す。
+        prefix = re.sub(r"^[|｜【】\[\]（）()\s]+", "", prefix)
+        prefix = re.sub(r"[|｜【】\[\]（）()\s]+$", "", prefix)
+        if not prefix or is_gate(prefix) is not None:
+            continue
+        # 明らかな画面ノイズは本体行であっても採用しない。
+        if prefix in ignored or any(k in re.sub(r"\s+", "", prefix).upper() for k in [
+            "PHOTO", "PH0TO", "NEWS", "DNEWL", "IPAT", "VIP", "予想コロシアム", "プロ予想MAX"
+        ]):
+            continue
+        candidate = normalize_horse_name(prefix)
+        if candidate and len(candidate) >= 2 and re.search(r"[一-龥々ぁ-んァ-ヶーA-Za-z]", candidate):
+            candidate = name_fix.get(candidate, candidate)
+            if candidate not in inline_horse_names:
+                inline_horse_names.append(candidate)
+
     for pos, (i, gate) in enumerate(gate_positions):
         next_i = gate_positions[pos + 1][0] if pos + 1 < len(gate_positions) else len(lines)
         # 1頭分の範囲を「前半＝馬名・騎手・U指数」「後半＝斤量・オッズ」として扱う。
         before = lines[max(0, i - 5):i]
         after = lines[i + 1:next_i]
         rec = {"馬番": gate, "馬名": "", "U指数": None, "今回騎手": "", "単勝": None, "斤量": None}
+
+        # 本体行から抽出した馬名を最優先で馬番へ対応付ける。
+        # gate_positions と inline_horse_names はどちらも出馬表の馬番順に並ぶため、
+        # ここでは「何行前か」ではなく「何頭目か」で対応させる。
+        if pos < len(inline_horse_names):
+            rec["馬名"] = inline_horse_names[pos]
 
         # 馬番直前の数行を後ろから調べ、U指数・騎手・馬名をそれぞれ独立して拾う。
         # コピー時には「騎手+斤量」「人気欄のノイズ」「U指数」が同じ並びになるため、
@@ -1652,20 +1693,30 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                 jockey_pos = bi
                 break
 
-        # 馬名は「馬番直前」だけに限定せず、前の馬番から現在の馬番までの
-        # 1頭分のブロック全体から探す。スマホコピーでは
-        # 「馬名→騎手→U指数→馬番」と並ぶため、U指数が馬番直前にある
-        # ケースでは従来のbefore[:u_pos]では馬名を取りこぼすことがある。
-        # まず性齢を含む本体行から馬名を直接抽出する。
+        # 馬名は1頭分のブロックから探す。
+        # 最優先は「性齢を含む本体行」(例: ヴーレヴー 牝4 栗 武幸四郎...)。
+        # これなら「前走」「2走前」「- = III」などの画面ノイズを馬名として拾わない。
         horse_block_start = 0
         if pos > 0:
             horse_block_start = gate_positions[pos - 1][0] + 1
         horse_block = lines[horse_block_start:i + 1]
+
+        # 第1候補：性齢付き本体行だけを調べる。
         for block_line in horse_block:
+            if not is_sex_age_line(block_line):
+                continue
             cand = clean_name(block_line)
-            if cand and not clean_jockey(block_line):
+            if cand:
                 rec["馬名"] = cand
                 break
+
+        # 第2候補：本体行が特殊なコピー形式だった場合だけ従来方式で救済。
+        if not rec["馬名"]:
+            for block_line in horse_block:
+                cand = clean_name(block_line)
+                if cand and not clean_jockey(block_line):
+                    rec["馬名"] = cand
+                    break
 
         # 本体行を拾えない場合だけ、従来の馬名探索を救済として使う。
         if not rec["馬名"]:
@@ -1676,8 +1727,10 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                     rec["馬名"] = cand
                     break
 
-        # 馬番が既存データと一致する場合は、OCR馬名より既知の正しい馬名を優先。
-        if gate in known_names:
+        # 既存データは「救済用」。
+        # ウマニティ文字列から性齢付き本体行で取得できた馬名を最優先し、
+        # 過去の誤取得データで正しい馬名を上書きしない。
+        if not rec["馬名"] and gate in known_names:
             rec["馬名"] = known_names[gate]
 
         # 斤量・単勝は「この馬番から次の馬番まで」の範囲だけを検索。
@@ -1721,7 +1774,8 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
     jockey_candidates = [c for c in JOCKEY_MASTER if c and c != "その他（自由手入力）"]
 
     for gate, rec in list(results.items()):
-        if gate in known_names:
+        # 文字列から取得できた馬名を優先。既存データは空欄時のみ救済する。
+        if not rec.get("馬名") and gate in known_names:
             rec["馬名"] = known_names[gate]
         cj = rec.get("今回騎手", "")
         if cj:
