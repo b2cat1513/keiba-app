@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.14"
+APP_PATCH_VERSION = "Ver1.19.15"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -28,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.14", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.14（ウマニティ・競馬ラボ文字貼り付け対応版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.15", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.19.15（ウマニティ・競馬ラボ文字貼り付け対応版）")
 
 st.markdown("""
 <style>
@@ -1652,13 +1652,29 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                 jockey_pos = bi
                 break
 
-        # 馬名は騎手より前にある、最も名前らしい行を採用。
-        name_before = search_before[:jockey_pos] if jockey_pos is not None else search_before
-        for bi in range(len(name_before) - 1, -1, -1):
-            cand = clean_name(name_before[bi])
-            if cand and cand != rec.get("今回騎手", ""):
+        # 馬名は「馬番直前」だけに限定せず、前の馬番から現在の馬番までの
+        # 1頭分のブロック全体から探す。スマホコピーでは
+        # 「馬名→騎手→U指数→馬番」と並ぶため、U指数が馬番直前にある
+        # ケースでは従来のbefore[:u_pos]では馬名を取りこぼすことがある。
+        # まず性齢を含む本体行から馬名を直接抽出する。
+        horse_block_start = 0
+        if pos > 0:
+            horse_block_start = gate_positions[pos - 1][0] + 1
+        horse_block = lines[horse_block_start:i + 1]
+        for block_line in horse_block:
+            cand = clean_name(block_line)
+            if cand and not clean_jockey(block_line):
                 rec["馬名"] = cand
                 break
+
+        # 本体行を拾えない場合だけ、従来の馬名探索を救済として使う。
+        if not rec["馬名"]:
+            name_before = search_before[:jockey_pos] if jockey_pos is not None else search_before
+            for bi in range(len(name_before) - 1, -1, -1):
+                cand = clean_name(name_before[bi])
+                if cand and cand != rec.get("今回騎手", ""):
+                    rec["馬名"] = cand
+                    break
 
         # 馬番が既存データと一致する場合は、OCR馬名より既知の正しい馬名を優先。
         if gate in known_names:
