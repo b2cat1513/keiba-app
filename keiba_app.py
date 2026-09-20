@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.21"
+APP_PATCH_VERSION = "Ver1.19.22"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -28,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.21", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.21（ウマニティ・競馬ラボ文字貼り付け対応版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.22", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.19.22（ウマニティ・競馬ラボ文字貼り付け対応版）")
 
 st.markdown("""
 <style>
@@ -5369,10 +5369,14 @@ else:
     if "mobile_horse_no" not in st.session_state:
         st.session_state["mobile_horse_no"] = 1
 
+    # ボタンで変更した馬番を、ウィジェット生成前にselectorへ同期する。
+    # ウィジェット生成後にkeyを書き換えると
+    # StreamlitWidgetAlreadyInstantiatedErrorになるため、この位置で行う。
+    st.session_state["mobile_horse_selector"] = int(st.session_state["mobile_horse_no"])
+
     horse_no = st.select_slider(
         "編集する馬番",
         options=list(range(1, 19)),
-        value=int(st.session_state["mobile_horse_no"]),
         key="mobile_horse_selector",
     )
     st.session_state["mobile_horse_no"] = int(horse_no)
