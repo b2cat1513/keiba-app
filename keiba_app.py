@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.20"
+APP_PATCH_VERSION = "Ver1.19.21"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -28,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.20", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.20（ウマニティ・競馬ラボ文字貼り付け対応版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.21", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.19.21（ウマニティ・競馬ラボ文字貼り付け対応版）")
 
 st.markdown("""
 <style>
@@ -5486,8 +5486,10 @@ else:
     left, middle, right = st.columns([1, 1, 1])
 
     if left.button("◀ 前の馬", use_container_width=True, disabled=(horse_no <= 1)):
+        # select_sliderのkeyを直接変更すると、同一実行内で
+        # StreamlitWidgetAlreadyInstantiatedErrorになるため、
+        # 次回描画用のmobile_horse_noだけ更新する。
         st.session_state["mobile_horse_no"] = max(1, horse_no - 1)
-        st.session_state["mobile_horse_selector"] = max(1, horse_no - 1)
         st.rerun()
 
     if middle.button("💾 入力を保存", type="primary", use_container_width=True):
@@ -5496,8 +5498,9 @@ else:
 
     if right.button("次の馬 ▶", use_container_width=True, disabled=(horse_no >= 18)):
         st.session_state["loaded_data"]["rows"][str(horse_no)] = current_inputs["rows"][str(horse_no)]
+        # select_sliderのkeyを直接変更しない。次回描画時に
+        # mobile_horse_noからスライダー位置が更新される。
         st.session_state["mobile_horse_no"] = min(18, horse_no + 1)
-        st.session_state["mobile_horse_selector"] = min(18, horse_no + 1)
         st.rerun()
 
 
