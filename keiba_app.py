@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.19"
+APP_PATCH_VERSION = "Ver1.19.20"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -28,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.19", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.19（ウマニティ・競馬ラボ文字貼り付け対応版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.20", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.19.20（ウマニティ・競馬ラボ文字貼り付け対応版）")
 
 st.markdown("""
 <style>
@@ -6011,7 +6011,8 @@ for item in row_tmp_data:
     value_score = (score + max(0, pop - 1) * 0.8 + (jockey_auto["value"] if name.strip() and jock != "(未選択)" else 0.0)) if name.strip() else 0.0
 
     if name.strip() != "":
-        score_cell.write(f"**{score:.2f}**") if score_cell is not None else None
+        if score_cell is not None:
+            _ = score_cell.write(f"**{score:.2f}**")
         calculated_results.append({
             "馬番": num, "馬名": name, "能力スコア": score, "妙味スコア": value_score, "最終スコア": score, "人気": pop, "単勝オッズ": win_odds, "斤量": wgt, "馬体重": wgh,
             "父馬": sire,
@@ -6026,7 +6027,8 @@ for item in row_tmp_data:
             "適用学習倍率": applied_weights if name.strip() and jock != "(未選択)" else {}
         })
     else:
-        score_cell.write("") if score_cell is not None else None
+        if score_cell is not None:
+            _ = score_cell.write("")
 
 # ==========================================
 # 🤖 AI総合評価エンジン Ver1.05
