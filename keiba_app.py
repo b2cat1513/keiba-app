@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.25"
+APP_PATCH_VERSION = "Ver1.19.26"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -5269,9 +5269,53 @@ with tab_img:
                     "取得元": "競馬ラボ・過去5走画像",
                 })
 
+            # 既存の過去5走記録がある場合は、今回の画像分を追加して結合する。
+            # スマホの「1枚ずつ」運用では、1回目に前半3走、2回目に後半2走を
+            # 解析することがあるため、同じ馬番の新記録で丸ごと上書きしない。
             old = {int(r["馬番"]): r for r in st.session_state["v187_history_records"] if r.get("馬番")}
+
+            def _merge_history_record(existing, incoming):
+                if not existing:
+                    return incoming
+
+                def _vals(rec):
+                    vals = []
+                    for token in str(rec.get("上がり3F内訳", "") or "").split("/"):
+                        try:
+                            v = round(float(token.strip()), 1)
+                        except Exception:
+                            continue
+                        if 30.0 <= v <= 42.9:
+                            vals.append(v)
+                    return vals
+
+                base = _vals(existing)
+                seq = _vals(incoming)
+                if not base:
+                    combined = seq
+                elif not seq:
+                    combined = base
+                else:
+                    overlap = 0
+                    max_overlap = min(len(base), len(seq))
+                    for k in range(max_overlap, 0, -1):
+                        if base[-k:] == seq[:k]:
+                            overlap = k
+                            break
+                    combined = base + seq[overlap:]
+
+                combined = combined[:5]
+                merged = dict(existing)
+                merged.update({k: v for k, v in incoming.items() if k not in {"上がり3F平均", "上がり取得数", "上がり3F内訳"}})
+                merged["上がり3F平均"] = round(sum(combined) / len(combined), 2) if combined else None
+                merged["上がり取得数"] = len(combined)
+                merged["上がり3F内訳"] = " / ".join(f"{v:.1f}" for v in combined)
+                return merged
+
             for r in new_records:
-                old[int(r["馬番"])] = r
+                gate = int(r["馬番"])
+                old[gate] = _merge_history_record(old.get(gate), r)
+
             st.session_state["v187_history_records"] = [old[k] for k in sorted(old)]
             st.session_state["v187_raw_texts"].extend(new_raw)
             st.session_state["v187_diagnostics"].extend(diagnostics)
