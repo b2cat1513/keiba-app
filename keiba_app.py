@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.22"
+APP_PATCH_VERSION = "Ver1.19.23"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -4290,8 +4290,18 @@ def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallb
         return []
 
     jockey_votes = {}
-    # OCR方式ごとに「上から出てきた上がり値列」を作る
+    # OCR方式ごとに「レース単位」で上がり3Fを抽出する。
+    # 旧処理は画面中の30～42.9秒を単純に上から5個拾っていたため、
+    # OCRが同じ数字を別位置で拾うと「別の走の値」で穴埋めしてしまうことがあった。
+    # ここでは日付付きの各レース区間を作り、その区間の最後の30～42.9秒を
+    # そのレースの上がり3F候補として扱う。取得できない走は無理に補完しない。
     sequences = []
+    race_marker_re = re.compile(
+        r"(?:25|26)/[0-9]{1,2}/[0-9]{1,2}.*?(?:東京|中山|阪神|京都|中京|小倉|札幌|函館|福島|新潟)[0-9]+"
+        r"|(?:東京|中山|阪神|京都|中京|小倉|札幌|函館|福島|新潟)[0-9]+.*?(?:25|26)/[0-9]{1,2}/[0-9]{1,2}",
+        re.I,
+    )
+
     for txt in texts:
         recs = parse_keibalab_history_screenshot_text(txt, horse_gate_map, fallback_horse=forced)
         if recs:
@@ -4299,24 +4309,49 @@ def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallb
             if j not in {None, "", "(未選択)"}:
                 jockey_votes[j] = jockey_votes.get(j, 0) + 1
 
-        vals = []
-        for m in re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)(?!\d)", txt):
-            try:
-                v = round(float(m.group(1).replace(",", ".")), 1)
-            except Exception:
-                continue
-            if 30.0 <= v <= 42.9:
-                vals.append(v)
+        lines = [_ocr_clean_line(x) for x in str(txt).splitlines()]
+        lines = [x for x in lines if x]
+        markers = [i for i, line in enumerate(lines) if race_marker_re.search(line)]
 
-        # OCRが同じ文字を連続二重読みにした場合のみ除去。
-        compact = []
-        for v in vals:
-            if not compact or v != compact[-1]:
-                compact.append(v)
-        if compact:
-            sequences.append(compact[:6])
+        seq = []
+        if markers:
+            for mi, start in enumerate(markers):
+                end = markers[mi + 1] if mi + 1 < len(markers) else len(lines)
+                block = lines[start:end]
+                vals = []
+                for line in block:
+                    for m in re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)(?!\d)", line):
+                        try:
+                            v = round(float(m.group(1).replace(",", ".")), 1)
+                        except Exception:
+                            continue
+                        if 30.0 <= v <= 42.9:
+                            vals.append(v)
+                if vals:
+                    # レース区間では最後に現れる上がり3Fを採用。
+                    # 走破時計など別の数字を拾った場合でも、30～42.9秒帯の末尾が最も近い。
+                    seq.append(vals[-1])
+        else:
+            # 日付区切りがOCRで崩れた場合だけ、旧方式を安全側に限定して使用。
+            vals = []
+            for m in re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)(?!\d)", txt):
+                try:
+                    v = round(float(m.group(1).replace(",", ".")), 1)
+                except Exception:
+                    continue
+                if 30.0 <= v <= 42.9:
+                    vals.append(v)
+            compact = []
+            for v in vals:
+                if not compact or v != compact[-1]:
+                    compact.append(v)
+            seq = compact[:5]
 
-    # 各位置ごとに投票して、この画像で見えている順番を維持する。
+        # 5走を超えるOCRノイズは捨てる。3走未満でも無理に埋めない。
+        if seq:
+            sequences.append(seq[:5])
+
+    # 各位置ごとに投票するが、「存在しない走」を別の値で補完しない。
     chosen = []
     max_len = min(5, max([len(s) for s in sequences], default=0))
     for pos in range(max_len):
@@ -4326,24 +4361,9 @@ def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallb
                 v = seq[pos]
                 votes[v] = votes.get(v, 0) + 1
         if not votes:
-            continue
+            break
         best = max(votes, key=lambda v: (votes[v], -abs(v - 35.0)))
         chosen.append(best)
-
-    # 位置投票が弱い場合、複数方式で見えた値を順番補完
-    if len(chosen) < 3:
-        global_votes = {}
-        first_pos = {}
-        for seq in sequences:
-            for pos, v in enumerate(seq[:5]):
-                global_votes[v] = global_votes.get(v, 0) + 1
-                first_pos[v] = min(first_pos.get(v, pos), pos)
-        extras = sorted(global_votes, key=lambda v: (-global_votes[v], first_pos[v]))
-        for v in extras:
-            if len(chosen) >= 5:
-                break
-            if v not in chosen:
-                chosen.append(v)
 
     chosen = chosen[:5]
     avg = round(sum(chosen) / len(chosen), 2) if chosen else None
