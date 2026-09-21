@@ -3982,7 +3982,7 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
     # 1走目と2走目以降の騎手が全文に混在するため、最初のレース区間だけを見る。
     race_markers = []
     for i, line in enumerate(lines):
-        if re.search(r"(?:東京|中山|阪神|京都|中京|小倉|札幌|函館|福島|新潟)[0-9]+", line) and re.search(r"(?:25|26)/[0-9]{1,2}/[0-9]{1,2}", line):
+        if re.search(r"(?:東京|中山|阪神|京都|中京|小倉|札幌|函館|福島|新潟)[0-9]+", line) and re.search(r"(?:19|20|21|22)\d{2}/[0-9]{1,2}/[0-9]{1,2}|\d{2}/[0-9]{1,2}/[0-9]{1,2}", line):
             race_markers.append(i)
     first_race_end = race_markers[1] if len(race_markers) >= 2 else len(lines)
     first_race_lines = lines[race_markers[0]:first_race_end] if race_markers else lines[:28]
@@ -4295,35 +4295,29 @@ def _ocr_history_fast(uploaded_file):
 
 
 def _extract_history_3f_spatial(uploaded_file):
-    """Ver1.19.29: 「3F数値」と、その直後のSを座標でペアリングして抽出する。
+    """Ver1.19.31: レース形式に依存しない過去走3F抽出。
 
-    1.19.28では「Sの左を90px切り出して再OCR」していたが、
-    画面内の別のSを拾うと別レースの数値を取り込む可能性があった。
+    競馬場・レース名・距離・開催月などを条件にせず、馬柱の各行にある
+    「上がり3F数値 → S」という表示関係だけを使う。
 
-    今回は、
-      数値(30.0～42.9) ──同じ行──> S
-    という位置関係そのものを条件にする。
-    つまり「Sがあるから左を読む」のではなく、
-    「3F候補の数字の右にSがある」場合だけ採用する。
-    OCR方式ごとに1本の系列を作り、系列同士を位置ごとに合成しない。
+    重要なのは、OCR全体から30～42.9を拾わないこと。
+    まずSの座標を見つけ、その同じ行の左側だけを再OCRして3F候補を取得する。
+    OCRが「133.2」「134.5」のように先頭へ余計な数字を付けても、
+    文字列内の30.0～42.9を正規表現で抜き出す。
     """
     if not OCR_AVAILABLE:
         return []
-
     img = _open_uploaded_pil(uploaded_file)
     if img is None:
         return []
 
-    max_w = 1600
+    # 画面サイズが変わっても同じ比率で処理できるよう、固定幅ではなく上限だけ設ける。
+    max_w = 1800
     if img.width > max_w:
         ratio = max_w / img.width
-        img = img.resize(
-            (max_w, max(1, int(img.height * ratio))),
-            Image.Resampling.LANCZOS
-        )
+        img = img.resize((max_w, max(1, int(img.height * ratio))), Image.Resampling.LANCZOS)
 
-    # 2種類のPSMを独立して解析する。
-    # どちらか一方だけを採用し、別OCRの値を混ぜない。
+    # S検出は複数PSM。ただし結果を位置ごとに合成せず、各PSMを独立した系列として評価する。
     ocr_variants = []
     for psm in (11, 6):
         try:
@@ -4337,131 +4331,113 @@ def _extract_history_3f_spatial(uploaded_file):
             ocr_variants.append(data)
         except Exception:
             pass
-
     if not ocr_variants:
         return []
 
-    def _norm_token(s):
-        s = str(s or "").strip()
-        s = s.replace(",", ".").replace("。", ".")
-        return s
+    def extract_3f_from_text(txt):
+        """OCR文字列から30.0～42.9の値だけを抽出。先頭の誤数字は許容する。"""
+        s = str(txt or "").replace(",", ".").replace("。", ".")
+        vals = []
+        # 例: 133.2 -> 33.2、134.55 -> 34.5 を取得できる。
+        for m in re.finditer(r"([3-4]\d[\.,]\d)", s):
+            try:
+                v = round(float(m.group(1).replace(",", ".")), 1)
+            except Exception:
+                continue
+            if 30.0 <= v <= 42.9:
+                vals.append(v)
+        return vals
 
-    def _extract_number(s):
-        """トークンから30.0～42.9の3F候補を1個だけ取り出す。"""
-        s = _norm_token(s)
-        # 通常は33.2のような単独トークン。
-        m = re.search(r"(?<!\d)([3-4]\d[.,]\d)(?!\d)", s)
-        if not m:
-            return None
-        try:
-            v = round(float(m.group(1).replace(",", ".")), 1)
-        except Exception:
-            return None
-        return v if 30.0 <= v <= 42.9 else None
+    def crop_read_3f(x, y, w, h):
+        # Sの左側。数字が少し広がっていても拾えるよう90→120px相当を確保。
+        x1 = max(0, x - max(105, int(w * 7)))
+        x2 = max(x1 + 1, x - 2)
+        y1 = max(0, y - max(10, int(h * 0.45)))
+        y2 = min(img.height, y + h + max(10, int(h * 0.45)))
+        crop = img.crop((x1, y1, x2, y2))
+        if crop.width < 25 or crop.height < 10:
+            return []
 
-    def _make_sequence(data):
-        rows = []
+        gray = ImageOps.grayscale(crop)
+        variants = [
+            ImageOps.autocontrast(gray),
+            gray,
+            gray.point(lambda p: 255 if p > 180 else 0),
+        ]
+        vals = []
+        for vimg in variants:
+            vimg = vimg.resize((vimg.width * 5, vimg.height * 5), Image.Resampling.LANCZOS)
+            for psm in (7, 6, 8, 13):
+                try:
+                    txt = pytesseract.image_to_string(
+                        vimg,
+                        lang="eng",
+                        config=f"--oem 3 --psm {psm} -c tessedit_char_whitelist=0123456789.,",
+                        timeout=5,
+                    )
+                except Exception:
+                    continue
+                vals.extend(extract_3f_from_text(txt))
+        return vals
 
+    def make_sequence(data):
         texts = data.get("text", [])
-        n = len(texts)
-
-        # OCRの各単語を「数値候補」と「S候補」に分ける。
-        nums = []
-        ss = []
-        for i in range(n):
-            token = str(texts[i] or "").strip()
-            if not token:
+        candidates = []
+        for i, raw in enumerate(texts):
+            token = str(raw or "").strip()
+            if token.lower() != "s":
                 continue
             try:
-                x = int(data["left"][i])
-                y = int(data["top"][i])
-                w = int(data["width"][i])
-                h = int(data["height"][i])
+                x = int(data["left"][i]); y = int(data["top"][i])
+                w = int(data["width"][i]); h = int(data["height"][i])
                 conf = float(data["conf"][i])
             except Exception:
                 continue
             if w <= 0 or h <= 0:
                 continue
 
-            v = _extract_number(token)
-            if v is not None:
-                nums.append((x, y, w, h, conf, v))
+            vals = crop_read_3f(x, y, w, h)
+            if not vals:
+                continue
 
-            # S単独、または「S」のOCR誤認識として5を許容。
-            # 数字5.0などをS扱いしないため、単独トークンだけ対象。
-            if token.lower() in {"s", "5"}:
-                ss.append((x, y, w, h, conf))
+            # 同じSの周辺OCRで複数候補が出たら、中央値ではなく「最頻値」を採用。
+            # 1回だけ誤読された値より、同じ行から繰り返し出る値を優先する。
+            counts = {}
+            for v in vals:
+                counts[v] = counts.get(v, 0) + 1
+            best_count = max(counts.values())
+            best_vals = [v for v, c in counts.items() if c == best_count]
+            value = best_vals[0]
+            candidates.append((y + h / 2, x, conf, value))
 
-            # 「33.2S」のように1トークンへ連結された場合も処理。
-            m2 = re.search(r"([3-4]\d[.,]\d)\s*[Ss]", token)
-            if m2:
-                try:
-                    v2 = round(float(m2.group(1).replace(",", ".")), 1)
-                    if 30.0 <= v2 <= 42.9:
-                        rows.append((y + h / 2, x, conf, v2, 0))
-                except Exception:
-                    pass
-
-        # 数値の右側にあるSだけを対応付ける。
-        for nx, ny, nw, nh, nconf, value in nums:
-            ncy = ny + nh / 2
-            candidates = []
-            for sx, sy, sw, sh, sconf in ss:
-                scy = sy + sh / 2
-
-                # 同じ行かどうか。スマホ画像では文字高さが近いため、
-                # 中心Y差を高さ基準＋最大18pxで判定。
-                y_tol = max(18.0, max(nh, sh) * 0.65)
-                if abs(ncy - scy) > y_tol:
-                    continue
-
-                gap = sx - (nx + nw)
-                # Sは3F数値の直後。離れすぎるSは別項目とみなす。
-                if gap < -8 or gap > 90:
-                    continue
-
-                # 同じ行のS候補として、距離が近いものを優先。
-                candidates.append((gap, abs(ncy - scy), -sconf, sx, sy))
-
-            if candidates:
-                candidates.sort()
-                gap, dy, neg_conf, sx, sy = candidates[0]
-                rows.append((ncy, nx, nconf, value, gap))
-
-        if not rows:
+        if not candidates:
             return []
 
-        # 同じ3Fを複数経路で拾った場合はY位置で1つにまとめる。
-        rows.sort(key=lambda z: (z[0], z[1]))
+        candidates.sort(key=lambda z: (z[0], z[1]))
         seq = []
         used_y = []
-        for cy, x, conf, value, gap in rows:
-            if any(abs(cy - py) < 22 for py in used_y):
+        for cy, x, conf, value in candidates:
+            # 同じレース行を二重取得しない。
+            if any(abs(cy - py) < max(24, 1.2 * 22) for py in used_y):
                 continue
             seq.append(value)
             used_y.append(cy)
-
         return seq[:5]
 
     sequences = []
     for data in ocr_variants:
-        seq = _make_sequence(data)
+        seq = make_sequence(data)
         if seq:
             sequences.append(seq)
 
     if not sequences:
         return []
 
-    # OCR結果を位置ごとに合成しない。
-    # 「1枚のOCR結果として最も多くの走を一貫して取れた系列」を採用。
-    chosen = max(
+    # 別OCRの値を位置ごとに混ぜない。最長で、重複が少ない一貫した系列を採用。
+    return max(
         sequences,
-        key=lambda seq: (len(seq), -sum(
-            1 for i in range(1, len(seq)) if seq[i] == seq[i - 1]
-        ))
-    )
-    return chosen[:5]
-
+        key=lambda seq: (len(seq), -sum(1 for i in range(1, len(seq)) if seq[i] == seq[i - 1]))
+    )[:5]
 
 def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallback_horse=None):
     """Ver1.18.11: Ver1.18.9で実績のあった全文OCR方式を復元。
@@ -4477,7 +4453,7 @@ def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallb
         return []
 
     jockey_votes = {}
-    # Ver1.19.29: 3F数値と直後のSを座標ペアリングして抽出。
+    # Ver1.19.30: 3F数値と直後のSを座標ペアリングして抽出。
     # これが取れた画像では、全文OCR由来の3F系列を使わない。
     spatial_seq = _extract_history_3f_spatial(uploaded_file)
 
@@ -4489,7 +4465,7 @@ def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallb
     sequences = []
     # 日付だけを区切りとして使う。OCRでは「東京11R」等が別行になりやすく、
     # 日付+競馬場+Rを同一行で要求すると5走の境界を失って全走を混ぜるため。
-    race_marker_re = re.compile(r"(?<!\d)(?:25|26)/[0-9]{1,2}/[0-9]{1,2}(?!\d)")
+    race_marker_re = re.compile(r"(?<!\d)(?:19|20|21|22)\d{2}/[0-9]{1,2}/[0-9]{1,2}(?!\d)|(?<!\d)\d{2}/[0-9]{1,2}/[0-9]{1,2}(?!\d)")
 
     # 「数値 + S」が上がり3Fの決定的な目印。
     # OCRで S が 5 と読まれるケースも許容する。
@@ -6623,6 +6599,37 @@ def save_race_result(prediction_id, actual_rank, return_amount):
         conn.commit()
 
 
+def delete_prediction_record(prediction_id):
+    """保存済み予想を削除する。関連するレース結果も先に削除する。"""
+    with get_db_connection() as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM predictions WHERE prediction_id = ?",
+            (prediction_id,),
+        ).fetchone()
+        if exists is None:
+            raise ValueError("対象の予想履歴が見つかりません。")
+        conn.execute("DELETE FROM race_results WHERE prediction_id = ?", (prediction_id,))
+        conn.execute("DELETE FROM predictions WHERE prediction_id = ?", (prediction_id,))
+        conn.commit()
+
+
+def update_prediction_registration(prediction_id, course=None, top_horse=None):
+    """予想登録の基本情報（コース・本命馬）を修正する。"""
+    with get_db_connection() as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM predictions WHERE prediction_id = ?",
+            (prediction_id,),
+        ).fetchone()
+        if exists is None:
+            raise ValueError("対象の予想履歴が見つかりません。")
+
+        conn.execute(
+            "UPDATE predictions SET course = ?, top_horse = ? WHERE prediction_id = ?",
+            (str(course or ""), str(top_horse or ""), prediction_id),
+        )
+        conn.commit()
+
+
 def load_prediction_history(include_pending=True):
     """予想履歴と結果を読み込む。"""
     where = "" if include_pending else "WHERE r.prediction_id IS NOT NULL"
@@ -6994,6 +7001,100 @@ with st.expander("📝 保存済み予想へレース結果を登録する", exp
                 st.error(f"結果を保存できませんでした: {exc}")
     else:
         st.info("結果未登録の予想はありません。新しい予想を実行すると、ここに表示されます。")
+
+# ------------------------------------------
+# ✏️ 保存済み予想の修正・削除
+# ------------------------------------------
+if all_history:
+    with st.expander("✏️ 保存済み予想の修正・削除", expanded=False):
+        st.caption("間違えて登録した予想はここから削除できます。レース結果の着順・払戻金額も修正できます。")
+
+        edit_option_map = {
+            f"{row['created_at']}｜{row['course']}｜本命 {row['top_horse']}｜"
+            f"{'結果登録済み' if row.get('actual_rank') is not None else '結果未登録'}": row["prediction_id"]
+            for row in all_history
+        }
+        edit_label = st.selectbox(
+            "修正・削除する予想を選択",
+            list(edit_option_map.keys()),
+            key="prediction_edit_selector",
+        )
+        edit_id = edit_option_map[edit_label]
+        edit_row = next((row for row in all_history if row["prediction_id"] == edit_id), None)
+
+        if edit_row is not None:
+            edit_cols = st.columns(2)
+            with edit_cols[0]:
+                edit_course = st.text_input(
+                    "コース",
+                    value=str(edit_row.get("course") or ""),
+                    key="prediction_edit_course",
+                )
+            with edit_cols[1]:
+                edit_horse = st.text_input(
+                    "本命馬",
+                    value=str(edit_row.get("top_horse") or ""),
+                    key="prediction_edit_horse",
+                )
+
+            if edit_row.get("actual_rank") is not None:
+                result_edit_cols = st.columns(2)
+                with result_edit_cols[0]:
+                    edit_rank = st.number_input(
+                        "実際の着順",
+                        min_value=1, max_value=18,
+                        value=int(edit_row.get("actual_rank") or 1),
+                        step=1,
+                        key="prediction_edit_rank",
+                    )
+                with result_edit_cols[1]:
+                    edit_return = st.number_input(
+                        "払戻金額（円）",
+                        min_value=0, max_value=10000000,
+                        value=int(edit_row.get("return_amount") or 0),
+                        step=100,
+                        key="prediction_edit_return",
+                    )
+            else:
+                edit_rank = None
+                edit_return = None
+                st.info("この予想はまだレース結果が未登録です。コース・本命馬の修正ができます。")
+
+            save_cols = st.columns(2)
+            with save_cols[0]:
+                if st.button("💾 修正を保存", type="primary", use_container_width=True, key="save_prediction_edit"):
+                    try:
+                        update_prediction_registration(edit_id, edit_course, edit_horse)
+                        if edit_rank is not None:
+                            save_race_result(edit_id, edit_rank, edit_return)
+                        st.success("修正を保存しました。")
+                        st.rerun()
+                    except (ValueError, sqlite3.Error) as exc:
+                        st.error(f"修正を保存できませんでした: {exc}")
+
+            with save_cols[1]:
+                if st.button("🗑️ この予想を削除", use_container_width=True, key="delete_prediction_record"):
+                    st.session_state["confirm_delete_prediction_id"] = edit_id
+                    st.rerun()
+
+            if st.session_state.get("confirm_delete_prediction_id") == edit_id:
+                st.warning(
+                    f"「{edit_row.get('created_at')}｜{edit_row.get('course')}｜本命 {edit_row.get('top_horse')}」を削除しますか？"
+                )
+                confirm_cols = st.columns(2)
+                with confirm_cols[0]:
+                    if st.button("削除を確定", type="primary", use_container_width=True, key="confirm_delete_prediction"):
+                        try:
+                            delete_prediction_record(edit_id)
+                            st.session_state.pop("confirm_delete_prediction_id", None)
+                            st.success("予想履歴を削除しました。")
+                            st.rerun()
+                        except (ValueError, sqlite3.Error) as exc:
+                            st.error(f"削除できませんでした: {exc}")
+                with confirm_cols[1]:
+                    if st.button("キャンセル", use_container_width=True, key="cancel_delete_prediction"):
+                        st.session_state.pop("confirm_delete_prediction_id", None)
+                        st.rerun()
 
 if completed_history:
     history_df = pd.DataFrame(completed_history)
