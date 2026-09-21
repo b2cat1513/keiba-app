@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.23"
+APP_PATCH_VERSION = "Ver1.19.24"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -3941,13 +3941,27 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
     if not horse_name or not gate:
         return []
 
-    # 30.0～45.9 の小数1桁を上がり候補として取得。
+    # 上がり3Fは「数値の直後に S」が付く欄を最優先で取得する。
+    # これにより、オッズ等の 30～45 秒台に見える数字を誤って拾わない。
     finish_times = []
+    explicit_3f = []
     for line in lines:
-        for m in re.finditer(r"(?<![:\d])([3-4]\d\.\d)\s*[SHM]?(?!\d)", line):
-            val = float(m.group(1))
-            if 30.0 <= val <= 45.9:
-                finish_times.append(val)
+        for m in re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)\s*S\b", line, re.I):
+            try:
+                val = float(m.group(1).replace(",", "."))
+            except Exception:
+                continue
+            if 30.0 <= val <= 42.9:
+                explicit_3f.append(val)
+    if explicit_3f:
+        finish_times = explicit_3f[:5]
+    else:
+        # SがOCRで欠落した場合だけ従来候補を使う。
+        for line in lines:
+            for m in re.finditer(r"(?<![:\d])([3-4]\d\.\d)\s*[SHM]?(?!\d)", line):
+                val = float(m.group(1))
+                if 30.0 <= val <= 42.9:
+                    finish_times.append(val)
 
     # 連続重複を除き、上から最大5走
     cleaned = []
@@ -4319,18 +4333,28 @@ def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallb
                 end = markers[mi + 1] if mi + 1 < len(markers) else len(lines)
                 block = lines[start:end]
                 vals = []
+                # この画面では上がり3Fが「33.2 S」のように表示される。
+                # まず「S直前」の数字だけを拾い、オッズ等を除外する。
                 for line in block:
-                    for m in re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)(?!\d)", line):
+                    for m in re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)\s*S\b", line, re.I):
                         try:
                             v = round(float(m.group(1).replace(",", ".")), 1)
                         except Exception:
                             continue
                         if 30.0 <= v <= 42.9:
                             vals.append(v)
+                if not vals:
+                    # SがOCRで欠落した場合だけ、ブロック内の候補から補完する。
+                    for line in block:
+                        for m in re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)(?!\d)", line):
+                            try:
+                                v = round(float(m.group(1).replace(",", ".")), 1)
+                            except Exception:
+                                continue
+                            if 30.0 <= v <= 42.9:
+                                vals.append(v)
                 if vals:
-                    # レース区間では最後に現れる上がり3Fを採用。
-                    # 走破時計など別の数字を拾った場合でも、30～42.9秒帯の末尾が最も近い。
-                    seq.append(vals[-1])
+                    seq.append(vals[0] if any(re.search(r"(?<![:\d])([3-4]\d[\.,]\d)\s*S\b", line, re.I) for line in block) else vals[-1])
         else:
             # 日付区切りがOCRで崩れた場合だけ、旧方式を安全側に限定して使用。
             vals = []
