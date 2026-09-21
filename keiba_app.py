@@ -4294,6 +4294,102 @@ def _ocr_history_fast(uploaded_file):
     return texts
 
 
+def _extract_history_3f_spatial(uploaded_file):
+    """Ver1.19.28: 過去5走画像の上がり3Fを画面座標で抽出する。
+
+    競馬ラボの馬柱では、各走の「3F数値」の直後に S が配置される。
+    全文OCRの文字列だけを解析すると、別の行の数値が混ざることがあるため、
+    OCRのSトークンの座標を基準に、その直前だけを小さく切り出して数値OCRする。
+    """
+    if not OCR_AVAILABLE:
+        return []
+    img = _open_uploaded_pil(uploaded_file)
+    if img is None:
+        return []
+
+    # 元画像が大きすぎる場合は _ocr_history_fast と同じ幅にそろえる。
+    max_w = 1600
+    if img.width > max_w:
+        ratio = max_w / img.width
+        img = img.resize((max_w, max(1, int(img.height * ratio))), Image.Resampling.LANCZOS)
+
+    try:
+        data = pytesseract.image_to_data(
+            img,
+            lang="jpn+eng",
+            config="--oem 3 --psm 11",
+            output_type=pytesseract.Output.DICT,
+            timeout=15,
+        )
+    except Exception:
+        return []
+
+    candidates = []
+    for i, raw in enumerate(data.get("text", [])):
+        token = str(raw or "").strip()
+        # 「S」だけを目印にする。小文字sも許容。
+        if token.lower() != "s":
+            continue
+        try:
+            x = int(data["left"][i])
+            y = int(data["top"][i])
+            w = int(data["width"][i])
+            h = int(data["height"][i])
+        except Exception:
+            continue
+        if w <= 0 or h <= 0:
+            continue
+
+        # Sの直前約85pxを切り出す。元画像では3F数値がSの左側にある。
+        x1 = max(0, x - 90)
+        x2 = max(x1 + 1, x - 2)
+        y1 = max(0, y - 8)
+        y2 = min(img.height, y + h + 8)
+        crop = img.crop((x1, y1, x2, y2))
+        if crop.width < 20 or crop.height < 10:
+            continue
+
+        # 色付きの3F数字にも対応するため、グレースケール＋拡大で数値だけ再OCR。
+        gray = ImageOps.grayscale(crop)
+        gray = ImageOps.autocontrast(gray)
+        gray = gray.resize((gray.width * 4, gray.height * 4), Image.Resampling.LANCZOS)
+        try:
+            txt = pytesseract.image_to_string(
+                gray,
+                lang="eng",
+                config="--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789.,",
+                timeout=5,
+            )
+        except Exception:
+            continue
+
+        # OCRが「433.2」「934.2」のように先頭へ余計な数字を付けても、
+        # 文字列中の30.0～42.9形式を取り出せば本来の3F値になる。
+        vals = []
+        for m in re.finditer(r"([3-4]\d[\.,]\d)", str(txt)):
+            try:
+                v = round(float(m.group(1).replace(",", ".")), 1)
+            except Exception:
+                continue
+            if 30.0 <= v <= 42.9:
+                vals.append(v)
+        if vals:
+            candidates.append((y, vals[-1]))
+
+    # 同じ行を二重に拾った場合は縦位置の近い候補を1つにまとめる。
+    candidates.sort(key=lambda z: z[0])
+    seq = []
+    last_y = None
+    for y, v in candidates:
+        if last_y is not None and abs(y - last_y) < 25:
+            # 同じ行なら後の候補を優先しない。最初の1個だけ採用。
+            continue
+        seq.append(v)
+        last_y = y
+
+    return seq[:5]
+
+
 def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallback_horse=None):
     """Ver1.18.11: Ver1.18.9で実績のあった全文OCR方式を復元。
     複数画像の結合はUI側で行い、5走分まで補完する。
@@ -4308,6 +4404,10 @@ def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallb
         return []
 
     jockey_votes = {}
+    # Ver1.19.28: まず画面座標ベースの3F抽出を試す。
+    # これが取れた画像では、全文OCR由来の3F系列を使わない。
+    spatial_seq = _extract_history_3f_spatial(uploaded_file)
+
     # OCR方式ごとに「レース単位」で上がり3Fを抽出する。
     # 旧処理は画面中の30～42.9秒を単純に上から5個拾っていたため、
     # OCRが同じ数字を別位置で拾うと「別の走の値」で穴埋めしてしまうことがあった。
@@ -4402,8 +4502,11 @@ def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallb
     # まず長さ、次にSマーカー由来の系列を優先するため、sequencesはS抽出を
     # 主体にしている。複数候補が同じ長さなら最初の系列を採用する。
     chosen = []
-    if sequences:
-        # 5走に近い、長い系列を優先。短い系列で5走を勝手に補完しない。
+    if spatial_seq:
+        # 位置情報でS直前から取得した値を最優先。
+        chosen = spatial_seq[:5]
+    elif sequences:
+        # 位置情報が取れない場合のみ、従来の全文OCR系列へフォールバック。
         chosen = max(sequences, key=lambda seq: (len(seq), -sum(1 for i in range(1, len(seq)) if seq[i] == seq[i-1])))
         chosen = chosen[:5]
     avg = round(sum(chosen) / len(chosen), 2) if chosen else None
