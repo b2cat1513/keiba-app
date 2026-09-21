@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.24"
+APP_PATCH_VERSION = "Ver1.19.25"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -3941,25 +3941,29 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
     if not horse_name or not gate:
         return []
 
-    # 上がり3Fは「数値の直後に S」が付く欄を最優先で取得する。
-    # これにより、オッズ等の 30～45 秒台に見える数字を誤って拾わない。
+    # 上がり3Fは「数値 + S」の並びを最優先。
+    # ウマニティ/競馬ラボの馬柱では、走破時計の直後に
+    # 「33.2 S」のように上がり3Fが表示されるため、オッズ等の別数値を拾わない。
     finish_times = []
-    explicit_3f = []
     for line in lines:
-        for m in re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)\s*S\b", line, re.I):
+        s_matches = list(re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)\s*[Ss5](?!\w)", line))
+        for m in s_matches:
             try:
-                val = float(m.group(1).replace(",", "."))
+                val = round(float(m.group(1).replace(",", ".")), 1)
             except Exception:
                 continue
             if 30.0 <= val <= 42.9:
-                explicit_3f.append(val)
-    if explicit_3f:
-        finish_times = explicit_3f[:5]
-    else:
-        # SがOCRで欠落した場合だけ従来候補を使う。
+                finish_times.append(val)
+
+    # SがOCRで欠けた場合のみ、30.0～42.9秒を補助候補として使用。
+    # 45秒台のオッズ等は候補にしない。
+    if not finish_times:
         for line in lines:
-            for m in re.finditer(r"(?<![:\d])([3-4]\d\.\d)\s*[SHM]?(?!\d)", line):
-                val = float(m.group(1))
+            for m in re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)(?!\d)", line):
+                try:
+                    val = round(float(m.group(1).replace(",", ".")), 1)
+                except Exception:
+                    continue
                 if 30.0 <= val <= 42.9:
                     finish_times.append(val)
 
@@ -4316,6 +4320,10 @@ def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallb
         re.I,
     )
 
+    # 「数値 + S」が上がり3Fの決定的な目印。
+    # OCRで S が 5 と読まれるケースも許容する。
+    threef_s_re = re.compile(r"(?<![:\d])([3-4]\d[\.,]\d)\s*[Ss5](?!\w)")
+
     for txt in texts:
         recs = parse_keibalab_history_screenshot_text(txt, horse_gate_map, fallback_horse=forced)
         if recs:
@@ -4329,22 +4337,28 @@ def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallb
 
         seq = []
         if markers:
-            for mi, start in enumerate(markers):
-                end = markers[mi + 1] if mi + 1 < len(markers) else len(lines)
-                block = lines[start:end]
-                vals = []
-                # この画面では上がり3Fが「33.2 S」のように表示される。
-                # まず「S直前」の数字だけを拾い、オッズ等を除外する。
+            for mi, start_i in enumerate(markers):
+                end_i = markers[mi + 1] if mi + 1 < len(markers) else len(lines)
+                block = lines[start_i:end_i]
+
+                # まず「xx.x S」の値だけを探す。
+                svals = []
                 for line in block:
-                    for m in re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)\s*S\b", line, re.I):
+                    for m in threef_s_re.finditer(line):
                         try:
                             v = round(float(m.group(1).replace(",", ".")), 1)
                         except Exception:
                             continue
                         if 30.0 <= v <= 42.9:
-                            vals.append(v)
-                if not vals:
-                    # SがOCRで欠落した場合だけ、ブロック内の候補から補完する。
+                            svals.append(v)
+
+                if svals:
+                    # 同一レース内の候補は最後の1つを採用。
+                    seq.append(svals[-1])
+                else:
+                    # Sが完全にOCR落ちしたレースだけ、ブロック内の30.0～42.9を補助利用。
+                    # 45秒台は除外し、勝手な穴埋めはしない。
+                    vals = []
                     for line in block:
                         for m in re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)(?!\d)", line):
                             try:
@@ -4353,29 +4367,37 @@ def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallb
                                 continue
                             if 30.0 <= v <= 42.9:
                                 vals.append(v)
-                if vals:
-                    seq.append(vals[0] if any(re.search(r"(?<![:\d])([3-4]\d[\.,]\d)\s*S\b", line, re.I) for line in block) else vals[-1])
+                    if vals:
+                        seq.append(vals[-1])
         else:
-            # 日付区切りがOCRで崩れた場合だけ、旧方式を安全側に限定して使用。
-            vals = []
-            for m in re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)(?!\d)", txt):
-                try:
-                    v = round(float(m.group(1).replace(",", ".")), 1)
-                except Exception:
-                    continue
-                if 30.0 <= v <= 42.9:
-                    vals.append(v)
-            compact = []
-            for v in vals:
-                if not compact or v != compact[-1]:
-                    compact.append(v)
-            seq = compact[:5]
+            # 日付区切りがOCRで崩れた場合も、まず「数値 + S」を優先。
+            for line in lines:
+                for m in threef_s_re.finditer(line):
+                    try:
+                        v = round(float(m.group(1).replace(",", ".")), 1)
+                    except Exception:
+                        continue
+                    if 30.0 <= v <= 42.9:
+                        seq.append(v)
+            if not seq:
+                vals = []
+                for m in re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)(?!\d)", txt):
+                    try:
+                        v = round(float(m.group(1).replace(",", ".")), 1)
+                    except Exception:
+                        continue
+                    if 30.0 <= v <= 42.9:
+                        vals.append(v)
+                compact = []
+                for v in vals:
+                    if not compact or v != compact[-1]:
+                        compact.append(v)
+                seq = compact[:5]
 
-        # 5走を超えるOCRノイズは捨てる。3走未満でも無理に埋めない。
         if seq:
             sequences.append(seq[:5])
 
-    # 各位置ごとに投票するが、「存在しない走」を別の値で補完しない。
+    # OCR方式ごとの同じ位置の投票。ただし存在しない走は補完しない。
     chosen = []
     max_len = min(5, max([len(s) for s in sequences], default=0))
     for pos in range(max_len):
