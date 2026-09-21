@@ -4295,99 +4295,172 @@ def _ocr_history_fast(uploaded_file):
 
 
 def _extract_history_3f_spatial(uploaded_file):
-    """Ver1.19.28: 過去5走画像の上がり3Fを画面座標で抽出する。
+    """Ver1.19.29: 「3F数値」と、その直後のSを座標でペアリングして抽出する。
 
-    競馬ラボの馬柱では、各走の「3F数値」の直後に S が配置される。
-    全文OCRの文字列だけを解析すると、別の行の数値が混ざることがあるため、
-    OCRのSトークンの座標を基準に、その直前だけを小さく切り出して数値OCRする。
+    1.19.28では「Sの左を90px切り出して再OCR」していたが、
+    画面内の別のSを拾うと別レースの数値を取り込む可能性があった。
+
+    今回は、
+      数値(30.0～42.9) ──同じ行──> S
+    という位置関係そのものを条件にする。
+    つまり「Sがあるから左を読む」のではなく、
+    「3F候補の数字の右にSがある」場合だけ採用する。
+    OCR方式ごとに1本の系列を作り、系列同士を位置ごとに合成しない。
     """
     if not OCR_AVAILABLE:
         return []
+
     img = _open_uploaded_pil(uploaded_file)
     if img is None:
         return []
 
-    # 元画像が大きすぎる場合は _ocr_history_fast と同じ幅にそろえる。
     max_w = 1600
     if img.width > max_w:
         ratio = max_w / img.width
-        img = img.resize((max_w, max(1, int(img.height * ratio))), Image.Resampling.LANCZOS)
-
-    try:
-        data = pytesseract.image_to_data(
-            img,
-            lang="jpn+eng",
-            config="--oem 3 --psm 11",
-            output_type=pytesseract.Output.DICT,
-            timeout=15,
+        img = img.resize(
+            (max_w, max(1, int(img.height * ratio))),
+            Image.Resampling.LANCZOS
         )
-    except Exception:
+
+    # 2種類のPSMを独立して解析する。
+    # どちらか一方だけを採用し、別OCRの値を混ぜない。
+    ocr_variants = []
+    for psm in (11, 6):
+        try:
+            data = pytesseract.image_to_data(
+                img,
+                lang="jpn+eng",
+                config=f"--oem 3 --psm {psm}",
+                output_type=pytesseract.Output.DICT,
+                timeout=15,
+            )
+            ocr_variants.append(data)
+        except Exception:
+            pass
+
+    if not ocr_variants:
         return []
 
-    candidates = []
-    for i, raw in enumerate(data.get("text", [])):
-        token = str(raw or "").strip()
-        # 「S」だけを目印にする。小文字sも許容。
-        if token.lower() != "s":
-            continue
+    def _norm_token(s):
+        s = str(s or "").strip()
+        s = s.replace(",", ".").replace("。", ".")
+        return s
+
+    def _extract_number(s):
+        """トークンから30.0～42.9の3F候補を1個だけ取り出す。"""
+        s = _norm_token(s)
+        # 通常は33.2のような単独トークン。
+        m = re.search(r"(?<!\d)([3-4]\d[.,]\d)(?!\d)", s)
+        if not m:
+            return None
         try:
-            x = int(data["left"][i])
-            y = int(data["top"][i])
-            w = int(data["width"][i])
-            h = int(data["height"][i])
+            v = round(float(m.group(1).replace(",", ".")), 1)
         except Exception:
-            continue
-        if w <= 0 or h <= 0:
-            continue
+            return None
+        return v if 30.0 <= v <= 42.9 else None
 
-        # Sの直前約85pxを切り出す。元画像では3F数値がSの左側にある。
-        x1 = max(0, x - 90)
-        x2 = max(x1 + 1, x - 2)
-        y1 = max(0, y - 8)
-        y2 = min(img.height, y + h + 8)
-        crop = img.crop((x1, y1, x2, y2))
-        if crop.width < 20 or crop.height < 10:
-            continue
+    def _make_sequence(data):
+        rows = []
 
-        # 色付きの3F数字にも対応するため、グレースケール＋拡大で数値だけ再OCR。
-        gray = ImageOps.grayscale(crop)
-        gray = ImageOps.autocontrast(gray)
-        gray = gray.resize((gray.width * 4, gray.height * 4), Image.Resampling.LANCZOS)
-        try:
-            txt = pytesseract.image_to_string(
-                gray,
-                lang="eng",
-                config="--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789.,",
-                timeout=5,
-            )
-        except Exception:
-            continue
+        texts = data.get("text", [])
+        n = len(texts)
 
-        # OCRが「433.2」「934.2」のように先頭へ余計な数字を付けても、
-        # 文字列中の30.0～42.9形式を取り出せば本来の3F値になる。
-        vals = []
-        for m in re.finditer(r"([3-4]\d[\.,]\d)", str(txt)):
+        # OCRの各単語を「数値候補」と「S候補」に分ける。
+        nums = []
+        ss = []
+        for i in range(n):
+            token = str(texts[i] or "").strip()
+            if not token:
+                continue
             try:
-                v = round(float(m.group(1).replace(",", ".")), 1)
+                x = int(data["left"][i])
+                y = int(data["top"][i])
+                w = int(data["width"][i])
+                h = int(data["height"][i])
+                conf = float(data["conf"][i])
             except Exception:
                 continue
-            if 30.0 <= v <= 42.9:
-                vals.append(v)
-        if vals:
-            candidates.append((y, vals[-1]))
+            if w <= 0 or h <= 0:
+                continue
 
-    # 同じ行を二重に拾った場合は縦位置の近い候補を1つにまとめる。
-    candidates.sort(key=lambda z: z[0])
-    seq = []
-    last_y = None
-    for y, v in candidates:
-        if last_y is not None and abs(y - last_y) < 25:
-            # 同じ行なら後の候補を優先しない。最初の1個だけ採用。
-            continue
-        seq.append(v)
-        last_y = y
+            v = _extract_number(token)
+            if v is not None:
+                nums.append((x, y, w, h, conf, v))
 
-    return seq[:5]
+            # S単独、または「S」のOCR誤認識として5を許容。
+            # 数字5.0などをS扱いしないため、単独トークンだけ対象。
+            if token.lower() in {"s", "5"}:
+                ss.append((x, y, w, h, conf))
+
+            # 「33.2S」のように1トークンへ連結された場合も処理。
+            m2 = re.search(r"([3-4]\d[.,]\d)\s*[Ss]", token)
+            if m2:
+                try:
+                    v2 = round(float(m2.group(1).replace(",", ".")), 1)
+                    if 30.0 <= v2 <= 42.9:
+                        rows.append((y + h / 2, x, conf, v2, 0))
+                except Exception:
+                    pass
+
+        # 数値の右側にあるSだけを対応付ける。
+        for nx, ny, nw, nh, nconf, value in nums:
+            ncy = ny + nh / 2
+            candidates = []
+            for sx, sy, sw, sh, sconf in ss:
+                scy = sy + sh / 2
+
+                # 同じ行かどうか。スマホ画像では文字高さが近いため、
+                # 中心Y差を高さ基準＋最大18pxで判定。
+                y_tol = max(18.0, max(nh, sh) * 0.65)
+                if abs(ncy - scy) > y_tol:
+                    continue
+
+                gap = sx - (nx + nw)
+                # Sは3F数値の直後。離れすぎるSは別項目とみなす。
+                if gap < -8 or gap > 90:
+                    continue
+
+                # 同じ行のS候補として、距離が近いものを優先。
+                candidates.append((gap, abs(ncy - scy), -sconf, sx, sy))
+
+            if candidates:
+                candidates.sort()
+                gap, dy, neg_conf, sx, sy = candidates[0]
+                rows.append((ncy, nx, nconf, value, gap))
+
+        if not rows:
+            return []
+
+        # 同じ3Fを複数経路で拾った場合はY位置で1つにまとめる。
+        rows.sort(key=lambda z: (z[0], z[1]))
+        seq = []
+        used_y = []
+        for cy, x, conf, value, gap in rows:
+            if any(abs(cy - py) < 22 for py in used_y):
+                continue
+            seq.append(value)
+            used_y.append(cy)
+
+        return seq[:5]
+
+    sequences = []
+    for data in ocr_variants:
+        seq = _make_sequence(data)
+        if seq:
+            sequences.append(seq)
+
+    if not sequences:
+        return []
+
+    # OCR結果を位置ごとに合成しない。
+    # 「1枚のOCR結果として最も多くの走を一貫して取れた系列」を採用。
+    chosen = max(
+        sequences,
+        key=lambda seq: (len(seq), -sum(
+            1 for i in range(1, len(seq)) if seq[i] == seq[i - 1]
+        ))
+    )
+    return chosen[:5]
 
 
 def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallback_horse=None):
@@ -4404,7 +4477,7 @@ def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallb
         return []
 
     jockey_votes = {}
-    # Ver1.19.28: まず画面座標ベースの3F抽出を試す。
+    # Ver1.19.29: 3F数値と直後のSを座標ペアリングして抽出。
     # これが取れた画像では、全文OCR由来の3F系列を使わない。
     spatial_seq = _extract_history_3f_spatial(uploaded_file)
 
