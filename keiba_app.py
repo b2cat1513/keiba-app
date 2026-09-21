@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.26"
+APP_PATCH_VERSION = "Ver1.19.27"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -4314,11 +4314,9 @@ def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallb
     # ここでは日付付きの各レース区間を作り、その区間の最後の30～42.9秒を
     # そのレースの上がり3F候補として扱う。取得できない走は無理に補完しない。
     sequences = []
-    race_marker_re = re.compile(
-        r"(?:25|26)/[0-9]{1,2}/[0-9]{1,2}.*?(?:東京|中山|阪神|京都|中京|小倉|札幌|函館|福島|新潟)[0-9]+"
-        r"|(?:東京|中山|阪神|京都|中京|小倉|札幌|函館|福島|新潟)[0-9]+.*?(?:25|26)/[0-9]{1,2}/[0-9]{1,2}",
-        re.I,
-    )
+    # 日付だけを区切りとして使う。OCRでは「東京11R」等が別行になりやすく、
+    # 日付+競馬場+Rを同一行で要求すると5走の境界を失って全走を混ぜるため。
+    race_marker_re = re.compile(r"(?<!\d)(?:25|26)/[0-9]{1,2}/[0-9]{1,2}(?!\d)")
 
     # 「数値 + S」が上がり3Fの決定的な目印。
     # OCRで S が 5 と読まれるケースも許容する。
@@ -4397,21 +4395,17 @@ def parse_keibalab_history_screenshot_image(uploaded_file, horse_gate_map, fallb
         if seq:
             sequences.append(seq[:5])
 
-    # OCR方式ごとの同じ位置の投票。ただし存在しない走は補完しない。
+    # OCR方式をまたいで「位置ごとに多数決」すると、
+    # 33.2 / 34.2 / 33.4 のような正しい走を別のOCRの誤認識値と混ぜた
+    # "合成された偽の5走" ができることがある。
+    # そのため、日付ブロックから得られた「一貫した1本の系列」を優先する。
+    # まず長さ、次にSマーカー由来の系列を優先するため、sequencesはS抽出を
+    # 主体にしている。複数候補が同じ長さなら最初の系列を採用する。
     chosen = []
-    max_len = min(5, max([len(s) for s in sequences], default=0))
-    for pos in range(max_len):
-        votes = {}
-        for seq in sequences:
-            if pos < len(seq):
-                v = seq[pos]
-                votes[v] = votes.get(v, 0) + 1
-        if not votes:
-            break
-        best = max(votes, key=lambda v: (votes[v], -abs(v - 35.0)))
-        chosen.append(best)
-
-    chosen = chosen[:5]
+    if sequences:
+        # 5走に近い、長い系列を優先。短い系列で5走を勝手に補完しない。
+        chosen = max(sequences, key=lambda seq: (len(seq), -sum(1 for i in range(1, len(seq)) if seq[i] == seq[i-1])))
+        chosen = chosen[:5]
     avg = round(sum(chosen) / len(chosen), 2) if chosen else None
     jockey = max(jockey_votes, key=jockey_votes.get) if jockey_votes else "(未選択)"
 
