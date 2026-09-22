@@ -3928,7 +3928,15 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
     }]
 
 def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=None):
-    """競馬ラボ過去走から前走騎手と直近5走の上がり3F平均を抽出。"""
+    """競馬ラボ過去5走のコピー文字から前走騎手と直近5走の上がり3F平均を抽出。
+
+    Ver1.19.33:
+    - Sだけを条件にしない。上がり3Fの後ろにある脚質区分 S/M/H を許容。
+    - 「日付 → 走破時計 → 上がり3F → S/M/H」という1走単位で抽出する。
+    - 同じ5走が画面分割やコピー重複で2回入っても、日付で重複除去する。
+    - これにより、Sだけでなく M/H のレースも取得できる。
+    - 走破時計がOCRで崩れていても、同一日付ブロック内の「3F + S/M/H」を補助利用。
+    """
     lines = [_ocr_clean_line(x) for x in str(text).splitlines()]
     lines = [x for x in lines if x]
     joined = " ".join(lines)
@@ -3941,48 +3949,75 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
     if not horse_name or not gate:
         return []
 
-    # 上がり3Fは「数値 + S」の並びを最優先。
-    # ウマニティ/競馬ラボの馬柱では、走破時計の直後に
-    # 「33.2 S」のように上がり3Fが表示されるため、オッズ等の別数値を拾わない。
-    finish_times = []
-    for line in lines:
-        s_matches = list(re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)\s*[Ss5](?!\w)", line))
-        for m in s_matches:
-            try:
-                val = round(float(m.group(1).replace(",", ".")), 1)
-            except Exception:
-                continue
-            if 30.0 <= val <= 42.9:
-                finish_times.append(val)
+    # 日付を1走の境界として使う。26/6/28 と 26/6/13 のように
+    # 競馬場・レース名が別行になっても、日付で確実に区切れる。
+    date_re = re.compile(r"(?<!\d)(?:(?:19|20|21|22)\d{2}/\d{1,2}/\d{1,2}|\d{2}/\d{1,2}/\d{1,2})(?!\d)")
+    date_matches = list(date_re.finditer(joined))
 
-    # SがOCRで欠けた場合のみ、30.0～42.9秒を補助候補として使用。
-    # 45秒台のオッズ等は候補にしない。
-    if not finish_times:
-        for line in lines:
-            for m in re.finditer(r"(?<![:\d])([3-4]\d[\.,]\d)(?!\d)", line):
+    # 走破時計の直後にある「3F + S/M/H」を基本パターンにする。
+    # 例: 2:22.7 33.2 S / 1:48.5 35.1 M / 1:48.2 38.5 H
+    time_3f_pace_re = re.compile(
+        r"\b\d{1,2}:\d{2}[\.,]\d\s+([3-4]\d[\.,]\d)\s*([SMHsmh5])\b"
+    )
+    # 走破時計がOCRで落ちた場合の補助。Sだけに限定しない。
+    threef_pace_re = re.compile(r"(?<![:\d])([3-4]\d[\.,]\d)\s*([SMHsmh5])\b")
+
+    # 日付ごとに最初の「タイム→3F→S/M/H」を1走として取得。
+    # 同じ日付がコピー重複した場合は後から重複除去する。
+    race_values = []
+    if date_matches:
+        for i, dm in enumerate(date_matches):
+            block_start = dm.start()
+            block_end = date_matches[i + 1].start() if i + 1 < len(date_matches) else len(joined)
+            block = joined[block_start:block_end]
+            date_key = dm.group(0)
+
+            m = time_3f_pace_re.search(block)
+            if not m:
+                m = threef_pace_re.search(block)
+            if m:
                 try:
-                    val = round(float(m.group(1).replace(",", ".")), 1)
+                    val = round(float(m.group(1).replace(',', '.')), 1)
                 except Exception:
                     continue
                 if 30.0 <= val <= 42.9:
-                    finish_times.append(val)
+                    race_values.append((date_key, val))
+    else:
+        # 日付がOCR/コピーで欠落した場合のみ、行単位で補助取得。
+        for line in lines:
+            m = time_3f_pace_re.search(line) or threef_pace_re.search(line)
+            if m:
+                try:
+                    val = round(float(m.group(1).replace(',', '.')), 1)
+                except Exception:
+                    continue
+                if 30.0 <= val <= 42.9:
+                    race_values.append((None, val))
 
-    # 連続重複を除き、上から最大5走
-    cleaned = []
-    for val in finish_times:
-        if not cleaned or abs(val - cleaned[-1]) > 0.001:
-            cleaned.append(val)
-    finish_times = cleaned[:5]
+    # 同じ日付の重複を除去。最初に見つかった値を採用する。
+    # 画面を上下に分けてコピーした場合でも、5走が二重にならない。
+    finish_times = []
+    seen_dates = set()
+    for date_key, val in race_values:
+        if date_key is not None:
+            if date_key in seen_dates:
+                continue
+            seen_dates.add(date_key)
+        if not finish_times or abs(val - finish_times[-1]) > 0.001 or date_key is not None:
+            finish_times.append(val)
+        if len(finish_times) >= 5:
+            break
+
     avg_l3f = round(sum(finish_times) / len(finish_times), 2) if finish_times else None
 
     previous_jockey = "(未選択)"
     jockey_candidates = [x for x in JOCKEY_MASTER if x != "その他（自由手入力）"]
 
-    # 「前走」は最初に現れる日付付きレース情報。
-    # 1走目と2走目以降の騎手が全文に混在するため、最初のレース区間だけを見る。
+    # 「前走」は最初の日付付きレース区間だけを見る。
+    # 騎手名が複数走分に混在していても、最初のレースから前走騎手を取得する。
     race_markers = []
     for i, line in enumerate(lines):
-        if re.search(r"(?:東京|中山|阪神|京都|中京|小倉|札幌|函館|福島|新潟)[0-9]+", line) and re.search(r"(?:19|20|21|22)\d{2}/[0-9]{1,2}/[0-9]{1,2}|\d{2}/[0-9]{1,2}/[0-9]{1,2}", line):
+        if re.search(r"(?:東京|中山|阪神|京都|中京|小倉|札幌|函館|福島|新潟)[0-9]+", line) and date_re.search(line):
             race_markers.append(i)
     first_race_end = race_markers[1] if len(race_markers) >= 2 else len(lines)
     first_race_lines = lines[race_markers[0]:first_race_end] if race_markers else lines[:28]
@@ -4012,7 +4047,6 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
         if best_score >= 0.78:
             previous_jockey = best_j
 
-
     return [{
         "馬番": int(gate), "馬名": horse_name,
         "前走騎手": previous_jockey,
@@ -4020,233 +4054,6 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
         "上がり3F平均": avg_l3f,
         "上がり取得数": len(finish_times),
         "取得元": "競馬ラボ・過去5走文字貼り付け",
-    }]
-
-
-
-def _ocr_image_variants(uploaded_file, psm_values=(6, 11, 12)):
-    """同じ画像を複数前処理・PSMでOCRし、文字欠けを相互補完する。"""
-    if not OCR_AVAILABLE:
-        return []
-    try:
-        uploaded_file.seek(0)
-    except Exception:
-        pass
-    image = Image.open(uploaded_file).convert("RGB")
-    gray = ImageOps.autocontrast(ImageOps.grayscale(image))
-    scale = 2 if max(image.size) >= 1600 else 3
-    gray = gray.resize((gray.width * scale, gray.height * scale), Image.Resampling.LANCZOS)
-    gray = gray.filter(ImageFilter.UnsharpMask(radius=1, percent=180, threshold=2))
-    variants = [gray]
-    # 文字が薄いスクリーンショット用の二値化版
-    variants.append(gray.point(lambda x: 255 if x > 178 else 0))
-    texts = []
-    for img in variants:
-        for psm in psm_values:
-            try:
-                txt = pytesseract.image_to_string(img, lang="jpn+eng", config=f"--oem 3 --psm {psm}")
-                if txt and txt.strip():
-                    texts.append(txt)
-            except Exception:
-                pass
-    return texts
-
-
-
-def _ocr_pil_variants(pil_img, psms=(4, 6, 11, 12)):
-    """PIL画像を複数PSMでOCRして、重複を除いたテキストを返す。"""
-    texts = []
-    if not OCR_AVAILABLE or pil_img is None:
-        return texts
-    for psm in psms:
-        try:
-            txt = pytesseract.image_to_string(
-                pil_img,
-                lang="jpn+eng",
-                config=f"--oem 3 --psm {psm}",
-            )
-            txt = str(txt or "").strip()
-            if txt and txt not in texts:
-                texts.append(txt)
-        except Exception:
-            pass
-    return texts
-
-
-def _open_uploaded_pil(uploaded_file):
-    """UploadedFileを毎回安全にPILへ戻す。"""
-    try:
-        uploaded_file.seek(0)
-    except Exception:
-        pass
-    try:
-        img = Image.open(uploaded_file).convert("RGB")
-        img.load()
-        return img
-    except Exception:
-        return None
-
-
-def _extract_keibalab_profile_fields_from_layout(uploaded_file):
-    """競馬ラボ・プロフィール画面の右寄り情報ブロックを中心に抽出。
-    全文OCRだけに頼らず、複数の縦帯をOCRして「調教師」「馬主」ラベル近傍を探す。
-    """
-    img = _open_uploaded_pil(uploaded_file)
-    if img is None:
-        return {"父馬": "", "厩舎候補": [], "馬主候補": []}
-
-    w, h = img.size
-    # 競馬ラボのプロフィールは中央～下部に血統/調教師/馬主がまとまることが多い。
-    crops = [
-        img.crop((int(w*0.00), int(h*0.25), int(w*1.00), int(h*0.90))),
-        img.crop((int(w*0.20), int(h*0.30), int(w*0.95), int(h*0.88))),
-        img.crop((int(w*0.35), int(h*0.30), int(w*1.00), int(h*0.88))),
-    ]
-
-    all_texts = []
-    for crop in crops:
-        all_texts.extend(_ocr_pil_variants(crop, (4, 6, 11)))
-
-    sire_votes = {}
-    trainer_raw = []
-    owner_raw = []
-
-    for txt in all_texts:
-        lines = [_ocr_clean_line(x) for x in txt.splitlines()]
-        lines = [x for x in lines if x]
-
-        for i, line in enumerate(lines):
-            # 父馬: 「母父」は除外し、「父」「父馬」の直後だけ
-            if "母父" not in line:
-                m = re.search(r"(?:^|[\s｜|])父馬?[：:\s]+([^\s｜|]+)", line)
-                if not m:
-                    m = re.search(r"^父馬?[：:\s]*([^\s｜|]+)", line)
-                if m:
-                    sire = re.sub(r"[^ぁ-んァ-ヶーヴ一-龥A-Za-z0-9・.'-]", "", m.group(1))
-                    if 2 <= len(sire) <= 28:
-                        sire_votes[sire] = sire_votes.get(sire, 0) + 1
-
-            # 調教師: ラベル行と次行だけ
-            if "調教師" in line or "厩舎" in line:
-                candidates = [line]
-                if i + 1 < len(lines):
-                    candidates.append(lines[i+1])
-                for raw in candidates:
-                    raw = re.sub(r"^.*?(?:調教師|厩舎)[：:\s]*", "", raw).strip()
-                    raw = re.sub(r"[（(](?:美|栗|美浦|栗東)[）)].*$", "", raw).strip()
-                    m = re.search(r"([一-龥]{2,8})", raw)
-                    if m:
-                        trainer_raw.append(m.group(1))
-
-            # 「○○○○(美)/(栗)」は調教師候補
-            m = re.search(r"([一-龥]{2,8})\s*[（(](?:美|栗|美浦|栗東)[）)]", line)
-            if m:
-                trainer_raw.append(m.group(1))
-
-            # 馬主: ラベル行と直後行だけ。父/母/生産者へまたがらない
-            if "馬主" in line:
-                candidates = []
-                tail = re.sub(r"^.*?馬主[：:\s]*", "", line).strip()
-                if tail:
-                    candidates.append(tail)
-                if i + 1 < len(lines):
-                    candidates.append(lines[i+1].strip())
-                for raw in candidates:
-                    raw = re.split(r"(?:生産者|生産|調教師|厩舎|父|母父|母|距離別|コース別)", raw)[0].strip()
-                    raw = re.sub(r"[^\u3040-\u30ff一-龥A-Za-z0-9・＆&ー\s]", "", raw).strip()
-                    if 2 <= len(raw) <= 28:
-                        owner_raw.append(raw)
-
-    sire = max(sire_votes, key=lambda x: (sire_votes[x], len(x))) if sire_votes else ""
-    return {"父馬": sire, "厩舎候補": trainer_raw, "馬主候補": owner_raw}
-
-
-
-
-def parse_keibalab_profile_screenshot_image(uploaded_file, horse_gate_map, fallback_horse=None):
-    """Ver1.18.10: 父馬・厩舎・馬主をラベル周辺＋画面位置から抽出。"""
-    forced = normalize_horse_name(fallback_horse or "")
-    gate = horse_gate_map.get(forced)
-    if not forced or not gate:
-        return []
-
-    # 従来の全文OCR系
-    texts = _ocr_image_variants(uploaded_file, (4, 6, 11, 12))
-    records = []
-    for txt in texts:
-        recs = parse_keibalab_profile_screenshot_text(txt, horse_gate_map, fallback_horse=forced)
-        if recs:
-            records.append(recs[0])
-
-    # 位置ベースの補助OCR
-    layout = _extract_keibalab_profile_fields_from_layout(uploaded_file)
-
-    # 父馬
-    sire_votes = {}
-    for r in records:
-        sire = str(r.get("父馬", "") or "").strip()
-        if 2 <= len(sire) <= 30:
-            sire_votes[sire] = sire_votes.get(sire, 0) + 1
-    if layout.get("父馬"):
-        sire_votes[layout["父馬"]] = sire_votes.get(layout["父馬"], 0) + 2
-    sire = max(sire_votes, key=lambda v: (sire_votes[v], len(v))) if sire_votes else ""
-
-    # 厩舎
-    trainer_candidates = [x for x in TRAINER_OPTIONS if x not in {"(未選択)", "その他"}]
-    trainer_votes = {}
-    raw_trainers = list(layout.get("厩舎候補", []))
-
-    for r in records:
-        t = str(r.get("厩舎", "") or "").strip()
-        if t not in {"", "(未選択)"}:
-            raw_trainers.append(t)
-
-    for raw in raw_trainers:
-        matched = _best_master_match(raw, trainer_candidates, 0.62)
-        if matched != "(未選択)":
-            trainer_votes[matched] = trainer_votes.get(matched, 0) + 1
-
-    trainer = "(未選択)"
-    if trainer_votes:
-        best = max(trainer_votes, key=lambda x: trainer_votes[x])
-        # 2票以上の一致を原則採用。誤爆抑制。
-        if trainer_votes[best] >= 2:
-            trainer = best
-
-    # 馬主
-    owner_candidates = [x for x in OWNER_OPTIONS if x not in {"(未選択)", "その他"}]
-    owner_votes = {}
-    owner_raw_votes = {}
-
-    raw_owners = list(layout.get("馬主候補", []))
-    for r in records:
-        o = str(r.get("馬主", "") or "").strip()
-        if o not in {"", "(未選択)"}:
-            raw_owners.append(o)
-
-    for raw in raw_owners:
-        matched = _best_master_match(raw, owner_candidates, 0.62)
-        if matched != "(未選択)":
-            owner_votes[matched] = owner_votes.get(matched, 0) + 1
-        else:
-            compact = re.sub(r"\s+", "", raw)
-            if 2 <= len(compact) <= 28:
-                owner_raw_votes[compact] = owner_raw_votes.get(compact, 0) + 1
-
-    owner = "(未選択)"
-    if owner_votes:
-        best = max(owner_votes, key=lambda x: owner_votes[x])
-        if owner_votes[best] >= 2:
-            owner = best
-    elif owner_raw_votes:
-        best = max(owner_raw_votes, key=lambda x: owner_raw_votes[x])
-        if owner_raw_votes[best] >= 2:
-            owner = best
-
-    return [{
-        "馬番": int(gate), "馬名": forced,
-        "父馬": sire, "厩舎": trainer, "馬主": owner,
-        "取得元": "競馬ラボ・プロフィール画像",
     }]
 
 
