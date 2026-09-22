@@ -28,7 +28,7 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.22", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.32", layout="wide", initial_sidebar_state="collapsed")
 st.title("🏆 ジェニーAI予想ver1.19.22（ウマニティ・競馬ラボ文字貼り付け対応版）")
 
 st.markdown("""
@@ -4692,9 +4692,15 @@ st.divider()
 # ==========================================
 st.subheader("📋 一括自動入力エリア")
 
-tab_nk, tab_um, tab_kl, tab_img = st.tabs(["📋 Netkeiba一括入力", "🐎 ウマニティ文字入力", "🔬 競馬ラボ文字入力", "📷 画像OCR（予備）"])
+bulk_input_tab = st.radio(
+    "入力方式",
+    ["📋 Netkeiba一括入力", "🐎 ウマニティ文字入力", "🔬 競馬ラボ文字入力", "📷 画像OCR（予備）"],
+    horizontal=True,
+    key="bulk_input_tab_v1932",
+)
+st.caption("※ タブの代わりに選択ボタン方式にしています。スマホでもPCでもタップして切り替えできます。")
 
-with tab_nk:
+if bulk_input_tab == "📋 Netkeiba一括入力":
     copied_text_nk = st.text_area(
         "Netkeibaの出馬表テキストを貼り付けてください（複数行でも解析します）",
         height=180,
@@ -4764,7 +4770,7 @@ with tab_nk:
                             st.write(message)
                 st.rerun()
 
-with tab_um:
+if bulk_input_tab == "🐎 ウマニティ文字入力":
     st.markdown("### 📋 ウマニティ文字貼り付け（おすすめ）")
     st.caption("ウマニティの出馬表をコピー → 下欄へCtrl+V → 解析。画像OCRより文字の誤読が少なく、馬名・騎手・U指数・単勝・斤量を一括取得します。")
 
@@ -4934,7 +4940,7 @@ for key in [
     if key not in st.session_state:
         st.session_state[key] = []
 
-with tab_kl:
+if bulk_input_tab == "🔬 競馬ラボ文字入力":
     st.header("🔬 競馬ラボ文字入力")
     st.info("画像OCRとは完全に分離しました。競馬ラボの文字をコピーして、②プロフィール → ③過去5走の順に貼り付けてください。")
 
@@ -5062,7 +5068,7 @@ with tab_kl:
         cols = [c for c in ["馬番", "馬名", "父馬", "厩舎", "馬主", "前走騎手", "上がり3F内訳", "上がり3F平均"] if c in pd.DataFrame(merged_kl).columns]
         st.dataframe(pd.DataFrame(merged_kl)[cols], use_container_width=True, hide_index=True)
 
-with tab_img:
+if bulk_input_tab == "📷 画像OCR（予備）":
     st.write("### 📷 画像OCR（予備入力）")
     st.caption("文字コピーできない場合だけ使用してください。Ver1.18.16：①ウマニティを1行1回OCR化して高速化。先頭馬番を指定した画像では、不要な馬番OCR・厩舎OCR・騎手の多重OCRを省きます。②③はVer1.18.11の安定ロジックを維持します。")
 
@@ -5099,7 +5105,7 @@ with tab_img:
                 out[name] = r
         return list(out.values())
 
-    mobile_ocr_mode = st.session_state.get("input_screen_mode", "📱 スマホ") == "📱 スマホ"
+    mobile_ocr_mode = st.session_state.get("input_screen_mode_v1932", "📱 スマホ") == "📱 スマホ"
     upload_mode = st.radio(
         "画像の選び方",
         ["📱 スマホ：1枚ずつ", "🖥️ PC：複数枚まとめて"],
@@ -5539,15 +5545,18 @@ _NULL_SCORE_CELL = _NullScoreCell()
 # ==========================================
 st.write("### 📝 出馬表データ入力")
 
-if "input_screen_mode" not in st.session_state:
-    st.session_state["input_screen_mode"] = "📱 スマホ"
+if "input_screen_mode_v1932" not in st.session_state:
+    old_mode = st.session_state.get("input_screen_mode", "📱 スマホ")
+    st.session_state["input_screen_mode_v1932"] = old_mode if old_mode in ["📱 スマホ", "🖥️ PC"] else "📱 スマホ"
 
 screen_mode = st.radio(
     "入力画面",
     ["📱 スマホ", "🖥️ PC"],
-    key="input_screen_mode",
+    key="input_screen_mode_v1932",
     horizontal=True,
 )
+# 旧キーも互換用に同期（ウィジェット生成後の直接変更はしない）
+st.session_state["input_screen_mode"] = screen_mode
 mobile_mode = (screen_mode == "📱 スマホ")
 
 current_inputs = {"course": sel_course, "track_condition": track_condition, "race_class": race_class, "rows": {}}
