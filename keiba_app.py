@@ -3808,112 +3808,163 @@ def parse_keibalab_profile_copied_text(raw_text, horse_gate_map, fallback_horse=
             results[gate] = rec
     return [results[g] for g in sorted(results)]
 
-def parse_keibalab_history_copied_text(raw_text, horse_gate_map, fallback_horse=None):
-    """競馬ラボの過去走コピーから前走騎手・上がり3Fを抽出。
+def _extract_history_3f_records_from_text(text):
+    """過去5走文字から「日付付き3F走歴」を抽出する。
 
-    馬名が含まれる複数頭コピーと、馬名が含まれない1頭分コピーの両方に対応。
-    同じ馬の重複セクションは、馬番・日付単位で統合して新しい5走を返す。
+    1走を「日付 + 走破時計 + 3F + S/M/H」のレコードとして扱い、
+    呼び出し側で複数の馬区間を統合できる形にする。
     """
-    grouped_records = {}
+    lines = [_ocr_clean_line(x) for x in str(text).splitlines()]
+    lines = [x for x in lines if x]
+    joined = " ".join(lines)
+
+    date_re = re.compile(
+        r"(?<!\d)(?:(?P<y4>(?:19|20|21|22)\d{2})/(?P<m4>\d{1,2})/(?P<d4>\d{1,2})|"
+        r"(?P<y2>\d{2})/(?P<m2>\d{1,2})/(?P<d2>\d{1,2}))(?!\d)"
+    )
+    time_3f_pace_re = re.compile(
+        r"\b\d{1,2}:\d{2}[\.,]\d\s+([3-4]\d[\.,]\d)\s*([SMHsmh5])\b"
+    )
+    threef_pace_re = re.compile(
+        r"(?<![:\d])([3-4]\d[\.,]\d)\s*([SMHsmh5])\b"
+    )
+
+    date_matches = list(date_re.finditer(joined))
+    records = []
+
+    if date_matches:
+        for i, dm in enumerate(date_matches):
+            block_start = dm.start()
+            block_end = date_matches[i + 1].start() if i + 1 < len(date_matches) else len(joined)
+            block = joined[block_start:block_end]
+
+            m = time_3f_pace_re.search(block) or threef_pace_re.search(block)
+            if not m:
+                continue
+
+            try:
+                val = round(float(m.group(1).replace(",", ".")), 1)
+            except Exception:
+                continue
+            if not 30.0 <= val <= 42.9:
+                continue
+
+            if dm.group("y4"):
+                year = int(dm.group("y4"))
+                month = int(dm.group("m4"))
+                day = int(dm.group("d4"))
+            else:
+                year = 2000 + int(dm.group("y2"))
+                month = int(dm.group("m2"))
+                day = int(dm.group("d2"))
+
+            date_key = f"{year:04d}/{month:02d}/{day:02d}"
+            records.append({
+                "date": date_key,
+                "date_sort": (year, month, day),
+                "value": val,
+            })
+    else:
+        # 日付が欠落した入力では、値の順序を保ったまま仮レコードにする。
+        for line in lines:
+            m = time_3f_pace_re.search(line) or threef_pace_re.search(line)
+            if not m:
+                continue
+            try:
+                val = round(float(m.group(1).replace(",", ".")), 1)
+            except Exception:
+                continue
+            if 30.0 <= val <= 42.9:
+                records.append({
+                    "date": None,
+                    "date_sort": None,
+                    "value": val,
+                })
+
+    return records
+
+
+def parse_keibalab_history_copied_text(raw_text, horse_gate_map, fallback_horse=None):
+    """競馬ラボの過去5走コピーから前走騎手・上がり3Fを抽出。
+
+    Ver1.19.34:
+    - 馬名ごとの複数区間を「取得数の多い区間だけ採用」せず、全区間を統合。
+    - 同じ馬 + 同じ日付は1走に統合する。
+    - 同じ馬 + 異なる日付はすべて保持する。
+    - 統合後に日付の新しい順へ並べ、最新5走だけを採用する。
+    - S/M/Hをすべて3Fレコードとして扱う。
+    - 画像OCR処理は変更しない。
+    """
+    results = {}
     segments = _split_copied_text_by_known_horses(raw_text, horse_gate_map)
     if not segments and fallback_horse:
         horse = normalize_horse_name(fallback_horse)
         if horse in horse_gate_map:
             segments = [(horse, normalize_copied_text(raw_text))]
 
-    for segment_index, (horse, segment) in enumerate(segments):
-        recs = parse_keibalab_history_screenshot_text(segment, horse_gate_map, fallback_horse=horse)
-        if not recs:
-            continue
-        rec = recs[0]
+    # 馬番ごとに「日付付き走歴」を集約する。
+    history_by_gate = {}
+    jockey_by_gate = {}
+
+    for horse, segment in segments:
         gate = int(horse_gate_map[horse])
-        group = grouped_records.setdefault(gate, {
-            "horse_name": horse,
-            "race_records": [],
-            "undated_values": [],
-            "previous_jockey": "(未選択)",
-        })
-        if group["previous_jockey"] == "(未選択)" and rec.get("前走騎手") not in {None, "", "(未選択)"}:
-            group["previous_jockey"] = rec["前走騎手"]
 
-        # 各セクションの値列を丸ごと採用せず、馬番・日付で後段統合できる
-        # レースレコードとして保持する。これにより重複コピーの古い混入値が
-        # 正しい別日付レースを上書きしない。
-        race_records = rec.get("_history_race_records", [])
-        if race_records:
-            for source_order, race in enumerate(race_records):
-                date_key = race.get("date")
-                value = race.get("l3f")
-                if date_key is None:
-                    continue
-                try:
-                    value = round(float(value), 1)
-                except Exception:
-                    continue
-                if 30.0 <= value <= 42.9:
-                    group["race_records"].append({
-                        "horse_name": horse,
-                        "gate": gate,
-                        "date": str(date_key),
-                        "l3f": value,
-                        "pace_marker": race.get("pace_marker", ""),
-                        "segment_index": segment_index,
-                        "source_order": source_order,
-                    })
-        else:
-            # 日付が完全に欠落した従来形式は、別日付と誤って重複除去しない。
-            # 日付付きレースが5走未満のときだけ、従来順で補助利用する。
-            for token in str(rec.get("上がり3F内訳", "") or "").split("/"):
-                try:
-                    value = round(float(token.strip()), 1)
-                except Exception:
-                    continue
-                if 30.0 <= value <= 42.9:
-                    group["undated_values"].append(value)
+        # 3Fは今回の専用レコード抽出器で全区間を取得する。
+        race_records = _extract_history_3f_records_from_text(segment)
+        history_by_gate.setdefault(gate, []).extend(race_records)
 
-    def date_sort_key(date_key):
-        """YY/M/D・YYYY/M/Dを新しい順に並べるための安全なキー。"""
-        m = re.fullmatch(r"(?:(\d{4})|(\d{2}))/(\d{1,2})/(\d{1,2})", str(date_key or ""))
-        if not m:
-            return (0, 0, 0)
-        year = int(m.group(1)) if m.group(1) else 2000 + int(m.group(2))
-        return (year, int(m.group(3)), int(m.group(4)))
+        # 前走騎手は既存ロジックを利用し、最初に取得できた値を採用。
+        recs = parse_keibalab_history_screenshot_text(
+            segment, horse_gate_map, fallback_horse=horse
+        )
+        if recs:
+            jockey = recs[0].get("前走騎手")
+            if jockey not in {None, "", "(未選択)"} and gate not in jockey_by_gate:
+                jockey_by_gate[gate] = jockey
 
-    results = []
-    for gate in sorted(grouped_records):
-        group = grouped_records[gate]
-        # 同じ馬・同じ日付だけを重複として扱い、最初に見つかった完全な
-        # 「日付→時計→3F→S/M/H」レコードを残す。別日付は必ず残す。
-        by_horse_date = {}
-        for race in group["race_records"]:
-            race_key = (race["horse_name"], race["date"])
-            by_horse_date.setdefault(race_key, race)
+    for gate, race_records in history_by_gate.items():
+        # 日付ありレコードを日付単位で重複排除する。
+        # 同じ日付について異なる3Fが複数あっても、最初の有効値を採用。
+        dated = {}
+        undated = []
+        for rr in race_records:
+            date_key = rr.get("date")
+            if date_key is None:
+                undated.append(rr)
+                continue
+            if date_key not in dated:
+                dated[date_key] = rr
 
-        selected_records = sorted(
-            by_horse_date.values(),
-            key=lambda race: date_sort_key(race["date"]),
+        # 新しいレースから順に並べる。
+        ordered = sorted(
+            dated.values(),
+            key=lambda rr: rr.get("date_sort") or (0, 0, 0),
             reverse=True,
-        )[:5]
-        finish_times = [race["l3f"] for race in selected_records]
+        )
 
-        # 日付なしの従来入力は、日付付きレースを優先したうえでのみ補助利用する。
-        for value in group["undated_values"]:
-            if len(finish_times) >= 5:
-                break
-            if not finish_times or abs(value - finish_times[-1]) > 0.001:
-                finish_times.append(value)
+        # 日付のない補助値は、日付付きレコードの後ろに追加する。
+        ordered.extend(undated)
 
-        results.append({
+        # 最大5走。
+        ordered = ordered[:5]
+        values = [rr["value"] for rr in ordered]
+
+        # 馬名はgate_horse_mapから必ず固定する。
+        horse_name = next(
+            (name for name, g in horse_gate_map.items() if int(g) == int(gate)),
+            "",
+        )
+        results[gate] = {
             "馬番": gate,
-            "馬名": group["horse_name"],
-            "前走騎手": group["previous_jockey"],
-            "上がり3F内訳": " / ".join(f"{v:.1f}" for v in finish_times),
-            "上がり3F平均": round(sum(finish_times) / len(finish_times), 2) if finish_times else None,
-            "上がり取得数": len(finish_times),
+            "馬名": horse_name,
+            "前走騎手": jockey_by_gate.get(gate, "(未選択)"),
+            "上がり3F内訳": " / ".join(f"{v:.1f}" for v in values),
+            "上がり3F平均": round(sum(values) / len(values), 2) if values else None,
+            "上がり取得数": len(values),
             "取得元": "競馬ラボ・過去5走文字貼り付け",
-        })
-    return results
+        }
 
+    return [results[g] for g in sorted(results)]
 
 def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=None):
     """競馬ラボプロフィールから父馬・厩舎・馬主を抽出。
@@ -4042,7 +4093,6 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
     # 日付ごとに最初の「タイム→3F→S/M/H」を1走として取得。
     # 同じ日付がコピー重複した場合は後から重複除去する。
     race_values = []
-    history_race_records = []
     if date_matches:
         for i, dm in enumerate(date_matches):
             block_start = dm.start()
@@ -4060,11 +4110,6 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
                     continue
                 if 30.0 <= val <= 42.9:
                     race_values.append((date_key, val))
-                    history_race_records.append({
-                        "date": date_key,
-                        "l3f": val,
-                        "pace_marker": m.group(2).upper(),
-                    })
     else:
         # 日付がOCR/コピーで欠落した場合のみ、行単位で補助取得。
         for line in lines:
@@ -4137,9 +4182,6 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
         "上がり3F平均": avg_l3f,
         "上がり取得数": len(finish_times),
         "取得元": "競馬ラボ・過去5走文字貼り付け",
-        # 複数セクションを処理する文字貼り付け側だけが利用する内部情報。
-        # 既存UI・画像OCR経路の表示形式はこのキーを参照しない。
-        "_history_race_records": history_race_records,
     }]
 
 
