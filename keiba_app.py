@@ -3753,12 +3753,17 @@ def _find_known_horse_in_text(text, horse_gate_map):
 
 
 def _split_copied_text_by_known_horses(raw_text, horse_gate_map):
-    """コピー文字列を既知の馬名ごとの区間に分割する。重複コピーにも対応。"""
+    """競馬ラボのコピー文字を馬ごとの区間候補に分割する。
+
+    競馬ラボではコピー範囲によって「馬名→過去走」だけでなく
+    「過去走→馬名」の順になることがあるため、前後両方向の区間候補を
+    保持する。最終的な3F解析側で、日付＋3Fの取得数が多い候補を採用する。
+    """
     text = normalize_copied_text(raw_text)
     lines = [x.strip() for x in text.splitlines() if x.strip()]
     if not lines or not horse_gate_map:
         return []
-    # 馬名の出現位置をすべて拾い、同じ馬名の重複区間も別候補として保持。
+
     positions = []
     for i, line in enumerate(lines):
         normalized = normalize_horse_name(line)
@@ -3768,13 +3773,23 @@ def _split_copied_text_by_known_horses(raw_text, horse_gate_map):
                 break
     if not positions:
         return []
+
     segments = []
-    for p, (start, horse) in enumerate(positions):
-        end = positions[p + 1][0] if p + 1 < len(positions) else len(lines)
-        # 次の馬名が同じ場合も、各区間を独立して解析する。
-        seg = "\n".join(lines[start:end])
-        if seg.strip():
-            segments.append((horse, seg))
+    for p, (pos, horse) in enumerate(positions):
+        prev_pos = positions[p - 1][0] if p > 0 else 0
+        next_pos = positions[p + 1][0] if p + 1 < len(positions) else len(lines)
+
+        # 馬名の直後から次の馬名まで（通常のコピー順）。
+        after = "\n".join(lines[pos:next_pos]).strip()
+        if after:
+            segments.append((horse, after, "after"))
+
+        # 次の馬名の直前までではなく、今回の馬名より前の区間も候補にする。
+        # 「過去走→馬名」のコピー順ではこちらが正しい1頭分になる。
+        before = "\n".join(lines[prev_pos:pos + 1]).strip()
+        if before and before != after:
+            segments.append((horse, before, "before"))
+
     return segments
 
 
@@ -3808,92 +3823,11 @@ def parse_keibalab_profile_copied_text(raw_text, horse_gate_map, fallback_horse=
             results[gate] = rec
     return [results[g] for g in sorted(results)]
 
-def _extract_history_3f_records_from_text(text):
-    """過去5走文字から「日付付き3F走歴」を抽出する。
-
-    1走を「日付 + 走破時計 + 3F + S/M/H」のレコードとして扱い、
-    呼び出し側で複数の馬区間を統合できる形にする。
-    """
-    lines = [_ocr_clean_line(x) for x in str(text).splitlines()]
-    lines = [x for x in lines if x]
-    joined = " ".join(lines)
-
-    date_re = re.compile(
-        r"(?<!\d)(?:(?P<y4>(?:19|20|21|22)\d{2})/(?P<m4>\d{1,2})/(?P<d4>\d{1,2})|"
-        r"(?P<y2>\d{2})/(?P<m2>\d{1,2})/(?P<d2>\d{1,2}))(?!\d)"
-    )
-    time_3f_pace_re = re.compile(
-        r"\b\d{1,2}:\d{2}[\.,]\d\s+([3-4]\d[\.,]\d)\s*([SMHsmh5])\b"
-    )
-    threef_pace_re = re.compile(
-        r"(?<![:\d])([3-4]\d[\.,]\d)\s*([SMHsmh5])\b"
-    )
-
-    date_matches = list(date_re.finditer(joined))
-    records = []
-
-    if date_matches:
-        for i, dm in enumerate(date_matches):
-            block_start = dm.start()
-            block_end = date_matches[i + 1].start() if i + 1 < len(date_matches) else len(joined)
-            block = joined[block_start:block_end]
-
-            m = time_3f_pace_re.search(block) or threef_pace_re.search(block)
-            if not m:
-                continue
-
-            try:
-                val = round(float(m.group(1).replace(",", ".")), 1)
-            except Exception:
-                continue
-            if not 30.0 <= val <= 42.9:
-                continue
-
-            if dm.group("y4"):
-                year = int(dm.group("y4"))
-                month = int(dm.group("m4"))
-                day = int(dm.group("d4"))
-            else:
-                year = 2000 + int(dm.group("y2"))
-                month = int(dm.group("m2"))
-                day = int(dm.group("d2"))
-
-            date_key = f"{year:04d}/{month:02d}/{day:02d}"
-            records.append({
-                "date": date_key,
-                "date_sort": (year, month, day),
-                "value": val,
-            })
-    else:
-        # 日付が欠落した入力では、値の順序を保ったまま仮レコードにする。
-        for line in lines:
-            m = time_3f_pace_re.search(line) or threef_pace_re.search(line)
-            if not m:
-                continue
-            try:
-                val = round(float(m.group(1).replace(",", ".")), 1)
-            except Exception:
-                continue
-            if 30.0 <= val <= 42.9:
-                records.append({
-                    "date": None,
-                    "date_sort": None,
-                    "value": val,
-                })
-
-    return records
-
-
 def parse_keibalab_history_copied_text(raw_text, horse_gate_map, fallback_horse=None):
-    """競馬ラボの過去5走コピーから前走騎手・上がり3Fを抽出。
+    """競馬ラボの過去走コピーから前走騎手・上がり3Fを抽出。
 
-    Ver1.19.34:
-    - 馬名ごとの複数区間を「取得数の多い区間だけ採用」せず、全区間を統合。
-    - 同じ馬 + 同じ日付は1走に統合する。
-    - 同じ馬 + 異なる日付はすべて保持する。
-    - 統合後に日付の新しい順へ並べ、最新5走だけを採用する。
-    - S/M/Hをすべて3Fレコードとして扱う。
-    - 画像OCR処理は変更しない。
+    馬名が含まれる複数頭コピーと、馬名が含まれない1頭分コピーの両方に対応。
+    上がり3Fは30.0～45.9の小数1桁を上から最大5個取得する。
     """
     results = {}
     segments = _split_copied_text_by_known_horses(raw_text, horse_gate_map)
@@ -3902,69 +3836,45 @@ def parse_keibalab_history_copied_text(raw_text, horse_gate_map, fallback_horse=
         if horse in horse_gate_map:
             segments = [(horse, normalize_copied_text(raw_text))]
 
-    # 馬番ごとに「日付付き走歴」を集約する。
-    history_by_gate = {}
-    jockey_by_gate = {}
-
-    for horse, segment in segments:
-        gate = int(horse_gate_map[horse])
-
-        # 3Fは今回の専用レコード抽出器で全区間を取得する。
-        race_records = _extract_history_3f_records_from_text(segment)
-        history_by_gate.setdefault(gate, []).extend(race_records)
-
-        # 前走騎手は既存ロジックを利用し、最初に取得できた値を採用。
+    # 同じ馬について「馬名の後ろ」「馬名の前」の両候補を解析する。
+    # そのうえで、コピー全体でどちら向きの候補が自然かを判定する。
+    # 競馬ラボの複数馬コピーでは、馬名が過去走ブロックの末尾に来る
+    # ケースがあるため、馬ごとに独立して決めると隣馬へずれることがある。
+    candidates = {}
+    direction_totals = {"after": 0, "before": 0}
+    for item in segments:
+        if len(item) == 3:
+            horse, segment, direction = item
+        else:
+            horse, segment = item
+            direction = "after"
         recs = parse_keibalab_history_screenshot_text(
             segment, horse_gate_map, fallback_horse=horse
         )
-        if recs:
-            jockey = recs[0].get("前走騎手")
-            if jockey not in {None, "", "(未選択)"} and gate not in jockey_by_gate:
-                jockey_by_gate[gate] = jockey
+        if not recs:
+            continue
+        rec = recs[0]
+        rec['馬番'] = int(horse_gate_map[horse])
+        rec['馬名'] = horse
+        rec['取得元'] = '競馬ラボ・過去5走文字貼り付け'
+        gate = int(rec['馬番'])
+        score = int(rec.get('上がり取得数', 0) or 0)
+        direction_totals[direction] += score
+        candidates.setdefault(gate, []).append((score, direction, rec))
 
-    for gate, race_records in history_by_gate.items():
-        # 日付ありレコードを日付単位で重複排除する。
-        # 同じ日付について異なる3Fが複数あっても、最初の有効値を採用。
-        dated = {}
-        undated = []
-        for rr in race_records:
-            date_key = rr.get("date")
-            if date_key is None:
-                undated.append(rr)
-                continue
-            if date_key not in dated:
-                dated[date_key] = rr
+    # 全体として取得数が多い向きを優先する。
+    # 同点時は通常の「馬名→過去走」を採用し、従来動作を維持する。
+    preferred_direction = (
+        "before" if direction_totals["before"] > direction_totals["after"] else "after"
+    )
 
-        # 新しいレースから順に並べる。
-        ordered = sorted(
-            dated.values(),
-            key=lambda rr: rr.get("date_sort") or (0, 0, 0),
-            reverse=True,
-        )
-
-        # 日付のない補助値は、日付付きレコードの後ろに追加する。
-        ordered.extend(undated)
-
-        # 最大5走。
-        ordered = ordered[:5]
-        values = [rr["value"] for rr in ordered]
-
-        # 馬名はgate_horse_mapから必ず固定する。
-        horse_name = next(
-            (name for name, g in horse_gate_map.items() if int(g) == int(gate)),
-            "",
-        )
-        results[gate] = {
-            "馬番": gate,
-            "馬名": horse_name,
-            "前走騎手": jockey_by_gate.get(gate, "(未選択)"),
-            "上がり3F内訳": " / ".join(f"{v:.1f}" for v in values),
-            "上がり3F平均": round(sum(values) / len(values), 2) if values else None,
-            "上がり取得数": len(values),
-            "取得元": "競馬ラボ・過去5走文字貼り付け",
-        }
-
+    for gate, items in candidates.items():
+        preferred = [x for x in items if x[1] == preferred_direction]
+        pool = preferred if preferred else items
+        best = max(pool, key=lambda x: x[0])
+        results[gate] = best[2]
     return [results[g] for g in sorted(results)]
+
 
 def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=None):
     """競馬ラボプロフィールから父馬・厩舎・馬主を抽出。
