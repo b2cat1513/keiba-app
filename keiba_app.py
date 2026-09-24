@@ -3805,7 +3805,13 @@ def parse_keibalab_profile_copied_text(raw_text, horse_gate_map, fallback_horse=
         if horse in horse_gate_map:
             segments = [(horse, normalize_copied_text(raw_text))]
 
-    for horse, segment in segments:
+    for item in segments:
+        # 3要素(horse, segment, direction)の新形式と、
+        # 2要素(horse, segment)の旧形式の両方を受け付ける。
+        if len(item) == 3:
+            horse, segment, _direction = item
+        else:
+            horse, segment = item
         recs = parse_keibalab_profile_screenshot_text(
             segment, horse_gate_map, fallback_horse=horse
         )
