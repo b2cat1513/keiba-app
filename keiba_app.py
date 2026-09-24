@@ -3786,7 +3786,11 @@ def _split_copied_text_by_known_horses(raw_text, horse_gate_map):
 
         # 次の馬名の直前までではなく、今回の馬名より前の区間も候補にする。
         # 「過去走→馬名」のコピー順ではこちらが正しい1頭分になる。
-        before = "\n".join(lines[prev_pos:pos + 1]).strip()
+        # 「過去走→馬名」の順では、今回の馬名より前の区間は
+        # 前の馬名の直後から今回の馬名まで。前の馬名そのものを
+        # 含めないことで、前馬の3Fが今回の馬へ混入するのを防ぐ。
+        before_start = prev_pos + 1 if p > 0 else 0
+        before = "\n".join(lines[before_start:pos + 1]).strip()
         if before and before != after:
             segments.append((horse, before, "before"))
 
@@ -3868,16 +3872,15 @@ def parse_keibalab_history_copied_text(raw_text, horse_gate_map, fallback_horse=
         direction_totals[direction] += score
         candidates.setdefault(gate, []).append((score, direction, rec))
 
-    # 全体として取得数が多い向きを優先する。
-    # 同点時は通常の「馬名→過去走」を採用し、従来動作を維持する。
-    preferred_direction = (
-        "before" if direction_totals["before"] > direction_totals["after"] else "after"
-    )
-
+    # 馬ごとに最も多く3Fを取得できた区間を採用する。
+    # 全体で一方向に固定すると、一部の馬だけ反対方向になるケースで
+    # 隣馬の3Fが混入するため。
     for gate, items in candidates.items():
-        preferred = [x for x in items if x[1] == preferred_direction]
-        pool = preferred if preferred else items
-        best = max(pool, key=lambda x: x[0])
+        # 取得数を第一優先。同数なら通常の「馬名→過去走」を優先。
+        best = max(
+            items,
+            key=lambda x: (x[0], 1 if x[1] == "after" else 0)
+        )
         results[gate] = best[2]
     return [results[g] for g in sorted(results)]
 
