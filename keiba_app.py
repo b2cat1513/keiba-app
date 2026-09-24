@@ -3755,22 +3755,28 @@ def _find_known_horse_in_text(text, horse_gate_map):
 def _split_copied_text_by_known_horses(raw_text, horse_gate_map):
     """競馬ラボのコピー文字を馬ごとの区間候補に分割する。
 
-    競馬ラボではコピー範囲によって「馬名→過去走」だけでなく
-    「過去走→馬名」の順になることがあるため、前後両方向の区間候補を
-    保持する。最終的な3F解析側で、日付＋3Fの取得数が多い候補を採用する。
+    重要：レース結果行の末尾には「勝ち馬・相手馬」として別の馬名が
+    出てくるため、本文中に既知の馬名が出ただけでは馬の区切りと判断しない。
+    「行頭が馬名」の場合だけを馬名ヘッダーとして扱う。
     """
     text = normalize_copied_text(raw_text)
     lines = [x.strip() for x in text.splitlines() if x.strip()]
     if not lines or not horse_gate_map:
         return []
 
+    horses = sorted(horse_gate_map, key=len, reverse=True)
     positions = []
     for i, line in enumerate(lines):
         normalized = normalize_horse_name(line)
-        for horse in sorted(horse_gate_map, key=len, reverse=True):
-            if normalized == horse or horse in normalized:
+        for horse in horses:
+            if not horse:
+                continue
+            # 完全一致、または「馬名で始まる行」のみをヘッダーとする。
+            # 例：「57.0 コンジェスタス」はレース結果の相手馬なので除外。
+            if normalized == horse or normalized.startswith(horse):
                 positions.append((i, horse))
                 break
+
     if not positions:
         return []
 
@@ -3779,16 +3785,12 @@ def _split_copied_text_by_known_horses(raw_text, horse_gate_map):
         prev_pos = positions[p - 1][0] if p > 0 else 0
         next_pos = positions[p + 1][0] if p + 1 < len(positions) else len(lines)
 
-        # 馬名の直後から次の馬名まで（通常のコピー順）。
+        # 通常順：馬名→過去走
         after = "\n".join(lines[pos:next_pos]).strip()
         if after:
             segments.append((horse, after, "after"))
 
-        # 次の馬名の直前までではなく、今回の馬名より前の区間も候補にする。
-        # 「過去走→馬名」のコピー順ではこちらが正しい1頭分になる。
-        # 「過去走→馬名」の順では、今回の馬名より前の区間は
-        # 前の馬名の直後から今回の馬名まで。前の馬名そのものを
-        # 含めないことで、前馬の3Fが今回の馬へ混入するのを防ぐ。
+        # 逆順：過去走→馬名
         before_start = prev_pos + 1 if p > 0 else 0
         before = "\n".join(lines[before_start:pos + 1]).strip()
         if before and before != after:
