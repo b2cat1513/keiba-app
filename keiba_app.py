@@ -3752,46 +3752,100 @@ def _find_known_horse_in_text(text, horse_gate_map):
     return None, None
 
 
+def _horse_header_match(line, horse_gate_map):
+    """コピー文字の1行が「対象馬の見出し」かを判定する。
+
+    レース結果の末尾には相手馬名が出るため、馬名だけの部分一致は使わない。
+    牡3/牝3などの性齢が同じ行にあるプロフィール見出しを優先し、OCRで
+    長音「ー」が「一」になる程度の1文字違いも許容する。
+    """
+    line_n = normalize_horse_name(line)
+    if not line_n:
+        return None
+    horses = sorted(horse_gate_map, key=len, reverse=True)
+
+    # 完全一致は許容。行頭一致は性齢付きの場合だけ許容し、
+    # 「コンジェスタス」だけの相手馬名行を見出し扱いしない。
+    for horse in horses:
+        if horse and line_n == horse:
+            return horse
+
+    if not re.search(SEX_AGE_PATTERN, line_n):
+        return None
+    for horse in horses:
+        if horse and line_n.startswith(horse):
+            return horse
+
+    # 「馬名 + 牡3/牝3/セ3...」の見出しを抽出。
+    m = re.search(SEX_AGE_PATTERN, line_n)
+    if not m:
+        return None
+    prefix = line_n[:m.start()]
+    # 行頭の番号・記号・UI文字を軽く除去。
+    prefix = re.sub(r'^[^ァ-ヶー一-龠々A-Za-z0-9]+', '', prefix)
+    if not prefix:
+        return None
+
+    # 直接一致。
+    for horse in horses:
+        if horse and prefix.startswith(horse):
+            return horse
+
+    # OCRの1文字誤りを許容。馬名全体に対して比較し、短すぎる候補は除外。
+    best_horse = None
+    best_ratio = 0.0
+    for horse in horses:
+        if not horse or len(horse) < 4:
+            continue
+        # 性齢直前の文字列は馬名以外を含むことがあるため、先頭から馬名長±2文字を比較。
+        for extra in range(0, 3):
+            cand = prefix[:max(1, len(horse) + extra)]
+            ratio = difflib.SequenceMatcher(None, cand, horse).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_horse = horse
+    return best_horse if best_ratio >= 0.82 else None
+
+
 def _split_copied_text_by_known_horses(raw_text, horse_gate_map):
     """競馬ラボのコピー文字を馬ごとの区間候補に分割する。
 
-    重要：レース結果行の末尾には「勝ち馬・相手馬」として別の馬名が
-    出てくるため、本文中に既知の馬名が出ただけでは馬の区切りと判断しない。
-    「行頭が馬名」の場合だけを馬名ヘッダーとして扱う。
+    馬名見出しは「馬名 + 性齢」を優先して検出する。これにより、
+    レース結果末尾の「57.0 コンジェスタス」のような相手馬名を
+    馬の区切りとして誤認しない。
     """
     text = normalize_copied_text(raw_text)
     lines = [x.strip() for x in text.splitlines() if x.strip()]
     if not lines or not horse_gate_map:
         return []
 
-    horses = sorted(horse_gate_map, key=len, reverse=True)
     positions = []
     for i, line in enumerate(lines):
-        normalized = normalize_horse_name(line)
-        for horse in horses:
-            if not horse:
-                continue
-            # 完全一致、または「馬名で始まる行」のみをヘッダーとする。
-            # 例：「57.0 コンジェスタス」はレース結果の相手馬なので除外。
-            if normalized == horse or normalized.startswith(horse):
-                positions.append((i, horse))
-                break
+        horse = _horse_header_match(line, horse_gate_map)
+        if horse:
+            positions.append((i, horse))
 
+    # 同一行・同一馬の重複検出を除去。
+    dedup_positions = []
+    seen_pos = set()
+    for pos, horse in positions:
+        if pos in seen_pos:
+            continue
+        seen_pos.add(pos)
+        dedup_positions.append((pos, horse))
+    positions = dedup_positions
     if not positions:
         return []
 
     segments = []
     for p, (pos, horse) in enumerate(positions):
-        prev_pos = positions[p - 1][0] if p > 0 else 0
         next_pos = positions[p + 1][0] if p + 1 < len(positions) else len(lines)
-
-        # 通常順：馬名→過去走
         after = "\n".join(lines[pos:next_pos]).strip()
         if after:
             segments.append((horse, after, "after"))
 
-        # 逆順：過去走→馬名
-        before_start = prev_pos + 1 if p > 0 else 0
+        # 逆順候補も残すが、複数頭の通常コピーでは history 側で after を優先する。
+        before_start = positions[p - 1][0] + 1 if p > 0 else 0
         before = "\n".join(lines[before_start:pos + 1]).strip()
         if before and before != after:
             segments.append((horse, before, "before"))
@@ -3874,17 +3928,72 @@ def parse_keibalab_history_copied_text(raw_text, horse_gate_map, fallback_horse=
         direction_totals[direction] += score
         candidates.setdefault(gate, []).append((score, direction, rec))
 
-    # 馬ごとに最も多く3Fを取得できた区間を採用する。
-    # 全体で一方向に固定すると、一部の馬だけ反対方向になるケースで
-    # 隣馬の3Fが混入するため。
+    # 複数頭の通常コピーでは「馬名→過去走」の区間を正とする。
+    # 同じ馬の区間が複数ある場合は、取得数で一つだけ選ばず日付単位で統合する。
+    # before候補は、after候補が存在しない場合の救済に限定する。
+    def _date_sort_key(date_key):
+        if not date_key:
+            return (0, 0, 0)
+        parts = [int(x) for x in date_key.split('/')]
+        if len(parts) == 3 and parts[0] < 100:
+            parts[0] += 2000 if parts[0] < 70 else 1900
+        return tuple(parts)
+
+    # コピー全体で「馬名の後ろ」と「馬名の前」のどちらに
+    # 過去走が多く含まれるかを判定する。従来は after を常に優先していたため、
+    # 馬名が過去走ブロックの末尾に来る形式では、正しい before 候補を捨てることがあった。
+    preferred_direction = max(direction_totals, key=direction_totals.get)
+
     for gate, items in candidates.items():
-        # 取得数を第一優先。同数なら通常の「馬名→過去走」を優先。
-        best = max(
-            items,
-            key=lambda x: (x[0], 1 if x[1] == "after" else 0)
-        )
-        results[gate] = best[2]
-    return [results[g] for g in sorted(results)]
+        preferred_items = [x for x in items if x[1] == preferred_direction]
+        # 全体で選んだ方向に有効な3Fがない馬だけ、反対方向の候補で補う。
+        if preferred_items and max(x[0] for x in preferred_items) > 0:
+            pool = preferred_items
+        else:
+            pool = items
+        best = max(pool, key=lambda x: x[0])
+        best_rec = best[2]
+
+        by_date = {}
+        for _score, _direction, rec in pool:
+            values = [float(x.strip()) for x in str(rec.get('上がり3F内訳', '')).split('/') if x.strip()]
+            dates = list(rec.get('_上がり3F日付', []) or [])
+            for idx, value in enumerate(values):
+                date_key = dates[idx] if idx < len(dates) else None
+                if date_key:
+                    # 同じ日付の重複は最初に見つかった値を採用。
+                    by_date.setdefault(date_key, value)
+
+        # 日付が取れなかった走は、区間統合で重複しやすいため、
+        # 最も情報量の多い候補からだけ採用する。
+        best_values = [float(x.strip()) for x in str(best_rec.get('上がり3F内訳', '')).split('/') if x.strip()]
+        best_dates = list(best_rec.get('_上がり3F日付', []) or [])
+        undated = [value for idx, value in enumerate(best_values)
+                   if idx >= len(best_dates) or not best_dates[idx]]
+
+        dated_rows = sorted(by_date.items(), key=lambda item: _date_sort_key(item[0]), reverse=True)
+        finish_dates = [date_key for date_key, _value in dated_rows]
+        finish_times = [value for _date_key, value in dated_rows]
+        # 日付付きの履歴が5走未満の場合だけ、日付不明の値で補う。
+        for value in undated:
+            if len(finish_times) >= 5:
+                break
+            finish_dates.append(None)
+            finish_times.append(value)
+        finish_times = finish_times[:5]
+        finish_dates = finish_dates[:5]
+
+        merged_rec = dict(best_rec)
+        merged_rec['上がり3F内訳'] = ' / '.join(f'{v:.1f}' for v in finish_times)
+        merged_rec['上がり3F平均'] = round(sum(finish_times) / len(finish_times), 2) if finish_times else None
+        merged_rec['上がり取得数'] = len(finish_times)
+        merged_rec['_上がり3F日付'] = finish_dates
+        results[gate] = merged_rec
+
+    output = [results[g] for g in sorted(results)]
+    for rec in output:
+        rec.pop('_上がり3F日付', None)
+    return output
 
 
 def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=None):
@@ -4046,6 +4155,7 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
     # 同じ日付の重複を除去。最初に見つかった値を採用する。
     # 画面を上下に分けてコピーした場合でも、5走が二重にならない。
     finish_times = []
+    finish_dates = []
     seen_dates = set()
     for date_key, val in race_values:
         if date_key is not None:
@@ -4054,6 +4164,7 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
             seen_dates.add(date_key)
         if not finish_times or abs(val - finish_times[-1]) > 0.001 or date_key is not None:
             finish_times.append(val)
+            finish_dates.append(date_key)
         if len(finish_times) >= 5:
             break
 
@@ -4100,9 +4211,10 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
         "馬番": int(gate), "馬名": horse_name,
         "前走騎手": previous_jockey,
         "上がり3F内訳": " / ".join(f"{v:.1f}" for v in finish_times),
-        "上がり3F平均": avg_l3f,
-        "上がり取得数": len(finish_times),
-        "取得元": "競馬ラボ・過去5走文字貼り付け",
+        '上がり3F平均': avg_l3f,
+        '上がり取得数': len(finish_times),
+        '_上がり3F日付': finish_dates,
+        '取得元': '競馬ラボ・過去5走文字貼り付け',
     }]
 
 
