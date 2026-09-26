@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.27"
+APP_PATCH_VERSION = "Ver1.19.42"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -2377,6 +2377,127 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 
+def parse_umanity_desktop_table_image(uploaded_file, forced_start_gate=1):
+    """横長のPC出走表を行単位でOCRする補助パーサー。
+
+    スマホ縦長カード用の固定座標OCRとは分離し、OCR単語の位置から表の行を組み立てる。
+    馬番・馬名・性齢・斤量・騎手・単勝・人気を取得し、読み切れない項目は空欄にする。
+    """
+    if not OCR_AVAILABLE:
+        return []
+    try:
+        image = Image.open(io.BytesIO(uploaded_file.getvalue()))
+        image = ImageOps.exif_transpose(image).convert("RGB")
+        image.load()
+        w, h = image.size
+        # PCの横長表だけを対象にする。スマホ画像には既存の固定座標OCRを使う。
+        if w < 1200 or w / max(h, 1) < 0.85:
+            return []
+        prepared = _prepare_ocr_image(image)
+        data = pytesseract.image_to_data(
+            prepared, lang="jpn+eng", config="--oem 3 --psm 6",
+            output_type=pytesseract.Output.DICT,
+        )
+    except Exception:
+        return []
+
+    # _prepare_ocr_image は幅を1800px以上に拡大するため、位置比率で処理する。
+    pw, ph = prepared.size
+    tokens = []
+    for i, raw in enumerate(data.get("text", [])):
+        text = _ocr_clean_line(raw)
+        if not text:
+            continue
+        try:
+            conf = float(data.get("conf", [])[i])
+            left = int(data["left"][i]); top = int(data["top"][i])
+            width = int(data["width"][i]); height = int(data["height"][i])
+        except Exception:
+            continue
+        if conf < 5 or height <= 0:
+            continue
+        tokens.append({
+            "text": text, "x": (left + width / 2) / pw,
+            "y": (top + height / 2) / ph, "h": height / ph,
+            "conf": conf,
+        })
+    if not tokens:
+        return []
+
+    # 同じ横行の単語をまとめる。表の罫線・ヘッダーは馬番の条件で除外する。
+    tokens.sort(key=lambda t: (t["y"], t["x"]))
+    median_h = sorted(t["h"] for t in tokens)[len(tokens) // 2]
+    tolerance = max(0.006, median_h * 0.85)
+    lines = []
+    for token in tokens:
+        best = None
+        best_delta = None
+        for line in lines[-3:]:
+            delta = abs(token["y"] - line["y"])
+            if delta <= tolerance and (best_delta is None or delta < best_delta):
+                best, best_delta = line, delta
+        if best is None:
+            lines.append({"y": token["y"], "tokens": [token]})
+        else:
+            best["tokens"].append(token)
+            best["y"] = sum(t["y"] for t in best["tokens"]) / len(best["tokens"])
+    lines.sort(key=lambda line: line["y"])
+
+    try:
+        start_gate = max(1, min(18, int(forced_start_gate or 1)))
+    except Exception:
+        start_gate = 1
+    rows = []
+    seen_gates = set()
+    for line in lines:
+        ts = sorted(line["tokens"], key=lambda t: t["x"])
+        # 表の左側にある馬番だけを採用。ヘッダー中の「馬番」等は除外。
+        gate_token = next((t for t in ts if 0.09 <= t["x"] <= 0.19 and re.fullmatch(r"\d{1,2}", t["text"])), None)
+        if not gate_token:
+            continue
+        gate = int(gate_token["text"])
+        if gate < start_gate or gate > 18 or gate in seen_gates:
+            continue
+
+        def column_text(x0, x1):
+            vals = [t["text"] for t in ts if x0 <= t["x"] < x1]
+            return "".join(vals).strip()
+
+        name = column_text(0.19, 0.355)
+        name = re.sub(r"^[^ァ-ヶ一-龥々A-Za-z]+", "", name)
+        name = re.sub(r"[^ァ-ヶーヴ一-龥々A-Za-z・ー]", "", name)
+        sex_age = column_text(0.355, 0.395)
+        sex_match = re.search(r"([牡牝セ騸])\s*(\d{1,2})", sex_age)
+        sex_age = ("セ" if sex_match and sex_match.group(1) == "騸" else sex_match.group(1)) + sex_match.group(2) if sex_match else ""
+
+        weight_text = column_text(0.395, 0.435).replace(" ", "")
+        weight_match = re.search(r"(?:4[8-9]|5\d|6[0-2])(?:\.\d)?", weight_text)
+        weight = float(weight_match.group(0)) if weight_match else None
+
+        jockey = column_text(0.435, 0.505)
+        jockey = re.sub(r"[0-9.]+", "", jockey).strip()
+        odds_text = column_text(0.605, 0.665).replace("．", ".").replace(",", ".")
+        odds_match = re.search(r"\d{1,3}(?:\.\d{1,2})?", odds_text)
+        odds = float(odds_match.group(0)) if odds_match else None
+        popularity_text = column_text(0.665, 0.72)
+        popularity_match = re.search(r"\d{1,2}", popularity_text)
+        popularity = int(popularity_match.group(0)) if popularity_match else None
+
+        # 馬名と馬番が取れた行だけ登録し、誤読した空行の混入を防ぐ。
+        if len(name) < 2:
+            continue
+        rows.append({
+            "_row_idx": len(rows), "_gate_raw": gate, "馬番": gate,
+            "馬名": normalize_horse_name(name), "性齢": sex_age,
+            "今回騎手": _best_master_match(jockey, JOCKEY_MASTER) if jockey else "(未選択)",
+            "斤量": weight, "厩舎": "(未選択)", "単勝": odds,
+            "人気": popularity, "U指数": None,
+            "取得元": "ウマニティPC出走表画像(OCR行・列位置解析)",
+        })
+        seen_gates.add(gate)
+    return sorted(rows, key=lambda r: int(r.get("馬番", 99)))
+
+
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
     """Ver1.18.33 ウマニティ実画面レイアウト固定OCR。
 
@@ -2389,6 +2510,19 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
     """
     if not OCR_AVAILABLE:
         return parse_umanity_screenshot_text(raw_text) if raw_text else []
+
+    # Ver1.19.42: 横長のPC出走表は専用OCRを先に試し、縦長スマホ画像は従来処理を維持。
+    try:
+        _probe = Image.open(io.BytesIO(uploaded_file.getvalue()))
+        _probe = ImageOps.exif_transpose(_probe)
+        if _probe.width >= 1200 and _probe.width / max(_probe.height, 1) >= 0.85:
+            _desktop_rows = parse_umanity_desktop_table_image(
+                uploaded_file, forced_start_gate=forced_start_gate
+            )
+            if len(_desktop_rows) >= 3:
+                return _desktop_rows
+    except Exception:
+        pass
 
     try:
         raw_bytes = uploaded_file.getvalue()
