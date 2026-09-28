@@ -5430,6 +5430,10 @@ if bulk_input_tab == "🔬 競馬ラボ文字入力":
             ]
             st.session_state["v187_history_text_records"] = [_manual_record]
             apply_specialized_image_records([_manual_record], auto_track)
+            # number_input は key の session_state を優先するため、
+            # loaded_data だけ更新しても画面上の値が古いまま残ることがある。
+            # 出馬表側のウィジェット状態も同時に更新してから再描画する。
+            st.session_state[f"l3f_{int(manual_3f_target)}"] = float(_manual_avg)
             st.success(f"{manual_3f_target}番の上がり3F平均 {_manual_avg:.2f}秒を出馬表へ反映しました。")
             st.rerun()
 
