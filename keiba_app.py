@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.27"
+APP_PATCH_VERSION = "Ver1.19.47"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -28,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.32", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.34（手入力併用・3F平均計算対応版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.45", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.19.45（PC入力欄拡大・枠有利自動判定）")
 
 st.markdown("""
 <style>
@@ -466,6 +466,57 @@ JOCKEY_NAME_ALIASES = {
     "藤岡祐介": "藤岡佑介",
     "大野拓哉": "大野拓弥",
 }
+
+# 2026年9月現在：ユーザー提供のJRAリーディング上位10名
+# 順位・騎乗数・1着数・勝率(%)。上位10名以外はリーディング加点なし。
+JOCKEY_LEADING_TOP10 = {
+    "岩田望来": {"rank": 1, "rides": 349, "wins": 114, "win_rate": 32.7},
+    "C.ルメール": {"rank": 2, "rides": 162, "wins": 113, "win_rate": 69.8},
+    "松山弘平": {"rank": 3, "rides": 379, "wins": 101, "win_rate": 26.6},
+    "横山武史": {"rank": 4, "rides": 363, "wins": 83, "win_rate": 22.9},
+    "川田将雅": {"rank": 5, "rides": 171, "wins": 81, "win_rate": 47.4},
+    "坂井瑠星": {"rank": 6, "rides": 270, "wins": 80, "win_rate": 29.6},
+    "西村淳也": {"rank": 7, "rides": 372, "wins": 79, "win_rate": 21.2},
+    "丹内祐次": {"rank": 8, "rides": 483, "wins": 66, "win_rate": 13.7},
+    "戸崎圭太": {"rank": 9, "rides": 268, "wins": 64, "win_rate": 23.9},
+    "横山和生": {"rank": 10, "rides": 304, "wins": 62, "win_rate": 20.4},
+}
+
+
+def calculate_jockey_leading_bonus(jockey_name):
+    """上位10名の順位・勝利数・騎乗数・勝率を統合し、最大+5点を返す。"""
+    name = normalize_jockey_name(jockey_name)
+    record = JOCKEY_LEADING_TOP10.get(name)
+    if not record:
+        return 0.0
+
+    # 各指標を上位10名内で0～1へ正規化。順位は1位が高得点。
+    fields = {
+        "rank_score": [11 - row["rank"] for row in JOCKEY_LEADING_TOP10.values()],
+        "wins": [row["wins"] for row in JOCKEY_LEADING_TOP10.values()],
+        "rides": [row["rides"] for row in JOCKEY_LEADING_TOP10.values()],
+        "win_rate": [row["win_rate"] for row in JOCKEY_LEADING_TOP10.values()],
+    }
+    weights = {"rank_score": 0.35, "wins": 0.25, "rides": 0.15, "win_rate": 0.25}
+    composite_scores = {}
+    for jockey, row in JOCKEY_LEADING_TOP10.items():
+        raw = {
+            "rank_score": 11 - row["rank"],
+            "wins": row["wins"],
+            "rides": row["rides"],
+            "win_rate": row["win_rate"],
+        }
+        composite = 0.0
+        for field, values in fields.items():
+            low, high = min(values), max(values)
+            normalized = (raw[field] - low) / (high - low) if high > low else 0.0
+            composite += normalized * weights[field]
+        composite_scores[jockey] = composite
+
+    low_score, high_score = min(composite_scores.values()), max(composite_scores.values())
+    if high_score <= low_score:
+        return 0.0
+    return round(0.5 + 4.5 * (composite_scores[name] - low_score) / (high_score - low_score), 2)
 
 def normalize_jockey_name(name):
     normalized = str(name or "").strip().replace("　", " ")
@@ -1056,9 +1107,37 @@ def parse_body_weight(text):
     return 480, 0
 
 
-def calculate_frame_position(gate):
-    """アプリ既存仕様に合わせ、1～8番を内枠、それ以降を外枠とする。"""
-    return "内枠" if int(gate) <= 8 else "外枠"
+def calculate_frame_number(gate, field_size=16):
+    """出走頭数に応じて馬番からJRAの枠番を推定する。"""
+    try:
+        gate = int(gate)
+        field_size = max(1, min(18, int(field_size)))
+    except (TypeError, ValueError):
+        return None
+    if not 1 <= gate <= field_size:
+        return None
+    if field_size <= 8:
+        return gate
+    # 9～16頭：余った頭数分、内側から2頭ずつ配置。
+    if field_size <= 16:
+        doubled_frames = field_size - 8
+        if gate <= doubled_frames * 2:
+            return (gate + 1) // 2
+        return gate - doubled_frames
+    # 17・18頭：1～14番を1～7枠へ2頭ずつ、15番以降は8枠。
+    if gate <= 14:
+        return (gate + 1) // 2
+    return 8
+
+
+def calculate_frame_position(gate, field_size=16):
+    """枠番1・2を内枠、7・8を外枠、3～6を選択なしにする。"""
+    frame_no = calculate_frame_number(gate, field_size)
+    if frame_no in (1, 2):
+        return "内枠"
+    if frame_no in (7, 8):
+        return "外枠"
+    return "選択なし"
 
 
 def parse_netkeiba_multi_line(raw_text):
@@ -1727,6 +1806,70 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                     rec["馬名"] = cand
                     break
 
+        # Ver1.19.43: 馬番直前5行に騎手が収まらないコピー形式を救済する。
+        # 「前の馬番の次〜この馬番」の範囲だけを使い、馬名本体行より後、
+        # U指数より前にある騎手マスター一致行を探す。別の馬の騎手を拾わないよう、
+        # あいまい一致は使わず、騎手名そのもの（または騎手名+斤量/間隔）のみ採用。
+        if not rec["今回騎手"]:
+            jockey_master = [
+                c for c in JOCKEY_MASTER
+                if c and c != "その他（自由手入力）"
+            ]
+            compact_master = {
+                re.sub(r"\s+", "", str(c)): c for c in jockey_master
+            }
+            # 馬名本体行の位置を特定。見つからない場合も、この馬のブロック内に限定する。
+            horse_line_pos = -1
+            for hbi, block_line in enumerate(horse_block):
+                if is_sex_age_line(block_line):
+                    horse_line_pos = hbi
+                    break
+
+            # U指数より後ろは次の表示項目に入り得るため、候補範囲から外す。
+            block_end = len(horse_block)
+            for hbi, block_line in enumerate(horse_block):
+                if parse_u(block_line) is not None:
+                    block_end = hbi
+                    break
+
+            candidate_start = horse_line_pos + 1 if horse_line_pos >= 0 else 0
+            for block_line in horse_block[candidate_start:block_end]:
+                raw_candidate = str(block_line or "").strip()
+                if not raw_candidate or is_sex_age_line(raw_candidate):
+                    continue
+
+                prefix, inline_weight = split_jockey_weight(raw_candidate)
+                candidate = prefix if prefix else raw_candidate
+                compact_candidate = re.sub(r"\s+", "", candidate)
+                # まず騎手名との完全一致を優先する。
+                if compact_candidate in compact_master:
+                    rec["今回騎手"] = compact_master[compact_candidate]
+                    if inline_weight is not None and rec["斤量"] is None:
+                        rec["斤量"] = inline_weight
+                    break
+
+                # 斤量・間隔などが騎手名に連結された行のみ、末尾を除いて照合。
+                # 行の途中に騎手名が含まれるだけのケースは採用しない。
+                compact_line = re.sub(r"\s+", "", raw_candidate)
+                for compact_name, master_name in sorted(
+                    compact_master.items(), key=lambda item: len(item[0]), reverse=True
+                ):
+                    if not compact_line.startswith(compact_name):
+                        continue
+                    suffix = compact_line[len(compact_name):]
+                    if re.fullmatch(
+                        r"(?:(?:4[89]|5\d|6[0-2])(?:\.0|\.5)?(?:kg|ＫＧ)?)?"
+                        r"(?:(?:中\d+[週周])|(?:\d+ヶ月)|(?:\d+か月))?",
+                        suffix,
+                        flags=re.I,
+                    ):
+                        rec["今回騎手"] = master_name
+                        if inline_weight is not None and rec["斤量"] is None:
+                            rec["斤量"] = inline_weight
+                        break
+                if rec["今回騎手"]:
+                    break
+
         # 既存データは「救済用」。
         # ウマニティ文字列から性齢付き本体行で取得できた馬名を最優先し、
         # 過去の誤取得データで正しい馬名を上書きしない。
@@ -2377,6 +2520,127 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 
+def parse_umanity_desktop_table_image(uploaded_file, forced_start_gate=1):
+    """横長のPC出走表を行単位でOCRする補助パーサー。
+
+    スマホ縦長カード用の固定座標OCRとは分離し、OCR単語の位置から表の行を組み立てる。
+    馬番・馬名・性齢・斤量・騎手・単勝・人気を取得し、読み切れない項目は空欄にする。
+    """
+    if not OCR_AVAILABLE:
+        return []
+    try:
+        image = Image.open(io.BytesIO(uploaded_file.getvalue()))
+        image = ImageOps.exif_transpose(image).convert("RGB")
+        image.load()
+        w, h = image.size
+        # PCの横長表だけを対象にする。スマホ画像には既存の固定座標OCRを使う。
+        if w < 1200 or w / max(h, 1) < 0.85:
+            return []
+        prepared = _prepare_ocr_image(image)
+        data = pytesseract.image_to_data(
+            prepared, lang="jpn+eng", config="--oem 3 --psm 6",
+            output_type=pytesseract.Output.DICT,
+        )
+    except Exception:
+        return []
+
+    # _prepare_ocr_image は幅を1800px以上に拡大するため、位置比率で処理する。
+    pw, ph = prepared.size
+    tokens = []
+    for i, raw in enumerate(data.get("text", [])):
+        text = _ocr_clean_line(raw)
+        if not text:
+            continue
+        try:
+            conf = float(data.get("conf", [])[i])
+            left = int(data["left"][i]); top = int(data["top"][i])
+            width = int(data["width"][i]); height = int(data["height"][i])
+        except Exception:
+            continue
+        if conf < 5 or height <= 0:
+            continue
+        tokens.append({
+            "text": text, "x": (left + width / 2) / pw,
+            "y": (top + height / 2) / ph, "h": height / ph,
+            "conf": conf,
+        })
+    if not tokens:
+        return []
+
+    # 同じ横行の単語をまとめる。表の罫線・ヘッダーは馬番の条件で除外する。
+    tokens.sort(key=lambda t: (t["y"], t["x"]))
+    median_h = sorted(t["h"] for t in tokens)[len(tokens) // 2]
+    tolerance = max(0.006, median_h * 0.85)
+    lines = []
+    for token in tokens:
+        best = None
+        best_delta = None
+        for line in lines[-3:]:
+            delta = abs(token["y"] - line["y"])
+            if delta <= tolerance and (best_delta is None or delta < best_delta):
+                best, best_delta = line, delta
+        if best is None:
+            lines.append({"y": token["y"], "tokens": [token]})
+        else:
+            best["tokens"].append(token)
+            best["y"] = sum(t["y"] for t in best["tokens"]) / len(best["tokens"])
+    lines.sort(key=lambda line: line["y"])
+
+    try:
+        start_gate = max(1, min(18, int(forced_start_gate or 1)))
+    except Exception:
+        start_gate = 1
+    rows = []
+    seen_gates = set()
+    for line in lines:
+        ts = sorted(line["tokens"], key=lambda t: t["x"])
+        # 表の左側にある馬番だけを採用。ヘッダー中の「馬番」等は除外。
+        gate_token = next((t for t in ts if 0.09 <= t["x"] <= 0.19 and re.fullmatch(r"\d{1,2}", t["text"])), None)
+        if not gate_token:
+            continue
+        gate = int(gate_token["text"])
+        if gate < start_gate or gate > 18 or gate in seen_gates:
+            continue
+
+        def column_text(x0, x1):
+            vals = [t["text"] for t in ts if x0 <= t["x"] < x1]
+            return "".join(vals).strip()
+
+        name = column_text(0.19, 0.355)
+        name = re.sub(r"^[^ァ-ヶ一-龥々A-Za-z]+", "", name)
+        name = re.sub(r"[^ァ-ヶーヴ一-龥々A-Za-z・ー]", "", name)
+        sex_age = column_text(0.355, 0.395)
+        sex_match = re.search(r"([牡牝セ騸])\s*(\d{1,2})", sex_age)
+        sex_age = ("セ" if sex_match and sex_match.group(1) == "騸" else sex_match.group(1)) + sex_match.group(2) if sex_match else ""
+
+        weight_text = column_text(0.395, 0.435).replace(" ", "")
+        weight_match = re.search(r"(?:4[8-9]|5\d|6[0-2])(?:\.\d)?", weight_text)
+        weight = float(weight_match.group(0)) if weight_match else None
+
+        jockey = column_text(0.435, 0.505)
+        jockey = re.sub(r"[0-9.]+", "", jockey).strip()
+        odds_text = column_text(0.605, 0.665).replace("．", ".").replace(",", ".")
+        odds_match = re.search(r"\d{1,3}(?:\.\d{1,2})?", odds_text)
+        odds = float(odds_match.group(0)) if odds_match else None
+        popularity_text = column_text(0.665, 0.72)
+        popularity_match = re.search(r"\d{1,2}", popularity_text)
+        popularity = int(popularity_match.group(0)) if popularity_match else None
+
+        # 馬名と馬番が取れた行だけ登録し、誤読した空行の混入を防ぐ。
+        if len(name) < 2:
+            continue
+        rows.append({
+            "_row_idx": len(rows), "_gate_raw": gate, "馬番": gate,
+            "馬名": normalize_horse_name(name), "性齢": sex_age,
+            "今回騎手": _best_master_match(jockey, JOCKEY_MASTER) if jockey else "(未選択)",
+            "斤量": weight, "厩舎": "(未選択)", "単勝": odds,
+            "人気": popularity, "U指数": None,
+            "取得元": "ウマニティPC出走表画像(OCR行・列位置解析)",
+        })
+        seen_gates.add(gate)
+    return sorted(rows, key=lambda r: int(r.get("馬番", 99)))
+
+
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
     """Ver1.18.33 ウマニティ実画面レイアウト固定OCR。
 
@@ -2389,6 +2653,19 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
     """
     if not OCR_AVAILABLE:
         return parse_umanity_screenshot_text(raw_text) if raw_text else []
+
+    # Ver1.19.42: 横長のPC出走表は専用OCRを先に試し、縦長スマホ画像は従来処理を維持。
+    try:
+        _probe = Image.open(io.BytesIO(uploaded_file.getvalue()))
+        _probe = ImageOps.exif_transpose(_probe)
+        if _probe.width >= 1200 and _probe.width / max(_probe.height, 1) >= 0.85:
+            _desktop_rows = parse_umanity_desktop_table_image(
+                uploaded_file, forced_start_gate=forced_start_gate
+            )
+            if len(_desktop_rows) >= 3:
+                return _desktop_rows
+    except Exception:
+        pass
 
     try:
         raw_bytes = uploaded_file.getvalue()
@@ -3752,29 +4029,104 @@ def _find_known_horse_in_text(text, horse_gate_map):
     return None, None
 
 
+def _horse_header_match(line, horse_gate_map):
+    """コピー文字の1行が「対象馬の見出し」かを判定する。
+
+    レース結果の末尾には相手馬名が出るため、馬名だけの部分一致は使わない。
+    牡3/牝3などの性齢が同じ行にあるプロフィール見出しを優先し、OCRで
+    長音「ー」が「一」になる程度の1文字違いも許容する。
+    """
+    line_n = normalize_horse_name(line)
+    if not line_n:
+        return None
+    horses = sorted(horse_gate_map, key=len, reverse=True)
+
+    # 完全一致は許容。行頭一致は性齢付きの場合だけ許容し、
+    # 「コンジェスタス」だけの相手馬名行を見出し扱いしない。
+    for horse in horses:
+        if horse and line_n == horse:
+            return horse
+
+    if not re.search(SEX_AGE_PATTERN, line_n):
+        return None
+    for horse in horses:
+        if horse and line_n.startswith(horse):
+            return horse
+
+    # 「馬名 + 牡3/牝3/セ3...」の見出しを抽出。
+    m = re.search(SEX_AGE_PATTERN, line_n)
+    if not m:
+        return None
+    prefix = line_n[:m.start()]
+    # 行頭の番号・記号・UI文字を軽く除去。
+    prefix = re.sub(r'^[^ァ-ヶー一-龠々A-Za-z0-9]+', '', prefix)
+    if not prefix:
+        return None
+
+    # 直接一致。
+    for horse in horses:
+        if horse and prefix.startswith(horse):
+            return horse
+
+    # OCRの1文字誤りを許容。馬名全体に対して比較し、短すぎる候補は除外。
+    best_horse = None
+    best_ratio = 0.0
+    for horse in horses:
+        if not horse or len(horse) < 4:
+            continue
+        # 性齢直前の文字列は馬名以外を含むことがあるため、先頭から馬名長±2文字を比較。
+        for extra in range(0, 3):
+            cand = prefix[:max(1, len(horse) + extra)]
+            ratio = difflib.SequenceMatcher(None, cand, horse).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_horse = horse
+    return best_horse if best_ratio >= 0.82 else None
+
+
 def _split_copied_text_by_known_horses(raw_text, horse_gate_map):
-    """コピー文字列を既知の馬名ごとの区間に分割する。重複コピーにも対応。"""
+    """競馬ラボのコピー文字を馬ごとの区間候補に分割する。
+
+    馬名見出しは「馬名 + 性齢」を優先して検出する。これにより、
+    レース結果末尾の「57.0 コンジェスタス」のような相手馬名を
+    馬の区切りとして誤認しない。
+    """
     text = normalize_copied_text(raw_text)
     lines = [x.strip() for x in text.splitlines() if x.strip()]
     if not lines or not horse_gate_map:
         return []
-    # 馬名の出現位置をすべて拾い、同じ馬名の重複区間も別候補として保持。
+
     positions = []
     for i, line in enumerate(lines):
-        normalized = normalize_horse_name(line)
-        for horse in sorted(horse_gate_map, key=len, reverse=True):
-            if normalized == horse or horse in normalized:
-                positions.append((i, horse))
-                break
+        horse = _horse_header_match(line, horse_gate_map)
+        if horse:
+            positions.append((i, horse))
+
+    # 同一行・同一馬の重複検出を除去。
+    dedup_positions = []
+    seen_pos = set()
+    for pos, horse in positions:
+        if pos in seen_pos:
+            continue
+        seen_pos.add(pos)
+        dedup_positions.append((pos, horse))
+    positions = dedup_positions
     if not positions:
         return []
+
     segments = []
-    for p, (start, horse) in enumerate(positions):
-        end = positions[p + 1][0] if p + 1 < len(positions) else len(lines)
-        # 次の馬名が同じ場合も、各区間を独立して解析する。
-        seg = "\n".join(lines[start:end])
-        if seg.strip():
-            segments.append((horse, seg))
+    for p, (pos, horse) in enumerate(positions):
+        next_pos = positions[p + 1][0] if p + 1 < len(positions) else len(lines)
+        after = "\n".join(lines[pos:next_pos]).strip()
+        if after:
+            segments.append((horse, after, "after"))
+
+        # 逆順候補も残すが、複数頭の通常コピーでは history 側で after を優先する。
+        before_start = positions[p - 1][0] + 1 if p > 0 else 0
+        before = "\n".join(lines[before_start:pos + 1]).strip()
+        if before and before != after:
+            segments.append((horse, before, "before"))
+
     return segments
 
 
@@ -3790,7 +4142,13 @@ def parse_keibalab_profile_copied_text(raw_text, horse_gate_map, fallback_horse=
         if horse in horse_gate_map:
             segments = [(horse, normalize_copied_text(raw_text))]
 
-    for horse, segment in segments:
+    for item in segments:
+        # 3要素(horse, segment, direction)の新形式と、
+        # 2要素(horse, segment)の旧形式の両方を受け付ける。
+        if len(item) == 3:
+            horse, segment, _direction = item
+        else:
+            horse, segment = item
         recs = parse_keibalab_profile_screenshot_text(
             segment, horse_gate_map, fallback_horse=horse
         )
@@ -3821,8 +4179,21 @@ def parse_keibalab_history_copied_text(raw_text, horse_gate_map, fallback_horse=
         if horse in horse_gate_map:
             segments = [(horse, normalize_copied_text(raw_text))]
 
-    for horse, segment in segments:
-        recs = parse_keibalab_history_screenshot_text(segment, horse_gate_map, fallback_horse=horse)
+    # 同じ馬について「馬名の後ろ」「馬名の前」の両候補を解析する。
+    # そのうえで、コピー全体でどちら向きの候補が自然かを判定する。
+    # 競馬ラボの複数馬コピーでは、馬名が過去走ブロックの末尾に来る
+    # ケースがあるため、馬ごとに独立して決めると隣馬へずれることがある。
+    candidates = {}
+    direction_totals = {"after": 0, "before": 0}
+    for item in segments:
+        if len(item) == 3:
+            horse, segment, direction = item
+        else:
+            horse, segment = item
+            direction = "after"
+        recs = parse_keibalab_history_screenshot_text(
+            segment, horse_gate_map, fallback_horse=horse
+        )
         if not recs:
             continue
         rec = recs[0]
@@ -3831,11 +4202,75 @@ def parse_keibalab_history_copied_text(raw_text, horse_gate_map, fallback_horse=
         rec['取得元'] = '競馬ラボ・過去5走文字貼り付け'
         gate = int(rec['馬番'])
         score = int(rec.get('上がり取得数', 0) or 0)
-        old = results.get(gate)
-        old_score = int(old.get('上がり取得数', 0) or 0) if old else -1
-        if old is None or score > old_score:
-            results[gate] = rec
-    return [results[g] for g in sorted(results)]
+        direction_totals[direction] += score
+        candidates.setdefault(gate, []).append((score, direction, rec))
+
+    # 複数頭の通常コピーでは「馬名→過去走」の区間を正とする。
+    # 同じ馬の区間が複数ある場合は、取得数で一つだけ選ばず日付単位で統合する。
+    # before候補は、after候補が存在しない場合の救済に限定する。
+    def _date_sort_key(date_key):
+        if not date_key:
+            return (0, 0, 0)
+        parts = [int(x) for x in date_key.split('/')]
+        if len(parts) == 3 and parts[0] < 100:
+            parts[0] += 2000 if parts[0] < 70 else 1900
+        return tuple(parts)
+
+    # コピー全体で「馬名の後ろ」と「馬名の前」のどちらに
+    # 過去走が多く含まれるかを判定する。従来は after を常に優先していたため、
+    # 馬名が過去走ブロックの末尾に来る形式では、正しい before 候補を捨てることがあった。
+    preferred_direction = max(direction_totals, key=direction_totals.get)
+
+    for gate, items in candidates.items():
+        preferred_items = [x for x in items if x[1] == preferred_direction]
+        # 全体で選んだ方向に有効な3Fがない馬だけ、反対方向の候補で補う。
+        if preferred_items and max(x[0] for x in preferred_items) > 0:
+            pool = preferred_items
+        else:
+            pool = items
+        best = max(pool, key=lambda x: x[0])
+        best_rec = best[2]
+
+        by_date = {}
+        for _score, _direction, rec in pool:
+            values = [float(x.strip()) for x in str(rec.get('上がり3F内訳', '')).split('/') if x.strip()]
+            dates = list(rec.get('_上がり3F日付', []) or [])
+            for idx, value in enumerate(values):
+                date_key = dates[idx] if idx < len(dates) else None
+                if date_key:
+                    # 同じ日付の重複は最初に見つかった値を採用。
+                    by_date.setdefault(date_key, value)
+
+        # 日付が取れなかった走は、区間統合で重複しやすいため、
+        # 最も情報量の多い候補からだけ採用する。
+        best_values = [float(x.strip()) for x in str(best_rec.get('上がり3F内訳', '')).split('/') if x.strip()]
+        best_dates = list(best_rec.get('_上がり3F日付', []) or [])
+        undated = [value for idx, value in enumerate(best_values)
+                   if idx >= len(best_dates) or not best_dates[idx]]
+
+        dated_rows = sorted(by_date.items(), key=lambda item: _date_sort_key(item[0]), reverse=True)
+        finish_dates = [date_key for date_key, _value in dated_rows]
+        finish_times = [value for _date_key, value in dated_rows]
+        # 日付付きの履歴が5走未満の場合だけ、日付不明の値で補う。
+        for value in undated:
+            if len(finish_times) >= 5:
+                break
+            finish_dates.append(None)
+            finish_times.append(value)
+        finish_times = finish_times[:5]
+        finish_dates = finish_dates[:5]
+
+        merged_rec = dict(best_rec)
+        merged_rec['上がり3F内訳'] = ' / '.join(f'{v:.1f}' for v in finish_times)
+        merged_rec['上がり3F平均'] = round(sum(finish_times) / len(finish_times), 2) if finish_times else None
+        merged_rec['上がり取得数'] = len(finish_times)
+        merged_rec['_上がり3F日付'] = finish_dates
+        results[gate] = merged_rec
+
+    output = [results[g] for g in sorted(results)]
+    for rec in output:
+        rec.pop('_上がり3F日付', None)
+    return output
 
 
 def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=None):
@@ -3997,6 +4432,7 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
     # 同じ日付の重複を除去。最初に見つかった値を採用する。
     # 画面を上下に分けてコピーした場合でも、5走が二重にならない。
     finish_times = []
+    finish_dates = []
     seen_dates = set()
     for date_key, val in race_values:
         if date_key is not None:
@@ -4005,6 +4441,7 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
             seen_dates.add(date_key)
         if not finish_times or abs(val - finish_times[-1]) > 0.001 or date_key is not None:
             finish_times.append(val)
+            finish_dates.append(date_key)
         if len(finish_times) >= 5:
             break
 
@@ -4051,9 +4488,10 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
         "馬番": int(gate), "馬名": horse_name,
         "前走騎手": previous_jockey,
         "上がり3F内訳": " / ".join(f"{v:.1f}" for v in finish_times),
-        "上がり3F平均": avg_l3f,
-        "上がり取得数": len(finish_times),
-        "取得元": "競馬ラボ・過去5走文字貼り付け",
+        '上がり3F平均': avg_l3f,
+        '上がり取得数': len(finish_times),
+        '_上がり3F日付': finish_dates,
+        '取得元': '競馬ラボ・過去5走文字貼り付け',
     }]
 
 
@@ -4438,6 +4876,7 @@ def apply_specialized_image_records(records, auto_track_value):
             "win_odds": float(rec.get("単勝") if rec.get("単勝") is not None else prev.get("win_odds", 0.0)),
             "heavy_record": prev.get("heavy_record", False),
             "previous_jockey": rec.get("前走騎手") if rec.get("前走騎手") in JOCKEY_MASTER else prev.get("previous_jockey", "(未選択)"),
+            "l3f_history_values": rec.get("過去5走3F入力値", prev.get("l3f_history_values", [None, None, None, None, None])),
             "custom_note": prev.get("custom_note", ""),
             "sel_track": prev.get("sel_track", auto_track_value if auto_track_value in ["芝", "ダート"] else "選択なし"),
             "sel_frame": prev.get("sel_frame", calculate_frame_position(gate)),
@@ -4865,6 +5304,85 @@ if bulk_input_tab == "🔬 競馬ラボ文字入力":
                 )
 
     st.divider()
+    st.markdown("## ④ 過去5走の3Fを数値入力して平均を反映")
+    st.caption("対象馬を選び、前走から5走前までの上がり3Fを入力してください。空欄は計算対象外です。入力値は保存データにも保持されます。")
+    manual_3f_target = st.selectbox(
+        "数値入力する馬番",
+        kl_gate_choices,
+        format_func=lambda g: f"{g}番 {kl_gate_horse_map.get(g, '')}".strip(),
+        key="kl_manual_3f_target_v1947",
+    )
+    _manual_existing = next(
+        (r for r in st.session_state.get("v187_history_records", []) if int(r.get("馬番", 0) or 0) == int(manual_3f_target)),
+        {},
+    )
+    _manual_saved_row = st.session_state.get("loaded_data", {}).get("rows", {}).get(str(manual_3f_target), {})
+    _manual_saved_values = _manual_saved_row.get("l3f_history_values", [])
+    if not isinstance(_manual_saved_values, (list, tuple)) or len(_manual_saved_values) != 5:
+        _manual_saved_values = []
+    if not _manual_saved_values:
+        _manual_saved_values = []
+        for _token in str(_manual_existing.get("上がり3F内訳", "") or "").split("/"):
+            try:
+                _manual_saved_values.append(float(_token.strip()))
+            except Exception:
+                pass
+        _manual_saved_values = (_manual_saved_values + [None] * 5)[:5]
+
+    _manual_cols = st.columns(5)
+    _manual_values = []
+    for _idx, _label in enumerate(["前走", "2走前", "3走前", "4走前", "5走前"]):
+        _saved_val = _manual_saved_values[_idx] if _idx < len(_manual_saved_values) else None
+        _default_text = "" if _saved_val in (None, "") else str(_saved_val)
+        _raw_val = _manual_cols[_idx].text_input(
+            _label, value=_default_text, placeholder="例 33.8",
+            key=f"kl_manual_3f_{int(manual_3f_target)}_{_idx}_v1947",
+        )
+        _parsed_val = None
+        if str(_raw_val).strip():
+            try:
+                _candidate = float(str(_raw_val).strip().replace(",", "."))
+                if 30.0 <= _candidate <= 45.9:
+                    _parsed_val = round(_candidate, 1)
+            except Exception:
+                pass
+        _manual_values.append(_parsed_val)
+
+    _manual_valid_values = [v for v in _manual_values if v is not None]
+    _manual_avg = round(sum(_manual_valid_values) / len(_manual_valid_values), 2) if _manual_valid_values else None
+    if _manual_avg is not None:
+        st.metric("入力済みの平均上がり3F", f"{_manual_avg:.2f}秒", help=f"{len(_manual_valid_values)}走分で計算")
+    else:
+        st.info("30.0〜45.9の範囲で、少なくとも1走分入力してください。")
+
+    if st.button("📥 平均を計算して出馬表へ反映", type="primary", use_container_width=True, key="kl_manual_3f_apply_v1947"):
+        if not _manual_valid_values:
+            st.error("上がり3Fを少なくとも1走分入力してください（30.0〜45.9）。")
+        else:
+            _manual_record = {
+                "馬番": int(manual_3f_target),
+                "馬名": kl_gate_horse_map.get(manual_3f_target, _manual_existing.get("馬名", "")),
+                "前走騎手": _manual_existing.get("前走騎手", "(未選択)"),
+                "上がり3F内訳": " / ".join(f"{v:.1f}" for v in _manual_valid_values),
+                "上がり3F平均": _manual_avg,
+                "上がり取得数": len(_manual_valid_values),
+                "過去5走3F入力値": _manual_values,
+                "取得元": "競馬ラボ・過去5走3F手入力",
+            }
+            _manual_records_by_gate = {
+                int(r["馬番"]): r for r in st.session_state.get("v187_history_records", [])
+                if r.get("馬番")
+            }
+            _manual_records_by_gate[int(manual_3f_target)] = _manual_record
+            st.session_state["v187_history_records"] = [
+                _manual_records_by_gate[k] for k in sorted(_manual_records_by_gate)
+            ]
+            st.session_state["v187_history_text_records"] = [_manual_record]
+            apply_specialized_image_records([_manual_record], auto_track)
+            st.success(f"{manual_3f_target}番の上がり3F平均 {_manual_avg:.2f}秒を出馬表へ反映しました。")
+            st.rerun()
+
+    st.divider()
     st.markdown("### 📊 文字取り込み結果")
     merged_kl = merge_source_records(
         st.session_state.get("v187_umanity_records", []),
@@ -4874,57 +5392,6 @@ if bulk_input_tab == "🔬 競馬ラボ文字入力":
     if merged_kl:
         cols = [c for c in ["馬番", "馬名", "父馬", "厩舎", "馬主", "前走騎手", "上がり3F内訳", "上がり3F平均"] if c in pd.DataFrame(merged_kl).columns]
         st.dataframe(pd.DataFrame(merged_kl)[cols], use_container_width=True, hide_index=True)
-
-    st.divider()
-    st.markdown("## ④ 過去5走の3Fを数値入力して平均を反映")
-    st.caption("読み取りが不安定な場合はこちらを使用します。馬を選び、過去走の上がり3Fを新しい順に入力してください。25.0〜50.0秒の数値だけで平均を計算します。未入力は0.0のままにしてください。")
-    manual_l3f_gate = st.selectbox(
-        "3Fを入力する馬",
-        kl_gate_choices,
-        format_func=lambda g: f"{g}番 {kl_gate_horse_map.get(g, '')}".strip(),
-        key="manual_l3f_gate_v11934",
-    )
-    manual_l3f_row = st.session_state.get("loaded_data", {}).get("rows", {}).get(str(manual_l3f_gate), {})
-    saved_l3f_runs = manual_l3f_row.get("l3f_runs", [])
-    if not isinstance(saved_l3f_runs, (list, tuple)):
-        saved_l3f_runs = []
-    saved_l3f_runs = list(saved_l3f_runs)[:5]
-    saved_l3f_runs += [0.0] * (5 - len(saved_l3f_runs))
-    l3f_cols = st.columns(5)
-    manual_l3f_values = []
-    for run_idx, col in enumerate(l3f_cols, start=1):
-        key = f"manual_l3f_{manual_l3f_gate}_{run_idx}_v11934"
-        if key not in st.session_state:
-            try:
-                st.session_state[key] = float(saved_l3f_runs[run_idx - 1] or 0.0)
-            except (TypeError, ValueError):
-                st.session_state[key] = 0.0
-        manual_l3f_values.append(col.number_input(
-            f"{run_idx}走前" if run_idx > 1 else "前走",
-            min_value=0.0, max_value=60.0, step=0.1, format="%.1f",
-            key=key, help="未入力は0.0のままにしてください。",
-        ))
-    valid_l3f_values = [float(v) for v in manual_l3f_values if 25.0 <= float(v) <= 50.0]
-    if valid_l3f_values:
-        manual_l3f_average = round(sum(valid_l3f_values) / len(valid_l3f_values), 2)
-        st.info(f"入力数：{len(valid_l3f_values)}走 ／ 3F平均：{manual_l3f_average:.2f}秒")
-    else:
-        manual_l3f_average = None
-        st.info("3Fの数値を1つ以上入力すると平均を表示します。")
-    if st.button("🧮 平均を計算して出馬表へ反映", type="primary", use_container_width=True, key="manual_l3f_apply_v11934"):
-        if manual_l3f_average is None:
-            st.warning("3Fの数値を1つ以上入力してください。")
-        else:
-            st.session_state["loaded_data"].setdefault("rows", {})
-            target_key = str(manual_l3f_gate)
-            target_row = dict(st.session_state["loaded_data"]["rows"].get(target_key, {}))
-            target_row["l3f_runs"] = [float(v) if float(v) > 0 else None for v in manual_l3f_values]
-            target_row["l3f"] = float(manual_l3f_average)
-            st.session_state["loaded_data"]["rows"][target_key] = target_row
-            # 出馬表の平均欄にも、ウィジェット生成前に同期する。
-            st.session_state[f"l3f_{manual_l3f_gate}"] = float(manual_l3f_average)
-            st.success(f"{manual_l3f_gate}番の3F平均 {manual_l3f_average:.2f}秒を反映しました。")
-            st.rerun()
 
 if bulk_input_tab == "📷 画像OCR（予備）":
     st.write("### 📷 画像OCR（予備入力）")
@@ -5434,52 +5901,90 @@ def _safe_select_index(options, value, fallback=0):
     except ValueError:
         return fallback
 
+# 馬名が入っている頭数を枠番判定に使用（PC・スマホ共通）
+_loaded_rows_for_frame = st.session_state["loaded_data"].get("rows", {})
+_entered_gates = []
+for _gate in range(1, 19):
+    _loaded_name = _loaded_rows_for_frame.get(str(_gate), {}).get("name", "")
+    _current_name = st.session_state.get(f"name_{_gate}", _loaded_name)
+    if str(_current_name or "").strip():
+        _entered_gates.append(_gate)
+_frame_field_size = len(_entered_gates) if _entered_gates else 16
+_frame_field_size = max(1, min(18, _frame_field_size))
+
+# 出走頭数が変わった場合は、枠有利の初期値を自動で再計算する。
+# 同じ頭数のままなら、ユーザーが手動変更した値を尊重する。
+_frame_sync_signature = (_frame_field_size, tuple(_entered_gates))
+if st.session_state.get("_frame_sync_signature") != _frame_sync_signature:
+    for _gate in range(1, 19):
+        _auto_frame = calculate_frame_position(_gate, _frame_field_size)
+        st.session_state[f"frame_{_gate}"] = _auto_frame
+        if str(_gate) in _loaded_rows_for_frame:
+            _loaded_rows_for_frame[str(_gate)]["sel_frame"] = _auto_frame
+    st.session_state["_frame_sync_signature"] = _frame_sync_signature
+
+# ボタンを押した場合は、手動変更済みの値も含めて全馬を再判定する。
+if st.button("🎯 馬番・出走頭数から枠有利を自動判定", key="recalc_frame_advantage", use_container_width=True):
+    for _gate in range(1, 19):
+        _auto_frame = calculate_frame_position(_gate, _frame_field_size)
+        st.session_state[f"frame_{_gate}"] = _auto_frame
+        if str(_gate) in _loaded_rows_for_frame:
+            _loaded_rows_for_frame[str(_gate)]["sel_frame"] = _auto_frame
+    st.rerun()
+
 if not mobile_mode:
-    c_widths = [0.55, 1.20, 0.52, 0.65, 0.60, 0.58, 0.63, 0.58, 1.10, 0.52, 1.00, 1.00, 0.95, 0.95, 1.05, 0.68, 0.72, 0.72, 0.78, 0.72]
-    cols = st.columns(c_widths)
-    headers = ["馬番", "馬名", "人気", "単勝", "指数", "斤量", "馬体重", "前3F", "父馬", "道悪", "今回騎手", "前走騎手", "厩舎", "馬主", "手入力メモ", "馬場", "脚質", "枠有利", "前走距離", "能力値"]
-    for col, h in zip(cols, headers):
-        col.write(f"**{h}**")
-
+    st.caption("馬ごとに入力欄をまとめ、入力欄を広めに配置しています。枠有利は出走頭数に応じて初期判定され、必要なら上のボタンで再判定できます。")
     for i in range(1, 19):
-        c = st.columns(c_widths)
         s_row = st.session_state["loaded_data"].get("rows", {}).get(str(i), {})
+        if f"frame_{i}" not in st.session_state:
+            st.session_state[f"frame_{i}"] = s_row.get("sel_frame", calculate_frame_position(i, _frame_field_size))
+        with st.container(border=True):
+            st.markdown(f"### 🐎 {i}番　{s_row.get('name', '') or '馬名未入力'}")
 
-        num = c[0].text_input(f"num_{i}", value=s_row.get("num", str(i)), label_visibility="collapsed")
-        name = c[1].text_input(f"name_{i}", value=s_row.get("name", ""), label_visibility="collapsed")
-        pop = c[2].number_input(f"pop_{i}", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), label_visibility="collapsed")
-        win_odds = c[3].number_input(f"win_odds_{i}", min_value=0.0, max_value=999.9, value=float(s_row.get("win_odds", 0.0) or 0.0), step=0.1, label_visibility="collapsed", help="未入力は0.0")
-        idx = c[4].number_input(f"idx_{i}", value=float(s_row.get("idx", 0.0)), step=0.1, label_visibility="collapsed")
-        wgt = c[5].number_input(f"wgt_{i}", min_value=48.0, max_value=62.0, value=float(s_row.get("wgt", 56.0)), step=0.5, label_visibility="collapsed")
-        wgh = c[6].number_input(f"wgh_{i}", min_value=350, max_value=600, value=int(s_row.get("wgh", 480)), step=2, label_visibility="collapsed")
-        l3f = c[7].number_input(f"l3f_{i}", value=float(s_row.get("l3f", 35.0)), step=0.1, label_visibility="collapsed")
-        sire = c[8].text_input(f"sire_{i}", value=s_row.get("sire", ""), label_visibility="collapsed", placeholder="父馬")
-        has_heavy_record = c[9].checkbox(f"rec_{i}", value=s_row.get("heavy_record", False), label_visibility="collapsed")
+            c = st.columns([1, 2.5, 1])
+            num = c[0].text_input("馬番", value=s_row.get("num", str(i)), key=f"num_{i}")
+            name = c[1].text_input("馬名", value=s_row.get("name", ""), key=f"name_{i}", placeholder="馬名を入力")
+            pop = c[2].number_input("人気", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), key=f"pop_{i}")
 
-        saved_jockey = normalize_jockey_name(s_row.get("jock", "(未選択)"))
-        jock = c[10].selectbox(f"jock_{i}", jockey_options, index=_safe_select_index(jockey_options, saved_jockey), label_visibility="collapsed")
-        saved_previous = normalize_jockey_name(s_row.get("previous_jockey", "(未選択)"))
-        previous_jockey = c[11].selectbox(f"previous_jockey_{i}", jockey_options, index=_safe_select_index(jockey_options, saved_previous), label_visibility="collapsed")
-        trainer = c[12].selectbox(f"trainer_{i}", TRAINER_OPTIONS, index=_safe_select_index(TRAINER_OPTIONS, s_row.get("trainer", "(未選択)")), label_visibility="collapsed")
-        owner = c[13].selectbox(f"owner_{i}", OWNER_OPTIONS, index=_safe_select_index(OWNER_OPTIONS, s_row.get("owner", "(未選択)")), label_visibility="collapsed")
-        custom_note = c[14].text_input(f"custom_note_{i}", value=s_row.get("custom_note", ""), label_visibility="collapsed", placeholder="性齢・特徴メモ")
+            c = st.columns(3)
+            win_odds = c[0].number_input("単勝オッズ", min_value=0.0, max_value=999.9, value=float(s_row.get("win_odds", 0.0) or 0.0), step=0.1, key=f"win_odds_{i}")
+            idx = c[1].number_input("U指数", value=float(s_row.get("idx", 0.0)), step=0.1, key=f"idx_{i}")
+            wgt = c[2].number_input("斤量", min_value=48.0, max_value=62.0, value=float(s_row.get("wgt", 56.0)), step=0.5, key=f"wgt_{i}")
 
-        default_track = s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")
-        sel_track = c[15].selectbox(f"track_{i}", track_options, index=_safe_select_index(track_options, default_track), label_visibility="collapsed")
-        sel_style = c[16].selectbox(f"style_{i}", style_options, index=_safe_select_index(style_options, s_row.get("sel_style", "選択なし")), label_visibility="collapsed")
+            c = st.columns(3)
+            wgh = c[0].number_input("馬体重", min_value=350, max_value=600, value=int(s_row.get("wgh", 480)), step=2, key=f"wgh_{i}")
+            l3f = c[1].number_input("上がり3F平均", value=float(s_row.get("l3f", 35.0)), step=0.1, key=f"l3f_{i}")
+            sire = c[2].text_input("父馬", value=s_row.get("sire", ""), key=f"sire_{i}", placeholder="父馬")
+            has_heavy_record = st.checkbox("道悪実績あり", value=s_row.get("heavy_record", False), key=f"rec_{i}")
 
-        num_int = safe_int_convert(num, i)
-        f_def_idx = 1 if num_int <= 8 else (2 if num_int >= 13 else 0)
-        sel_frame = c[17].selectbox(f"frame_{i}", frame_options, index=_safe_select_index(frame_options, s_row.get("sel_frame", frame_options[f_def_idx])), label_visibility="collapsed")
-        sel_dist_change = c[18].selectbox(f"dist_change_{i}", distance_options, index=_safe_select_index(distance_options, s_row.get("sel_dist_change", "同距離")), label_visibility="collapsed")
-        score_cell = c[19]
+            c = st.columns(2)
+            saved_jockey = normalize_jockey_name(s_row.get("jock", "(未選択)"))
+            jock = c[0].selectbox("今回騎手", jockey_options, index=_safe_select_index(jockey_options, saved_jockey), key=f"jock_{i}")
+            saved_previous = normalize_jockey_name(s_row.get("previous_jockey", "(未選択)"))
+            previous_jockey = c[1].selectbox("前走騎手", jockey_options, index=_safe_select_index(jockey_options, saved_previous), key=f"previous_jockey_{i}")
+
+            c = st.columns(2)
+            trainer = c[0].selectbox("厩舎", TRAINER_OPTIONS, index=_safe_select_index(TRAINER_OPTIONS, s_row.get("trainer", "(未選択)")), key=f"trainer_{i}")
+            owner = c[1].selectbox("馬主", OWNER_OPTIONS, index=_safe_select_index(OWNER_OPTIONS, s_row.get("owner", "(未選択)")), key=f"owner_{i}")
+
+            c = st.columns([2, 1, 1])
+            custom_note = c[0].text_input("手入力メモ", value=s_row.get("custom_note", ""), key=f"custom_note_{i}")
+            default_track = s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")
+            sel_track = c[1].selectbox("馬場", track_options, index=_safe_select_index(track_options, default_track), key=f"track_{i}")
+            sel_style = c[2].selectbox("脚質", style_options, index=_safe_select_index(style_options, s_row.get("sel_style", "選択なし")), key=f"style_{i}")
+
+            c = st.columns(2)
+            _auto_frame = calculate_frame_position(safe_int_convert(num, i), _frame_field_size)
+            sel_frame = c[0].selectbox("枠有利（自動判定）", frame_options, index=_safe_select_index(frame_options, st.session_state.get(f"frame_{i}", _auto_frame)), key=f"frame_{i}")
+            sel_dist_change = c[1].selectbox("前走距離", distance_options, index=_safe_select_index(distance_options, s_row.get("sel_dist_change", "同距離")), key=f"dist_change_{i}")
+            score_cell = st.empty()
 
         if name and sel_style in style_counts:
             style_counts[sel_style] += 1
-
         current_inputs["rows"][str(i)] = {
-            "num": num, "name": name, "pop": pop, "win_odds": win_odds, "idx": idx, "wgt": wgt, "wgh": wgh, "l3f": l3f, "l3f_runs": s_row.get("l3f_runs", []), "sire": sire, "heavy_record": has_heavy_record,
+            "num": num, "name": name, "pop": pop, "win_odds": win_odds, "idx": idx, "wgt": wgt, "wgh": wgh, "l3f": l3f, "sire": sire, "heavy_record": has_heavy_record,
             "jock": jock, "previous_jockey": previous_jockey, "trainer": trainer, "owner": owner,
+            "l3f_history_values": s_row.get("l3f_history_values", [None, None, None, None, None]),
             "custom_note": custom_note, "sel_track": sel_track, "sel_style": sel_style,
             "sel_frame": sel_frame, "sel_dist_change": sel_dist_change
         }
@@ -5519,11 +6024,11 @@ else:
                 "wgt": st.session_state.get(f"wgt_{i}", float(s_row.get("wgt", 56.0))),
                 "wgh": st.session_state.get(f"wgh_{i}", int(s_row.get("wgh", 480))),
                 "l3f": st.session_state.get(f"l3f_{i}", float(s_row.get("l3f", 35.0))),
-                "l3f_runs": s_row.get("l3f_runs", []),
                 "sire": st.session_state.get(f"sire_{i}", s_row.get("sire", "")),
                 "heavy_record": st.session_state.get(f"rec_{i}", s_row.get("heavy_record", False)),
                 "jock": st.session_state.get(f"jock_{i}", normalize_jockey_name(s_row.get("jock", "(未選択)"))),
                 "previous_jockey": st.session_state.get(f"previous_jockey_{i}", normalize_jockey_name(s_row.get("previous_jockey", "(未選択)"))),
+                "l3f_history_values": s_row.get("l3f_history_values", [None, None, None, None, None]),
                 "trainer": st.session_state.get(f"trainer_{i}", s_row.get("trainer", "(未選択)")),
                 "owner": st.session_state.get(f"owner_{i}", s_row.get("owner", "(未選択)")),
                 "custom_note": st.session_state.get(f"custom_note_{i}", s_row.get("custom_note", "")),
@@ -5582,16 +6087,17 @@ else:
 
         c1, c2 = st.columns(2)
         num_int = safe_int_convert(num, i)
-        f_def_idx = 1 if num_int <= 8 else (2 if num_int >= 13 else 0)
-        sel_frame = c1.selectbox("枠有利", frame_options, index=_safe_select_index(frame_options, s_row.get("sel_frame", frame_options[f_def_idx])), key=f"frame_{i}")
+        _auto_frame = calculate_frame_position(num_int, _frame_field_size)
+        sel_frame = c1.selectbox("枠有利（自動判定）", frame_options, index=_safe_select_index(frame_options, st.session_state.get(f"frame_{i}", s_row.get("sel_frame", _auto_frame))), key=f"frame_{i}")
         sel_dist_change = c2.selectbox("前走距離", distance_options, index=_safe_select_index(distance_options, s_row.get("sel_dist_change", "同距離")), key=f"dist_change_{i}")
 
         has_heavy_record = st.checkbox("道悪実績あり", value=s_row.get("heavy_record", False), key=f"rec_{i}")
         score_cell = st.empty()
 
         row = {
-            "num": num, "name": name, "pop": pop, "win_odds": win_odds, "idx": idx, "wgt": wgt, "wgh": wgh, "l3f": l3f, "l3f_runs": s_row.get("l3f_runs", []),
+            "num": num, "name": name, "pop": pop, "win_odds": win_odds, "idx": idx, "wgt": wgt, "wgh": wgh, "l3f": l3f,
             "sire": sire, "heavy_record": has_heavy_record, "jock": jock, "previous_jockey": previous_jockey,
+            "l3f_history_values": s_row.get("l3f_history_values", [None, None, None, None, None]),
             "trainer": trainer, "owner": owner, "custom_note": custom_note, "sel_track": sel_track,
             "sel_style": sel_style, "sel_frame": sel_frame, "sel_dist_change": sel_dist_change
         }
@@ -5859,7 +6365,7 @@ for item in row_tmp_data:
     score_breakdown = {
         "指数": 0.0, "斤量": 0.0, "馬体重": 0.0, "格・斤量価値": 0.0,
         "馬番・枠": 0.0, "血統・コース": 0.0, "脚質・距離": 0.0,
-        "騎手補正": 0.0, "騎手条件": 0.0, "人気補正": 0.0, "展開補正": 0.0, "道悪補正": 0.0, "馬場バイアス": 0.0, "性齢・馬体増減": 0.0
+        "騎手補正": 0.0, "騎手条件": 0.0, "騎手力指数": 0.0, "人気補正": 0.0, "展開補正": 0.0, "道悪補正": 0.0, "馬場バイアス": 0.0, "性齢・馬体増減": 0.0
     }
     evaluation_reasons = []
     learning_adjustment = 0.0
@@ -6098,6 +6604,16 @@ for item in row_tmp_data:
         score += jockey_auto["ability"]
         score_breakdown["騎手条件"] = jockey_auto["ability"]
         evaluation_reasons.extend(jockey_auto["reasons"])
+
+        # 全国リーディング上位10名の実績を独立項目として加点（最大+5点）。
+        jockey_leading_bonus = calculate_jockey_leading_bonus(jock)
+        score += jockey_leading_bonus
+        score_breakdown["騎手力指数"] = jockey_leading_bonus
+        if jockey_leading_bonus > 0:
+            leading_record = JOCKEY_LEADING_TOP10.get(normalize_jockey_name(jock), {})
+            evaluation_reasons.append(
+                f"騎手力指数（リーディング{leading_record.get('rank')}位）で +{jockey_leading_bonus:.2f}点"
+            )
         
         if sel_style in pace_bonus:
             score += pace_bonus[sel_style]
@@ -6245,6 +6761,7 @@ def _format_factor_comment(factor, value):
         "血統・コース": "血統とコース適性",
         "脚質・距離": "脚質と距離条件",
         "騎手補正": "騎手適性",
+        "騎手力指数": "リーディング・勝利数・騎乗数・勝率",
         "人気補正": "人気とのバランス",
         "展開補正": "想定展開",
         "道悪補正": "道悪適性",
