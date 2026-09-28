@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.45"
+APP_PATCH_VERSION = "Ver1.19.46"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -466,6 +466,57 @@ JOCKEY_NAME_ALIASES = {
     "藤岡祐介": "藤岡佑介",
     "大野拓哉": "大野拓弥",
 }
+
+# 2026年9月現在：ユーザー提供のJRAリーディング上位10名
+# 順位・騎乗数・1着数・勝率(%)。上位10名以外はリーディング加点なし。
+JOCKEY_LEADING_TOP10 = {
+    "岩田望来": {"rank": 1, "rides": 349, "wins": 114, "win_rate": 32.7},
+    "C.ルメール": {"rank": 2, "rides": 162, "wins": 113, "win_rate": 69.8},
+    "松山弘平": {"rank": 3, "rides": 379, "wins": 101, "win_rate": 26.6},
+    "横山武史": {"rank": 4, "rides": 363, "wins": 83, "win_rate": 22.9},
+    "川田将雅": {"rank": 5, "rides": 171, "wins": 81, "win_rate": 47.4},
+    "坂井瑠星": {"rank": 6, "rides": 270, "wins": 80, "win_rate": 29.6},
+    "西村淳也": {"rank": 7, "rides": 372, "wins": 79, "win_rate": 21.2},
+    "丹内祐次": {"rank": 8, "rides": 483, "wins": 66, "win_rate": 13.7},
+    "戸崎圭太": {"rank": 9, "rides": 268, "wins": 64, "win_rate": 23.9},
+    "横山和生": {"rank": 10, "rides": 304, "wins": 62, "win_rate": 20.4},
+}
+
+
+def calculate_jockey_leading_bonus(jockey_name):
+    """上位10名の順位・勝利数・騎乗数・勝率を統合し、最大+5点を返す。"""
+    name = normalize_jockey_name(jockey_name)
+    record = JOCKEY_LEADING_TOP10.get(name)
+    if not record:
+        return 0.0
+
+    # 各指標を上位10名内で0～1へ正規化。順位は1位が高得点。
+    fields = {
+        "rank_score": [11 - row["rank"] for row in JOCKEY_LEADING_TOP10.values()],
+        "wins": [row["wins"] for row in JOCKEY_LEADING_TOP10.values()],
+        "rides": [row["rides"] for row in JOCKEY_LEADING_TOP10.values()],
+        "win_rate": [row["win_rate"] for row in JOCKEY_LEADING_TOP10.values()],
+    }
+    weights = {"rank_score": 0.35, "wins": 0.25, "rides": 0.15, "win_rate": 0.25}
+    composite_scores = {}
+    for jockey, row in JOCKEY_LEADING_TOP10.items():
+        raw = {
+            "rank_score": 11 - row["rank"],
+            "wins": row["wins"],
+            "rides": row["rides"],
+            "win_rate": row["win_rate"],
+        }
+        composite = 0.0
+        for field, values in fields.items():
+            low, high = min(values), max(values)
+            normalized = (raw[field] - low) / (high - low) if high > low else 0.0
+            composite += normalized * weights[field]
+        composite_scores[jockey] = composite
+
+    low_score, high_score = min(composite_scores.values()), max(composite_scores.values())
+    if high_score <= low_score:
+        return 0.0
+    return round(0.5 + 4.5 * (composite_scores[name] - low_score) / (high_score - low_score), 2)
 
 def normalize_jockey_name(name):
     normalized = str(name or "").strip().replace("　", " ")
@@ -6213,7 +6264,7 @@ for item in row_tmp_data:
     score_breakdown = {
         "指数": 0.0, "斤量": 0.0, "馬体重": 0.0, "格・斤量価値": 0.0,
         "馬番・枠": 0.0, "血統・コース": 0.0, "脚質・距離": 0.0,
-        "騎手補正": 0.0, "騎手条件": 0.0, "人気補正": 0.0, "展開補正": 0.0, "道悪補正": 0.0, "馬場バイアス": 0.0, "性齢・馬体増減": 0.0
+        "騎手補正": 0.0, "騎手条件": 0.0, "騎手力指数": 0.0, "人気補正": 0.0, "展開補正": 0.0, "道悪補正": 0.0, "馬場バイアス": 0.0, "性齢・馬体増減": 0.0
     }
     evaluation_reasons = []
     learning_adjustment = 0.0
@@ -6452,6 +6503,16 @@ for item in row_tmp_data:
         score += jockey_auto["ability"]
         score_breakdown["騎手条件"] = jockey_auto["ability"]
         evaluation_reasons.extend(jockey_auto["reasons"])
+
+        # 全国リーディング上位10名の実績を独立項目として加点（最大+5点）。
+        jockey_leading_bonus = calculate_jockey_leading_bonus(jock)
+        score += jockey_leading_bonus
+        score_breakdown["騎手力指数"] = jockey_leading_bonus
+        if jockey_leading_bonus > 0:
+            leading_record = JOCKEY_LEADING_TOP10.get(normalize_jockey_name(jock), {})
+            evaluation_reasons.append(
+                f"騎手力指数（リーディング{leading_record.get('rank')}位）で +{jockey_leading_bonus:.2f}点"
+            )
         
         if sel_style in pace_bonus:
             score += pace_bonus[sel_style]
@@ -6599,6 +6660,7 @@ def _format_factor_comment(factor, value):
         "血統・コース": "血統とコース適性",
         "脚質・距離": "脚質と距離条件",
         "騎手補正": "騎手適性",
+        "騎手力指数": "リーディング・勝利数・騎乗数・勝率",
         "人気補正": "人気とのバランス",
         "展開補正": "想定展開",
         "道悪補正": "道悪適性",
