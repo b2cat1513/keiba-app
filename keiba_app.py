@@ -4939,7 +4939,15 @@ def apply_specialized_image_records(records, auto_track_value):
             "sel_dist_change": prev.get("sel_dist_change", "同距離"),
         }
 
-
+        # 既に生成済みのStreamlitウィジェットキーが残っていても、
+        # 新しいレースのOCR結果を次回描画へ確実に同期する。
+        row = st.session_state["loaded_data"]["rows"][key]
+        for _field, _widget_key in (("num", f"num_{gate}"), ("name", f"name_{gate}"),
+                                    ("idx", f"idx_{gate}"), ("wgt", f"wgt_{gate}"),
+                                    ("wgh", f"wgh_{gate}"), ("l3f", f"l3f_{gate}"),
+                                    ("sire", f"sire_{gate}"), ("custom_note", f"custom_note_{gate}")):
+            if _field in row:
+                st.session_state[_widget_key] = row[_field]
 
 
 # --- 🛰️ 当日環境設定エリア ---
@@ -5646,22 +5654,24 @@ if bulk_input_tab == "📷 画像OCR（予備）":
                             errors.append(f"{f.name}: {gate}番の馬名がウマニティ側にありません")
                             continue
                         raw = extract_text_from_screenshot(f)
-                        # 画像OCRで得たrawを、既存のプロフィール文字列パーサーで解析する。
-                        # Ver1.19.53では未定義のimage版関数を呼んでいたため、
-                        # 一部プロフィールが取り込まれないケースが残っていた。
+                        # プロフィール画像は、画像専用の未定義関数に依存せず、
+                        # 取得したOCR文字列を既存のプロフィール文字パーサーへ渡す。
                         recs = parse_keibalab_profile_screenshot_text(
                             raw, horse_gate_map, fallback_horse=target_horse
                         )
-                        # 馬名がOCR本文に含まれない場合でも、指定馬を対象として
-                        # 父・厩舎・馬主を再抽出する。
+                        # 指定馬番・馬名を最終的に強制。OCRで項目が取れない場合も
+                        # 対象馬そのものは結果から消さない。
                         if not recs:
-                            recs = parse_keibalab_profile_screenshot_text(
-                                raw, horse_gate_map, fallback_horse=target_horse
-                            )
-                        # 指定馬番を最終的に強制
+                            recs = [{
+                                "馬番": gate, "馬名": target_horse, "父馬": "",
+                                "厩舎": "(未選択)", "馬主": "(未選択)",
+                                "取得元": "競馬ラボ・プロフィール画像（対象馬保持）",
+                            }]
                         for r in recs:
                             r["馬番"] = gate
                             r["馬名"] = target_horse
+                        # 同じ画像から複数候補が返った場合は指定馬番の1頭だけ採用
+                        recs = [recs[0]]
                         new_records.extend(recs)
                         new_raw.append((f"競馬ラボ・プロフィール:{f.name}", raw))
                         diagnostics.append({
