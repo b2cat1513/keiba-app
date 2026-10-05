@@ -4187,24 +4187,87 @@ def _split_copied_text_by_known_horses(raw_text, horse_gate_map):
 
 
 def parse_keibalab_profile_copied_text(raw_text, horse_gate_map, fallback_horse=None):
-    """競馬ラボのプロフィールをコピー文字列から抽出。
-    取得項目：父馬・調教師・馬主。
-    馬名がコピーされない形式にも対応し、fallback_horseを対象馬として使用する。
+    """競馬ラボプロフィールのコピー文字から父馬・調教師・馬主を抽出。
+
+    通常の「馬名＋性齢」見出しに加え、スマホコピーで性齢が欠落して
+    「馬名だけ」の行になったケースも対象にする。既知の馬名だけを区切りに
+    使うため、未知の相手馬名をプロフィール見出しと誤認しない。
     """
     results = {}
-    segments = _split_copied_text_by_known_horses(raw_text, horse_gate_map)
+    text = normalize_copied_text(raw_text)
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+
+    def profile_header(line):
+        ln = normalize_horse_name(line)
+        if not ln:
+            return None
+        # 完全一致の馬名行はプロフィール見出しとして採用。
+        for horse in sorted(horse_gate_map, key=len, reverse=True):
+            if horse and ln == horse:
+                return horse
+        # 性齢付き、または「馬名 + 余計な表示」の先頭一致を許容。
+        for horse in sorted(horse_gate_map, key=len, reverse=True):
+            if not horse or not ln.startswith(horse):
+                continue
+            rest = ln[len(horse):]
+            if not rest:
+                return horse
+            if re.search(SEX_AGE_PATTERN, rest) or re.match(r'^[|｜・\s]', rest):
+                return horse
+        return None
+
+    positions = []
+    for idx, line in enumerate(lines):
+        horse = profile_header(line)
+        if horse:
+            positions.append((idx, horse))
+
+    # 同じ位置の重複を除去。
+    dedup = []
+    seen = set()
+    for pos, horse in positions:
+        if pos in seen:
+            continue
+        seen.add(pos)
+        dedup.append((pos, horse))
+    positions = dedup
+
+    segments = []
+    for p, (pos, horse) in enumerate(positions):
+        next_pos = positions[p + 1][0] if p + 1 < len(positions) else len(lines)
+        segment = "\n".join(lines[pos:next_pos]).strip()
+        if segment:
+            segments.append((horse, segment))
+
+    # 見出しを認識できない1頭分コピーは、画面で指定した馬を強制対象にする。
     if not segments and fallback_horse:
         horse = normalize_horse_name(fallback_horse)
         if horse in horse_gate_map:
-            segments = [(horse, normalize_copied_text(raw_text))]
+            segments = [(horse, text)]
 
-    for item in segments:
-        # 3要素(horse, segment, direction)の新形式と、
-        # 2要素(horse, segment)の旧形式の両方を受け付ける。
-        if len(item) == 3:
-            horse, segment, _direction = item
-        else:
-            horse, segment = item
+    # 複数頭コピーなのに見出しが一部だけ取れた場合、未取得の対象馬を
+    # 「馬名が本文中に単独で現れる位置」から追加する。
+    if positions and len(segments) < len(set(horse_gate_map.values())):
+        # ここでは既に区切った範囲を壊さず、完全一致行だけを追加候補にする。
+        existing_horses = {h for h, _ in segments}
+        for idx, line in enumerate(lines):
+            ln = normalize_horse_name(line)
+            if ln not in horse_gate_map or ln in existing_horses:
+                continue
+            # 既存区間内なら追加しない。
+            if any(a <= idx < b for a, b in [(positions[k][0], positions[k+1][0] if k+1 < len(positions) else len(lines)) for k in range(len(positions))]):
+                continue
+            next_pos = len(lines)
+            for p2, _h2 in positions:
+                if p2 > idx:
+                    next_pos = p2
+                    break
+            seg = "\n".join(lines[idx:next_pos]).strip()
+            if seg:
+                segments.append((ln, seg))
+                existing_horses.add(ln)
+
+    for horse, segment in segments:
         recs = parse_keibalab_profile_screenshot_text(
             segment, horse_gate_map, fallback_horse=horse
         )
@@ -4220,7 +4283,9 @@ def parse_keibalab_profile_copied_text(raw_text, horse_gate_map, fallback_horse=
         old_score = sum(bool(old.get(k)) and old.get(k) != "(未選択)" for k in ("父馬", "厩舎", "馬主")) if old else -1
         if old is None or score > old_score:
             results[gate] = rec
+
     return [results[g] for g in sorted(results)]
+
 
 def parse_keibalab_history_copied_text(raw_text, horse_gate_map, fallback_horse=None):
     """競馬ラボの過去走コピーから前走騎手・上がり3Fを抽出。
@@ -4938,6 +5003,34 @@ def apply_specialized_image_records(records, auto_track_value):
             "sel_frame": prev.get("sel_frame", calculate_frame_position(gate)),
             "sel_dist_change": prev.get("sel_dist_change", "同距離"),
         }
+        # 重要：スマホ版で一度表示された空欄ウィジェットは、Streamlitが
+        # keyの値を優先して value= を無視することがある。
+        # 自動取り込み結果をウィジェット側にも同期し、特に1番など先に表示した馬の
+        # 馬名・騎手・U指数等が空欄のまま残る問題を防ぐ。
+        _row = st.session_state["loaded_data"]["rows"][key]
+        _widget_defaults = {
+            f"num_{gate}": _row.get("num", str(gate)),
+            f"name_{gate}": _row.get("name", ""),
+            f"pop_{gate}": int(_row.get("pop", 10)),
+            f"win_odds_{gate}": float(_row.get("win_odds", 0.0) or 0.0),
+            f"idx_{gate}": float(_row.get("idx", 0.0) or 0.0),
+            f"wgt_{gate}": float(_row.get("wgt", 56.0)),
+            f"wgh_{gate}": int(_row.get("wgh", 480)),
+            f"l3f_{gate}": float(_row.get("l3f", 35.0)),
+            f"sire_{gate}": _row.get("sire", ""),
+            f"jock_{gate}": normalize_jockey_name(_row.get("jock", "(未選択)")),
+            f"previous_jockey_{gate}": normalize_jockey_name(_row.get("previous_jockey", "(未選択)")),
+            f"trainer_{gate}": _row.get("trainer", "(未選択)"),
+            f"owner_{gate}": _row.get("owner", "(未選択)"),
+            f"custom_note_{gate}": _row.get("custom_note", ""),
+            f"track_{gate}": _row.get("sel_track", "選択なし"),
+            f"style_{gate}": _row.get("sel_style", "選択なし"),
+            f"frame_{gate}": _row.get("sel_frame", calculate_frame_position(gate)),
+            f"dist_change_{gate}": _row.get("sel_dist_change", "同距離"),
+            f"rec_{gate}": bool(_row.get("heavy_record", False)),
+        }
+        for _wk, _wv in _widget_defaults.items():
+            st.session_state[_wk] = _wv
 
 
 
@@ -5161,6 +5254,19 @@ if bulk_input_tab == "🐎 ウマニティ文字入力":
                         "owner": existing.get("owner", "(未選択)"),
                     }
                     st.session_state["loaded_data"]["rows"][row_key] = row
+                    # 全文解析でも同じくウィジェット状態を同期する。
+                    # 特にスマホ版で先に表示した1番は空欄キーが残りやすいため、
+                    # loaded_dataだけ更新して終わらせない。
+                    _sync_row = st.session_state["loaded_data"]["rows"][row_key]
+                    for _wk, _wv in {
+                        f"num_{gate}": _sync_row.get("num", str(gate)),
+                        f"name_{gate}": _sync_row.get("name", ""),
+                        f"idx_{gate}": float(_sync_row.get("idx", 0.0) or 0.0),
+                        f"wgt_{gate}": float(_sync_row.get("wgt", 56.0)),
+                        f"jock_{gate}": normalize_jockey_name(_sync_row.get("jock", "(未選択)")),
+                        f"win_odds_{gate}": float(_sync_row.get("win_odds", 0.0) or 0.0),
+                    }.items():
+                        st.session_state[_wk] = _wv
                     if existing:
                         updated_count += 1
                     else:
