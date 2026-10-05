@@ -4103,8 +4103,25 @@ def _horse_header_match(line, horse_gate_map):
         if horse and line_n == horse:
             return horse
 
+    # 通常は性齢付きの見出しを優先する。
+    # ただし競馬Labのコピーでは、今回の「ホウオウビスケッツ」のように
+    # 性齢が欠落して「馬名 + 騎手 + 斤量 + 人気/オッズ」だけになる行がある。
+    # この形式を補助的に見出しとして認識する。
     if not re.search(SEX_AGE_PATTERN, line_n):
+        profile_head_markers = (
+            '人気', '倍', '前走', 'オッズ', '--人気', '---倍',
+        )
+        for horse in horses:
+            if not horse or not line_n.startswith(horse):
+                continue
+            tail = line_n[len(horse):]
+            # 馬名の後ろにプロフィール冒頭らしい情報がある場合だけ採用。
+            # 単なる相手馬名の記載や本文中の馬名を誤認しないため、
+            # 「馬名だけの部分一致」はここでは認めない。
+            if any(marker in tail for marker in profile_head_markers):
+                return horse
         return None
+
     for horse in horses:
         if horse and line_n.startswith(horse):
             return horse
