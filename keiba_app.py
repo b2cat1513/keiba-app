@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.49"
+APP_PATCH_VERSION = "Ver1.19.56"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -28,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.49", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.49（騎手取り込み修正・PC入力欄拡大・枠有利自動判定）")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.56", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.19.56（U指数・騎手重複修正・G1検証準備版）")
 
 st.markdown("""
 <style>
@@ -517,6 +517,39 @@ def calculate_jockey_leading_bonus(jockey_name):
     if high_score <= low_score:
         return 0.0
     return round(0.5 + 4.5 * (composite_scores[name] - low_score) / (high_score - low_score), 2)
+
+def scale_u_index(index_value):
+    """U指数を能力スコア用へ連続変換する。
+
+    旧ロジックは70.0以下では指数そのもの、70.1以上では
+    (指数-50)*0.8 としていたため、70.0→70.0、70.1→16.08という
+    不連続が発生していた。現在は旧来の高指数側の意図を保ち、
+    50を基準に0.8倍へ一貫して変換する。
+    """
+    try:
+        value = float(index_value)
+    except (TypeError, ValueError):
+        return 0.0
+    if value <= 0:
+        return 0.0
+    return round(max(0.0, (value - 50.0) * 0.8), 2)
+
+
+def calculate_jockey_leading_rate_adjustment(jockey_name):
+    """リーディング実績を騎手倍率へ小さく反映する。
+
+    旧仕様の+0.5～+5.0点を能力スコアへそのまま加算すると、
+    騎手基礎力・条件補正と同じ要素を二重三重に評価しやすい。
+    そこでリーディングは「騎手力の補助情報」として倍率側へ
+    最大でも約±3.4%程度だけ反映し、独立加点は行わない。
+    """
+    bonus = calculate_jockey_leading_bonus(jockey_name)
+    if bonus <= 0:
+        return 0.0
+    # 上位10名内の中間値付近を0とし、順位・勝利数・勝率を
+    # すでに統合した旧bonusを小さな倍率補助へ変換する。
+    return round((bonus - 2.75) * 0.015, 4)
+
 
 def normalize_jockey_name(name):
     normalized = str(name or "").strip().replace("　", " ")
@@ -4103,25 +4136,8 @@ def _horse_header_match(line, horse_gate_map):
         if horse and line_n == horse:
             return horse
 
-    # 通常は性齢付きの見出しを優先する。
-    # ただし競馬Labのコピーでは、今回の「ホウオウビスケッツ」のように
-    # 性齢が欠落して「馬名 + 騎手 + 斤量 + 人気/オッズ」だけになる行がある。
-    # この形式を補助的に見出しとして認識する。
     if not re.search(SEX_AGE_PATTERN, line_n):
-        profile_head_markers = (
-            '人気', '倍', '前走', 'オッズ', '--人気', '---倍',
-        )
-        for horse in horses:
-            if not horse or not line_n.startswith(horse):
-                continue
-            tail = line_n[len(horse):]
-            # 馬名の後ろにプロフィール冒頭らしい情報がある場合だけ採用。
-            # 単なる相手馬名の記載や本文中の馬名を誤認しないため、
-            # 「馬名だけの部分一致」はここでは認めない。
-            if any(marker in tail for marker in profile_head_markers):
-                return horse
         return None
-
     for horse in horses:
         if horse and line_n.startswith(horse):
             return horse
@@ -6488,19 +6504,24 @@ for item in row_tmp_data:
             sex=sex, body_weight=wgh
         )
 
-        if jockey_modifier < 0 and l3f <= 33.9: jockey_modifier = 0.0  
-        final_jockey_rate = j_data["base"] + max(min(jockey_modifier, 0.20), -0.20)
+        if jockey_modifier < 0 and l3f <= 33.9: jockey_modifier = 0.0
+
+        # 騎手評価を一本化：基礎騎手力＋条件適性＋リーディング補助。
+        # リーディングは独立加点せず、小さな倍率補助として統合する。
+        leading_rate_adjustment = calculate_jockey_leading_rate_adjustment(jock)
+        combined_jockey_modifier = jockey_modifier + leading_rate_adjustment
+        final_jockey_rate = j_data["base"] + max(min(combined_jockey_modifier, 0.20), -0.20)
         
         # 🌟 指数ベース補正 (ウマニティ Ｕ指数 基準化スケーリング)
-        # Ｕ指数(80〜100等)が入力された場合の倍率調整
-        if idx > 70.0:
-            scaled_index_score = (idx - 50.0) * 0.8
-        else:
-            scaled_index_score = idx
+        # 旧仕様の70.0/70.1付近の不連続を解消し、同じ変換式を一貫適用。
+        scaled_index_score = scale_u_index(idx)
 
+        base_jockey_rate = j_data["base"] + max(min(jockey_modifier, 0.20), -0.20)
         if idx < 45.0:
+            mitigated_jockey_rate_without_leading = 1.0 + (base_jockey_rate - 1.0) * 0.40
             mitigated_jockey_rate = 1.0 + (final_jockey_rate - 1.0) * 0.40
         else:
+            mitigated_jockey_rate_without_leading = 1.0 + (base_jockey_rate - 1.0) * 0.70
             mitigated_jockey_rate = 1.0 + (final_jockey_rate - 1.0) * 0.70
         
         horse_base_score = scaled_index_score
@@ -6551,20 +6572,22 @@ for item in row_tmp_data:
             score_breakdown["格・斤量価値"] += 1.0
             evaluation_reasons.append("下級条件の軽斤量で +1.0")
         
-        # 特注ラッキーゲート馬番
-        if str(num).strip() == "7":
-            horse_base_score += 2.0
-            score_breakdown["馬番・枠"] += 2.0
-            evaluation_reasons.append("特注馬番7で +2.0")
-        elif str(num).strip() in ["9", "13"]:
-            horse_base_score += 1.0
-            score_breakdown["馬番・枠"] += 1.0
-            evaluation_reasons.append(f"特注馬番{num}で +1.0")
-            
+        # G1結果データ由来の馬番事前分布。
+        # G1結果ファイルで得た経験則なので、G1以外へ無条件適用しない。
         horse_num_int = safe_int_convert(num, 0)
-        if horse_num_int % 2 != 0 and str(num).strip() not in ["7", "9", "13"]:
-            horse_base_score += 0.5
-            score_breakdown["馬番・枠"] += 0.5
+        if race_class == "G1":
+            if str(num).strip() == "7":
+                horse_base_score += 2.0
+                score_breakdown["馬番・枠"] += 2.0
+                evaluation_reasons.append("G1実績ベース特注馬番7で +2.0")
+            elif str(num).strip() in ["9", "13"]:
+                horse_base_score += 1.0
+                score_breakdown["馬番・枠"] += 1.0
+                evaluation_reasons.append(f"G1実績ベース特注馬番{num}で +1.0")
+
+            if horse_num_int % 2 != 0 and str(num).strip() not in ["7", "9", "13"]:
+                horse_base_score += 0.5
+                score_breakdown["馬番・枠"] += 0.5
         if horse_num_int >= 15:
             horse_base_score -= 1.5
             score_breakdown["馬番・枠"] -= 1.5
@@ -6697,18 +6720,27 @@ for item in row_tmp_data:
         score = horse_base_score * mitigated_jockey_rate
 
         # 前走騎手・厩舎・馬主など、ジョッキー事典の特記事項を自動反映。
-        score += jockey_auto["ability"]
-        score_breakdown["騎手条件"] = jockey_auto["ability"]
+        # 騎手基礎力・条件適性・リーディングとの重複を抑えるため、
+        # 自動条件の加減点は最終的に±4点へキャップする。
+        raw_jockey_condition_effect = float(jockey_auto.get("ability", 0.0) or 0.0)
+        jockey_condition_effect = max(min(raw_jockey_condition_effect, 4.0), -4.0)
+        score += jockey_condition_effect
+        score_breakdown["騎手条件"] = jockey_condition_effect
         evaluation_reasons.extend(jockey_auto["reasons"])
+        if abs(raw_jockey_condition_effect - jockey_condition_effect) >= 0.01:
+            evaluation_reasons.append(
+                f"騎手条件の重複抑制キャップ {raw_jockey_condition_effect:+.1f}→{jockey_condition_effect:+.1f}"
+            )
 
-        # 全国リーディング上位10名の実績を独立項目として加点（最大+5点）。
-        jockey_leading_bonus = calculate_jockey_leading_bonus(jock)
-        score += jockey_leading_bonus
-        score_breakdown["騎手力指数"] = jockey_leading_bonus
-        if jockey_leading_bonus > 0:
+        # 全国リーディングは騎手倍率へ統合済み。独立加点による二重評価を防ぐ。
+        leading_effect = round(
+            horse_base_score * (mitigated_jockey_rate - mitigated_jockey_rate_without_leading), 2
+        )
+        score_breakdown["騎手力指数"] = leading_effect
+        if leading_effect != 0:
             leading_record = JOCKEY_LEADING_TOP10.get(normalize_jockey_name(jock), {})
             evaluation_reasons.append(
-                f"騎手力指数（リーディング{leading_record.get('rank')}位）で +{jockey_leading_bonus:.2f}点"
+                f"騎手力指数（リーディング{leading_record.get('rank')}位）を倍率へ統合 {leading_effect:+.2f}点"
             )
         
         if sel_style in pace_bonus:
