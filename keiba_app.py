@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.57"
+APP_PATCH_VERSION = "Ver1.19.58"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -2731,8 +2731,20 @@ def parse_umanity_desktop_table_image(uploaded_file, forced_start_gate=1):
 
 
 
+def _is_suspicious_ocr_horse_name(name):
+    """OCRが競走間隔・表示補助情報を馬名として拾ったかを判定する。"""
+    s = normalize_horse_name(name or "")
+    if not s:
+        return True
+    pats = (
+        r"^中[0-9０-９]+週$", r"^[0-9０-９]+週$", r"^前[0-9０-９]+走$",
+        r"^[0-9０-９]+走前$", r"^休み明け$", r"^休養$", r"^取消$", r"^除外$",
+    )
+    return any(re.fullmatch(p, s) for p in pats)
+
+
 def parse_umanity_screenshot_image_adaptive(uploaded_file, raw_text="", forced_start_gate=1):
-    """Ver1.19.57: ウマニティ画像の行位置を固定値ではなくOCR実測から自動検出する。
+    """Ver1.19.58: ウマニティ画像の行位置を固定値ではなくOCR実測から自動検出する。
 
     改善点:
     - 1枚の画像に16～18頭が縦に写っているケースを自動検出。
@@ -2823,9 +2835,23 @@ def parse_umanity_screenshot_image_adaptive(uploaded_file, raw_text="", forced_s
     def clean_name(s):
         s = re.sub(r"\s+", "", txt(s))
         ng = {"ウマニティ", "ニュース", "レース", "新出馬表", "プロ予想", "コロシアム", "プレミアム", "みんなの人気", "ブリンカー", "予想印", "性齢", "調教師", "斤量", "オッズ"}
+        # 「中4週」「中2週」などの競走間隔や表示補助語を馬名として採用しない。
+        # ここを通さず採用すると、画像下端の補助情報が馬名欄へずれるケースで
+        # 馬名が壊れたまま出馬表へ保存されてしまう。
+        invalid_patterns = (
+            r"^中[0-9０-９]+週$", r"^[0-9０-９]+週$", r"^前[0-9０-９]+走$",
+            r"^[0-9０-９]+走前$", r"^休み明け$", r"^休養$", r"^取消$", r"^除外$"
+        )
         cands = re.findall(r"[ァ-ヶーヴ]{2,20}", s)
-        cands = [normalize_horse_name(x) for x in cands if normalize_horse_name(x) not in ng]
-        return max(cands, key=len) if cands else ""
+        out = []
+        for x in cands:
+            nx = normalize_horse_name(x)
+            if not nx or nx in ng:
+                continue
+            if any(re.fullmatch(pat, nx) for pat in invalid_patterns):
+                continue
+            out.append(nx)
+        return max(out, key=len) if out else ""
 
     def jockey_from_text(s):
         s = re.sub(r"[0-9０-９]+(?:[.,．]\d+)?", " ", txt(s))
@@ -2948,6 +2974,19 @@ def parse_umanity_screenshot_image_adaptive(uploaded_file, raw_text="", forced_s
         weight_text = row_text_crop(y, u_x + 285, u_x + 360, 18)
 
         name = clean_name(name_text)
+        # 行中心がわずかにずれた場合、上下3候補を再OCRして「馬名らしい」候補を探す。
+        if _is_suspicious_ocr_horse_name(name) or not name:
+            name_candidates = []
+            for dy in (-28, -14, 14, 28):
+                alt = row_text_crop(y + dy, u_x - 610, u_x - 430, 18)
+                alt_name = clean_name(alt)
+                if alt_name and not _is_suspicious_ocr_horse_name(alt_name):
+                    name_candidates.append(alt_name)
+            if name_candidates:
+                name = max(name_candidates, key=len)
+            else:
+                # 誤読を無理に馬名へ保存しない。後続の別画像/文字入力で補完できるよう空欄にする。
+                name = ""
         jockey = jockey_from_text(jockey_text)
         u_index = u_index_detected
 
@@ -2982,7 +3021,7 @@ def parse_umanity_screenshot_image_adaptive(uploaded_file, raw_text="", forced_s
             "単勝": odds,
             "人気": None,
             "U指数": u_index,
-            "取得元": "ウマニティ画像(Ver1.19.57-行自動検出+U指数基準相対列OCR)",
+            "取得元": "ウマニティ画像(Ver1.19.58-行自動検出+U指数基準相対列OCR)",
         })
 
     # 馬番重複を排除し、情報量の多い行を残す。
@@ -3012,7 +3051,7 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
     if not OCR_AVAILABLE:
         return parse_umanity_screenshot_text(raw_text) if raw_text else []
 
-    # Ver1.19.57: まず画面全体から行を自動検出する。固定座標方式は予備に残す。
+    # Ver1.19.58: まず画面全体から行を自動検出する。固定座標方式は予備に残す。
     try:
         _adaptive_rows = parse_umanity_screenshot_image_adaptive(
             uploaded_file, raw_text=raw_text, forced_start_gate=forced_start_gate
@@ -5200,6 +5239,8 @@ def merge_source_records(umanity_records, profile_records, history_records):
             for key, value in rec.items():
                 if value in (None, "", "(未選択)", "選択なし"):
                     continue
+                if key == "馬名" and _is_suspicious_ocr_horse_name(value):
+                    continue
                 if key == "脚質":
                     incoming_source = rec.get("脚質取得元", "")
                     existing_source = base.get("脚質取得元", "")
@@ -5230,7 +5271,11 @@ def apply_specialized_image_records(records, auto_track_value):
         st.session_state["loaded_data"]["rows"][key] = {
             **prev,
             "num": str(gate),
-            "name": rec.get("馬名") or prev.get("name", ""),
+            "name": (
+                prev.get("name", "")
+                if _is_suspicious_ocr_horse_name(rec.get("馬名", ""))
+                else (rec.get("馬名") or prev.get("name", ""))
+            ),
             "idx": float(rec.get("U指数") if rec.get("U指数") is not None else prev.get("idx", 0.0)),
             "wgt": float(rec.get("斤量") if rec.get("斤量") is not None else prev.get("wgt", 56.0)),
             "jock": rec.get("今回騎手") if rec.get("今回騎手") in JOCKEY_MASTER else prev.get("jock", "(未選択)"),
