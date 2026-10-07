@@ -28,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.49", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.49（騎手取り込み修正・PC入力欄拡大・枠有利自動判定）")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.58", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.19.58（適応型OCR・誤読防止版）")
 
 st.markdown("""
 <style>
