@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.58"
+APP_PATCH_VERSION = "Ver1.19.63"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -28,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.58", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.58（適応型OCR・誤読防止版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.63", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.19.63（距離別・コース別成績をロジック統合）")
 
 st.markdown("""
 <style>
@@ -4681,8 +4681,17 @@ def parse_keibalab_history_copied_text(raw_text, horse_gate_map, fallback_horse=
 
 
 def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=None):
-    """競馬ラボプロフィールから父馬・厩舎・馬主を抽出。
-    ラベルと値が同じ行でも、別行でも取得できるようにする。
+    """競馬ラボプロフィールを文字列から構造化する。
+
+    Ver1.19.63: 従来の父・調教師・馬主に加えて、プロフィール画面で
+    コピペされやすいプロフィール情報（性齢、前走、2走前、母、母父、生産者、
+    距離別成績、コース別成績）を抽出する。
+
+    馬体重・人気・単勝オッズはレース直前の後入力を正本とし、
+    プロフィールのコピペからは採用しない。
+
+    コピー時に「Q87」「データ••」「55..倍倍」などの画面ノイズが混ざっても、
+    数値を無理に採用せず、判定できた項目だけを返す。
     """
     lines = [_ocr_clean_line(x) for x in str(text).splitlines()]
     lines = [x for x in lines if x]
@@ -4763,10 +4772,95 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
         matched = _best_master_match(owner_raw, candidates, 0.42)
         owner = matched if matched != '(未選択)' else owner_raw
 
+    # --- Ver1.19.63 プロフィール基本情報 ---
+    # 画像/OCRやスマホコピーでは記号・改行が混ざるため、厳しい正規表現で
+    # 「確実に読める値」だけを採用する。読めないものはNone/空欄のまま残す。
+    compact = re.sub(r"\s+", " ", joined).strip()
+
+    sex_age = ""
+    m = re.search(r"([牡牝騸セ])\s*(\d{1,2})", compact)
+    if m:
+        sex_age = f"{m.group(1)}{m.group(2)}"
+
+    # 馬体重・増減はここでは取得しない。レース直前の後入力を正本とする。
+    body_weight = None
+    body_change = None
+
+    weight_carried = None
+    # 「酒井学58.0」「幸英明56.0」のようなコピーは斤量として利用。
+    # 体重のkgや馬体重の数値を誤って拾わないよう、騎手マスター名の近傍を優先。
+    for jockey_name in sorted((x for x in JOCKEY_MASTER if x != "その他（自由手入力）"), key=len, reverse=True):
+        jm = re.escape(jockey_name)
+        m = re.search(jm + r"\s*(\d{2}(?:\.\d)?)", compact)
+        if m:
+            try:
+                val = float(m.group(1))
+                if 40.0 <= val <= 65.0:
+                    weight_carried = val
+                    break
+            except Exception:
+                pass
+
+    # 人気・単勝オッズもプロフィールからは取得しない。レース直前の後入力を正本とする。
+    popularity = None
+    odds = None
+
+    # 前走・2走前は、画面ラベルの直後から次の主要ラベルまでを1項目として保持。
+    def extract_labeled_segment(label, stop_labels):
+        m = re.search(re.escape(label) + r"\s*(.+?)(?=(?:" + "|".join(re.escape(x) for x in stop_labels) + r")|$)", compact)
+        if not m:
+            return ""
+        val = m.group(1).strip(" ：:・")
+        return val[:100]
+
+    previous_race = extract_labeled_segment("前走", ["2走前", "データ", "過去走", "父", "母", "調教師", "馬主", "生産者", "距離別成績", "コース別成績"])
+    second_previous_race = extract_labeled_segment("2走前", ["3走前", "データ", "過去走", "父", "母", "調教師", "馬主", "生産者", "距離別成績", "コース別成績"])
+
+    # 母・母父は「母 ウアジェト 母父：シンボリクリスエス」の連結形式を優先。
+    dam = ""
+    damsire = ""
+    m = re.search(r"母\s*[:：]?\s*([^\n]+?)(?:\s*母父\s*[:：]?\s*([^\n]+))?(?=\s*(?:5代血統表を見る|調教師|馬主|生産者|距離別成績|コース別成績|$))", compact)
+    if m:
+        dam = re.sub(r"\s+", " ", m.group(1)).strip(" ：:")
+        damsire = re.sub(r"\s+", " ", m.group(2) or "").strip(" ：:")
+    if not damsire:
+        m = re.search(r"母父\s*[:：]?\s*([^\s]+(?:\s+[^\s]+)?)", compact)
+        if m:
+            damsire = m.group(1).strip(" ：:")
+
+    breeder = ""
+    for i, line in enumerate(lines):
+        if line.startswith('生産者') or line.startswith('生産'):
+            breeder = next_value_after_label(['生産者', '生産'], i, 60)
+            break
+
+    # 距離別・コース別成績は「ラベルから次のラベル」までを原文のまま保持。
+    distance_stats = ""
+    course_stats = ""
+    distance_pos = next((i for i, x in enumerate(lines) if '距離別成績' in x), None)
+    course_pos = next((i for i, x in enumerate(lines) if 'コース別成績' in x), None)
+    if distance_pos is not None:
+        end = course_pos if course_pos is not None and course_pos > distance_pos else len(lines)
+        vals = [x for x in lines[distance_pos + 1:end] if x not in {'データ', '過去走', '過去走+'}]
+        distance_stats = " / ".join(vals[:12])
+    if course_pos is not None:
+        vals = [x for x in lines[course_pos + 1:] if x not in {'データ', '過去走', '過去走+'}]
+        course_stats = " / ".join(vals[:12])
+
+    # 文字列内の明らかなUIノイズは保存用メモから除外。
+    noise_tokens = {'Q87', 'Q84', 'Q86', 'データ••', 'データ•', '過去走O', '過去走O+'}
+    previous_race = " ".join(x for x in previous_race.split() if x not in noise_tokens)
+    second_previous_race = " ".join(x for x in second_previous_race.split() if x not in noise_tokens)
+
     return [{
         '馬番': int(gate), '馬名': horse_name,
-        '父馬': sire, '厩舎': trainer, '馬主': owner,
-        '取得元': '競馬ラボ・プロフィール文字貼り付け',
+        '性齢': sex_age, '馬体重': body_weight, '馬体重増減': body_change,
+        '斤量': weight_carried, '人気': popularity, '単勝': odds,
+        '前走': previous_race, '2走前': second_previous_race,
+        '父馬': sire, '母馬': dam, '母父': damsire,
+        '厩舎': trainer, '馬主': owner, '生産者': breeder,
+        '距離別成績': distance_stats, 'コース別成績': course_stats,
+        '取得元': '競馬ラボ・プロフィール文字貼り付け(Ver1.19.63)',
     }]
 
 def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=None):
@@ -5284,11 +5378,24 @@ def apply_specialized_image_records(records, auto_track_value):
             "owner": owner if owner in OWNER_OPTIONS else prev.get("owner", "(未選択)"),
             "l3f": float(rec.get("上がり3F平均") if rec.get("上がり3F平均") is not None else prev.get("l3f", 35.0)),
             "sel_style": rec.get("脚質") if rec.get("脚質") in {"逃げ", "先行", "差し", "追い込み"} else prev.get("sel_style", "選択なし"),
-            "wgh": int(prev.get("wgh", 480)),
-            "pop": int(prev.get("pop", 10)),
-            "win_odds": float(rec.get("単勝") if rec.get("単勝") is not None else prev.get("win_odds", 0.0)),
+            # 馬体重・人気・単勝オッズは後入力を正本にする。
+            # プロフィール/OCRの値では上書きしない。新規馬は未入力(0)で開始。
+            "wgh": int(prev.get("wgh", 0) or 0),
+            "pop": int(prev.get("pop", 0) or 0),
+            "win_odds": float(prev.get("win_odds", 0.0) or 0.0),
             "heavy_record": prev.get("heavy_record", False),
             "previous_jockey": rec.get("前走騎手") if rec.get("前走騎手") in JOCKEY_MASTER else prev.get("previous_jockey", "(未選択)"),
+            "profile_sex_age": rec.get("性齢", prev.get("profile_sex_age", "")),
+            "profile_body_weight": rec.get("馬体重", prev.get("profile_body_weight")),
+            "profile_body_change": rec.get("馬体重増減", prev.get("profile_body_change")),
+            "profile_popularity": rec.get("人気", prev.get("profile_popularity")),
+            "profile_previous_race": rec.get("前走", prev.get("profile_previous_race", "")),
+            "profile_second_previous_race": rec.get("2走前", prev.get("profile_second_previous_race", "")),
+            "profile_dam": rec.get("母馬", prev.get("profile_dam", "")),
+            "profile_damsire": rec.get("母父", prev.get("profile_damsire", "")),
+            "profile_breeder": rec.get("生産者", prev.get("profile_breeder", "")),
+            "profile_distance_stats": rec.get("距離別成績", prev.get("profile_distance_stats", "")),
+            "profile_course_stats": rec.get("コース別成績", prev.get("profile_course_stats", "")),
             "l3f_history_values": rec.get("過去5走3F入力値", prev.get("l3f_history_values", [None, None, None, None, None])),
             "custom_note": prev.get("custom_note", ""),
             "sel_track": prev.get("sel_track", auto_track_value if auto_track_value in ["芝", "ダート"] else "選択なし"),
@@ -5407,7 +5514,8 @@ if bulk_input_tab == "📋 Netkeiba一括入力":
                         "num": str(gate),
                         "name": horse.get("name", ""),
                         "wgt": float(horse.get("jockey_weight", 56.0)),
-                        "wgh": int(horse.get("weight", 480)),
+                        # 馬体重は後入力。Netkeibaコピー値では自動確定しない。
+                        "wgh": int(prev_row.get("wgh", 0) or 0),
                         "jock": jockey_name if jockey_registered else "その他（自由手入力）",
                         "sel_frame": horse.get("frame", calculate_frame_position(gate)),
                         "pop": prev_row.get("pop", 10),
@@ -5439,7 +5547,7 @@ if bulk_input_tab == "📋 Netkeiba一括入力":
 
 if bulk_input_tab == "🐎 ウマニティ文字入力":
     st.markdown("### 📋 ウマニティ文字貼り付け（おすすめ）")
-    st.caption("ウマニティの出馬表をコピー → 下欄へCtrl+V → 解析。画像OCRより文字の誤読が少なく、馬名・騎手・U指数・単勝・斤量を一括取得します。")
+    st.caption("ウマニティの出馬表をコピー → 下欄へCtrl+V → 解析。画像OCRより文字の誤読が少なく、馬名・騎手・U指数・斤量を取得します。馬体重・人気・単勝オッズはプロフィールから取り込まず、レース直前の後入力欄で確定します。")
 
     copied_text_um = st.text_area(
         "ウマニティの出馬表をそのまま貼り付けてください",
@@ -5511,9 +5619,10 @@ if bulk_input_tab == "🐎 ウマニティ文字入力":
                         "wgh": existing.get("wgh", 480),
                         "jock": jockey if jockey_registered else "その他（自由手入力）",
                         "sel_frame": existing.get("sel_frame", calculate_frame_position(gate)),
-                        "pop": existing.get("pop", 10),
+                        # 人気・単勝オッズ・馬体重は後入力。コピペ値では確定しない。
+                        "pop": int(existing.get("pop", 0) or 0),
                         "idx": float(item["U指数"]) if item.get("U指数") is not None else float(existing.get("idx", 0.0)),
-                        "win_odds": float(item["単勝"]) if item.get("単勝") is not None else float(existing.get("win_odds", 0.0)),
+                        "win_odds": float(existing.get("win_odds", 0.0) or 0.0),
                         "l3f": existing.get("l3f", 35.0),
                         "sire": existing.get("sire", ""),
                         "heavy_record": existing.get("heavy_record", False),
@@ -5636,7 +5745,7 @@ if bulk_input_tab == "🔬 競馬ラボ文字入力":
         st.warning("先に「🐎 ウマニティ文字入力」で出馬表を解析してください。")
 
     st.markdown("## ② 競馬ラボプロフィール文字貼り付け")
-    st.caption("取得する項目：**父・調教師・馬主**")
+    st.caption("取得する項目：**性齢・前走/2走前・父母血統・調教師・馬主・生産者・距離/コース別成績**。距離・コース別成績は予想ロジックへ自動反映します。馬体重・人気・単勝オッズはプロフィールから取り込まず、レース直前の後入力欄で確定します。判定できない値は無理に補完しません。")
     profile_target = st.selectbox(
         "プロフィールの対象馬（コピー文字に馬名が含まれない場合に使用）",
         kl_gate_choices,
@@ -5673,7 +5782,7 @@ if bulk_input_tab == "🔬 競馬ラボ文字入力":
 
                 st.success(f"② プロフィール取り込み成功：{len(parsed_profile_text)}頭")
                 st.dataframe(
-                    pd.DataFrame(parsed_profile_text)[["馬番", "馬名", "父馬", "厩舎", "馬主"]],
+                    pd.DataFrame(parsed_profile_text)[[c for c in ["馬番", "馬名", "性齢", "斤量", "前走", "2走前", "父馬", "母馬", "母父", "厩舎", "馬主", "生産者", "距離別成績", "コース別成績"] if c in pd.DataFrame(parsed_profile_text).columns]],
                     use_container_width=True, hide_index=True,
                 )
 
@@ -6376,7 +6485,7 @@ if st.button("🎯 馬番・出走頭数から枠有利を自動判定", key="re
     st.rerun()
 
 if not mobile_mode:
-    st.caption("馬ごとに入力欄をまとめ、入力欄を広めに配置しています。枠有利は出走頭数に応じて初期判定され、必要なら上のボタンで再判定できます。")
+    st.caption("馬ごとに入力欄をまとめ、入力欄を広めに配置しています。**馬体重・人気・単勝オッズはレース直前に後入力**できます（0＝未入力）。枠有利は出走頭数に応じて初期判定され、必要なら上のボタンで再判定できます。")
     for i in range(1, 19):
         s_row = st.session_state["loaded_data"].get("rows", {}).get(str(i), {})
         if f"frame_{i}" not in st.session_state:
@@ -6387,15 +6496,15 @@ if not mobile_mode:
             c = st.columns([1, 2.5, 1])
             num = c[0].text_input("馬番", value=s_row.get("num", str(i)), key=f"num_{i}")
             name = c[1].text_input("馬名", value=s_row.get("name", ""), key=f"name_{i}", placeholder="馬名を入力")
-            pop = c[2].number_input("人気", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), key=f"pop_{i}")
+            pop = c[2].number_input("人気（後入力）", min_value=0, max_value=18, value=int(s_row.get("pop", 0) or 0), key=f"pop_{i}", help="0＝未入力。レース直前の人気を後から入力します。")
 
             c = st.columns(3)
-            win_odds = c[0].number_input("単勝オッズ", min_value=0.0, max_value=999.9, value=float(s_row.get("win_odds", 0.0) or 0.0), step=0.1, key=f"win_odds_{i}")
+            win_odds = c[0].number_input("単勝オッズ（後入力）", min_value=0.0, max_value=999.9, value=float(s_row.get("win_odds", 0.0) or 0.0), step=0.1, key=f"win_odds_{i}", help="0＝未入力。レース直前の単勝オッズを後から入力します。")
             idx = c[1].number_input("U指数", value=float(s_row.get("idx", 0.0)), step=0.1, key=f"idx_{i}")
             wgt = c[2].number_input("斤量", min_value=48.0, max_value=62.0, value=float(s_row.get("wgt", 56.0)), step=0.5, key=f"wgt_{i}")
 
             c = st.columns(3)
-            wgh = c[0].number_input("馬体重", min_value=350, max_value=600, value=int(s_row.get("wgh", 480)), step=2, key=f"wgh_{i}")
+            wgh = c[0].number_input("馬体重（後入力）", min_value=0, max_value=600, value=int(s_row.get("wgh", 0) or 0), step=2, key=f"wgh_{i}", help="0＝未入力。レース直前の馬体重を後から入力します。")
             l3f = c[1].number_input("上がり3F平均", value=float(s_row.get("l3f", 35.0)), step=0.1, key=f"l3f_{i}")
             sire = c[2].text_input("父馬", value=s_row.get("sire", ""), key=f"sire_{i}", placeholder="父馬")
             has_heavy_record = st.checkbox("道悪実績あり", value=s_row.get("heavy_record", False), key=f"rec_{i}")
@@ -6434,7 +6543,7 @@ if not mobile_mode:
         row_tmp_data.append((num, name, pop, win_odds, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, previous_jockey, trainer, owner, custom_note, sel_track, sel_style, sel_frame, sel_dist_change, score_cell))
 
 else:
-    st.success("📱 スマホ入力：1頭ずつ編集します。入力値はその場で保持されます。")
+    st.success("📱 スマホ入力：1頭ずつ編集します。馬体重・人気・単勝オッズは後から入力できます。入力値はその場で保持されます。")
 
     # Which horse to edit
     if "mobile_horse_no" not in st.session_state:
@@ -6498,15 +6607,15 @@ else:
         name = st.text_input("馬名", value=s_row.get("name", ""), key=f"name_{i}", placeholder="馬名")
 
         c1, c2 = st.columns(2)
-        pop = c1.number_input("人気", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), key=f"pop_{i}")
-        win_odds = c2.number_input("単勝", min_value=0.0, max_value=999.9, value=float(s_row.get("win_odds", 0.0) or 0.0), step=0.1, key=f"win_odds_{i}")
+        pop = c1.number_input("人気（後入力）", min_value=0, max_value=18, value=int(s_row.get("pop", 0) or 0), key=f"pop_{i}", help="0＝未入力。レース直前の人気を後から入力します。")
+        win_odds = c2.number_input("単勝（後入力）", min_value=0.0, max_value=999.9, value=float(s_row.get("win_odds", 0.0) or 0.0), step=0.1, key=f"win_odds_{i}", help="0＝未入力。レース直前の単勝オッズを後から入力します。")
 
         c1, c2 = st.columns(2)
         idx = c1.number_input("U指数", value=float(s_row.get("idx", 0.0)), step=0.1, key=f"idx_{i}")
         wgt = c2.number_input("斤量", min_value=48.0, max_value=62.0, value=float(s_row.get("wgt", 56.0)), step=0.5, key=f"wgt_{i}")
 
         c1, c2 = st.columns(2)
-        wgh = c1.number_input("馬体重", min_value=350, max_value=600, value=int(s_row.get("wgh", 480)), step=2, key=f"wgh_{i}")
+        wgh = c1.number_input("馬体重（後入力）", min_value=0, max_value=600, value=int(s_row.get("wgh", 0) or 0), step=2, key=f"wgh_{i}", help="0＝未入力。レース直前の馬体重を後から入力します。")
         l3f = c2.number_input("上がり3F平均", value=float(s_row.get("l3f", 35.0)), step=0.1, key=f"l3f_{i}")
 
         sire = st.text_input("父馬", value=s_row.get("sire", ""), key=f"sire_{i}")
@@ -6606,7 +6715,7 @@ st.info(f"**現在の登録馬から算出された展開:** {pace_status} (逃�
 LEARNING_DB_PATH = Path(__file__).with_name("keiba_learning.db")
 LEARNING_FACTORS = [
     "指数", "斤量", "馬体重", "格・斤量価値", "馬番・枠",
-    "血統・コース", "脚質・距離", "騎手補正", "騎手条件", "人気補正",
+    "血統・コース", "脚質・距離", "距離適性", "コース実績", "騎手補正", "騎手条件", "人気補正",
     "展開補正", "道悪補正"
 ]
 MIN_LEARNING_SAMPLES = 10
@@ -6796,6 +6905,227 @@ AUTO_ADJUST_ENABLED = is_auto_adjust_enabled()
 ACTIVE_LEARNING_WEIGHTS = load_learning_weights()
 
 # ==========================================
+# 📊 プロフィール実績解析（Ver1.19.63）
+# ==========================================
+def _parse_record_stats_text(raw_text):
+    """「1000 0-0-0-0 / 1400 2-0-0-2」のような成績文字列を構造化する。"""
+    out = []
+    text = str(raw_text or "")
+    for label, w, p, t, o in re.findall(
+        r"([^/\n]*?)\s*(\d{1,4})-(\d{1,4})-(\d{1,4})-(\d{1,4})", text
+    ):
+        label = re.sub(r"\s+", " ", label).strip(" /:")
+        if not label:
+            continue
+        try:
+            wins, places, thirds, others = map(int, (w, p, t, o))
+            starts = wins + places + thirds + others
+            if starts > 0:
+                out.append({"label": label, "wins": wins, "places": places,
+                            "thirds": thirds, "others": others, "starts": starts})
+        except ValueError:
+            continue
+    return out
+
+
+def _record_top3_rate(record):
+    return ((record["wins"] + record["places"] + record["thirds"]) /
+            record["starts"]) if record and record.get("starts") else 0.0
+
+
+def _shrink_rate(rate, starts, prior=0.30, prior_strength=8.0):
+    """少頭数の成績をそのまま信用しないベイズ風の縮小。"""
+    n = max(0, int(starts or 0))
+    return (rate * n + prior * prior_strength) / (n + prior_strength)
+
+
+def _extract_target_distance(course_name):
+    m = re.search(r"(\d{3,4})m", str(course_name or ""))
+    return int(m.group(1)) if m else None
+
+
+def _distance_aptitude_adjustment(distance_stats, course_name):
+    """距離別成績から今回距離の適性を±3点で算出する。
+
+    完全一致を最優先。完全一致がない場合は前後距離を補間し、
+    少頭数の実績は縮小して過大評価を防ぐ。
+    """
+    target = _extract_target_distance(course_name)
+    if target is None or not distance_stats:
+        return 0.0, ""
+    records = []
+    for r in _parse_record_stats_text(distance_stats):
+        m = re.search(r"(\d{3,4})", r["label"])
+        if not m:
+            continue
+        r = dict(r)
+        r["distance"] = int(m.group(1))
+        records.append(r)
+    if not records:
+        return 0.0, ""
+
+    exact = [r for r in records if r["distance"] == target]
+    if exact:
+        r = exact[0]
+        shrunk = _shrink_rate(_record_top3_rate(r), r["starts"])
+        score = max(-3.0, min(3.0, (shrunk - 0.30) * 12.0))
+        return round(score, 2), f"{target}m実績 {r['wins']}-{r['places']}-{r['thirds']}-{r['others']}"
+
+    # 前後距離を最大400mまで利用。近いほど重くする。
+    candidates = [r for r in records if abs(r["distance"] - target) <= 400]
+    if not candidates:
+        return 0.0, ""
+    weighted = []
+    for r in candidates:
+        dist_gap = abs(r["distance"] - target)
+        weight = 1.0 / max(100.0, float(dist_gap))
+        weighted.append((_shrink_rate(_record_top3_rate(r), r["starts"]), weight, r))
+    rate = sum(x * w for x, w, _ in weighted) / sum(w for _, w, _ in weighted)
+    # 補間は完全一致より少し弱くする。
+    score = max(-2.0, min(2.0, (rate - 0.30) * 9.0))
+    labels = ", ".join(f"{r['distance']}m {r['wins']}-{r['places']}-{r['thirds']}-{r['others']}" for _, _, r in weighted[:3])
+    return round(score, 2), f"{target}m近似実績（{labels}）"
+
+
+def _course_aptitude_adjustment(course_stats, course_name):
+    """コース別成績から今回コースの適性を±3点で算出する。"""
+    if not course_stats or not course_name or course_name == "(未選択)":
+        return 0.0, ""
+    records = _parse_record_stats_text(course_stats)
+    if not records:
+        return 0.0, ""
+    course = str(course_name)
+    venue_m = re.search(r"^(.*?)(?:芝|ダート)", course)
+    venue = venue_m.group(1) if venue_m else ""
+    surface = "芝" if "芝" in course else ("ダート" if "ダート" in course else "")
+
+    # コース名がそのまま含まれる記録を最優先。
+    def norm(x):
+        return re.sub(r"[\s　]", "", str(x))
+    exact = [r for r in records if venue and venue in norm(r["label"]) and (not surface or surface in norm(r["label"]))]
+    if exact:
+        r = exact[0]
+    else:
+        # 「全右」「全左」「東芝」などの集約成績を補助利用。
+        directional = []
+        for rr in records:
+            label = norm(rr["label"])
+            if surface and surface not in label and label not in {"全", "全右", "全左"}:
+                continue
+            if venue and venue[:1] in label and label not in {"全", "全右", "全左"}:
+                directional.append(rr)
+        if directional:
+            r = directional[0]
+        else:
+            generic = [rr for rr in records if norm(rr["label"]) in {"全", "全芝", "全ダート"}]
+            if not generic:
+                return 0.0, ""
+            r = generic[0]
+
+    shrunk = _shrink_rate(_record_top3_rate(r), r["starts"])
+    score = max(-3.0, min(3.0, (shrunk - 0.30) * 12.0))
+    return round(score, 2), f"{r['label']}実績 {r['wins']}-{r['places']}-{r['thirds']}-{r['others']}"
+
+
+def calculate_profile_aptitude_adjustment(profile_distance_stats, profile_course_stats, course_name):
+    """距離・コース実績を既存スコアへ安全に統合する。"""
+    dist_score, dist_note = _distance_aptitude_adjustment(profile_distance_stats, course_name)
+    course_score, course_note = _course_aptitude_adjustment(profile_course_stats, course_name)
+    # 2項目を別々に評価し、合計は±5点に制限。
+    total = max(-5.0, min(5.0, dist_score + course_score))
+    notes = []
+    if dist_note:
+        notes.append(f"距離適性 {dist_score:+.2f}: {dist_note}")
+    if course_note:
+        notes.append(f"コース実績 {course_score:+.2f}: {course_note}")
+    return round(total, 2), notes
+
+
+
+def _parse_recent_race_result(text):
+    """プロフィールの「前走/2走前」から着順と人気を安全に抽出する。"""
+    if not text:
+        return None
+    compact = re.sub(r"\s+", " ", str(text)).strip()
+    # 例: ヴィクトリア 13人13着 / 愛知杯 12人1着
+    m = re.search(r"(?:(\d{1,2})\s*人)?\s*(\d{1,2})\s*着", compact)
+    if not m:
+        return None
+    finish = safe_int_convert(m.group(2), 0)
+    popularity = safe_int_convert(m.group(1), 0) if m.group(1) else None
+    if finish < 1 or finish > 30:
+        return None
+    return {"finish": finish, "popularity": popularity}
+
+
+def _recent_result_score(result, base_weight):
+    """着順だけから直近走の結果を小さく評価。人気は評価に使わない。"""
+    if not result:
+        return 0.0
+    finish = result["finish"]
+    table = {
+        1: 2.0, 2: 1.5, 3: 1.0,
+        4: 0.6, 5: 0.4,
+        6: 0.2, 7: 0.1, 8: 0.0, 9: 0.0,
+    }
+    raw = table.get(finish, -0.4)
+    return round(raw * base_weight, 2)
+
+
+def calculate_recent_race_result_adjustment(previous_race, second_previous_race):
+    """前走・2走前の着順を能力スコアへ安全に反映する。
+
+    前走を強め、2走前を弱めに評価。人気順位は参照せず、着順だけを使う。
+    合計は±3.0点以内に制限する。
+    """
+    r1 = _parse_recent_race_result(previous_race)
+    r2 = _parse_recent_race_result(second_previous_race)
+    s1 = _recent_result_score(r1, 1.0)
+    s2 = _recent_result_score(r2, 0.65)
+    total = max(-3.0, min(3.0, s1 + s2))
+    notes = []
+    if r1:
+        notes.append(f"前走{r1['finish']}着 {s1:+.2f}")
+    if r2:
+        notes.append(f"2走前{r2['finish']}着 {s2:+.2f}")
+    return round(total, 2), notes
+
+
+def calculate_damsire_course_adjustment(course, damsire, sex, body_weight, horse_number, style, track_condition):
+    """母父を既存のコース事典2の血統ルールへ補助的に統合する。
+
+    父と同じ強さでは扱わず、該当ルールの40%・最大+2.0点まで。
+    これにより母父だけで能力評価が大きく動くのを防ぐ。
+    """
+    if not damsire:
+        return 0.0, []
+    raw_score, raw_reasons = calculate_detailed_lineage_adjustment(
+        course, damsire, sex, body_weight, horse_number, style, track_condition
+    )
+    if raw_score <= 0:
+        return 0.0, []
+    score = min(2.0, round(raw_score * 0.40, 2))
+    reasons = [f"母父 {damsire} がコース事典2条件に該当（父より弱めに評価） +{score:.2f}"]
+    return score, reasons
+
+profile_rows_by_gate = {}
+for _r in st.session_state.get("v187_profile_records", []):
+    try:
+        _g = int(_r.get("馬番", 0) or 0)
+    except (TypeError, ValueError):
+        _g = 0
+    if 1 <= _g <= 18:
+        profile_rows_by_gate[_g] = _r
+# 出馬表側に統合済みのプロフィール情報も優先して参照。
+for _k, _r in st.session_state.get("loaded_data", {}).get("rows", {}).items():
+    try:
+        _g = int(_k)
+    except (TypeError, ValueError):
+        continue
+    if 1 <= _g <= 18 and (_r.get("profile_distance_stats") or _r.get("profile_course_stats")):
+        profile_rows_by_gate[_g] = {**profile_rows_by_gate.get(_g, {}), **_r}
+
+# ==========================================
 # 📊 スコア計算ロジック
 # ==========================================
 calculated_results = []
@@ -6807,11 +7137,42 @@ for item in row_tmp_data:
     final_apt = "C"
     score_breakdown = {
         "指数": 0.0, "斤量": 0.0, "馬体重": 0.0, "格・斤量価値": 0.0,
-        "馬番・枠": 0.0, "血統・コース": 0.0, "脚質・距離": 0.0,
+        "馬番・枠": 0.0, "血統・コース": 0.0, "脚質・距離": 0.0, "距離適性": 0.0, "コース実績": 0.0, "前走結果": 0.0, "母父・血統": 0.0,
         "騎手補正": 0.0, "騎手条件": 0.0, "騎手力指数": 0.0, "人気補正": 0.0, "展開補正": 0.0, "道悪補正": 0.0, "馬場バイアス": 0.0, "性齢・馬体増減": 0.0
     }
     evaluation_reasons = []
     learning_adjustment = 0.0
+
+    # プロフィール画面から取得した距離別・コース別成績を、
+    # 現在のレース条件に照合して能力スコアへ反映。
+    try:
+        _gate_int = int(num)
+    except (TypeError, ValueError):
+        _gate_int = 0
+    _profile = profile_rows_by_gate.get(_gate_int, {})
+    _dist_stats = _profile.get("profile_distance_stats", _profile.get("距離別成績", ""))
+    _course_stats = _profile.get("profile_course_stats", _profile.get("コース別成績", ""))
+    _damsire = _profile.get("profile_damsire", _profile.get("母父", ""))
+    _profile_apt_total, _profile_apt_notes = calculate_profile_aptitude_adjustment(
+        _dist_stats, _course_stats, sel_course
+    )
+    if _profile_apt_total:
+        score += _profile_apt_total
+        # 個別内訳は各計算値を再算出して記録。合計は±5点以内。
+        _d_score, _ = _distance_aptitude_adjustment(_dist_stats, sel_course)
+        _c_score, _ = _course_aptitude_adjustment(_course_stats, sel_course)
+        score_breakdown["距離適性"] = _d_score
+        score_breakdown["コース実績"] = _c_score
+        evaluation_reasons.extend(_profile_apt_notes)
+    # プロフィールの前走・2走前着順を小さく能力スコアへ反映。
+    _prev_race = _profile.get("profile_previous_race", _profile.get("前走", ""))
+    _second_race = _profile.get("profile_second_previous_race", _profile.get("2走前", ""))
+    _recent_score, _recent_notes = calculate_recent_race_result_adjustment(_prev_race, _second_race)
+    if _recent_score:
+        score += _recent_score
+        score_breakdown["前走結果"] = _recent_score
+        evaluation_reasons.extend([f"前走/2走前実績 {n}" for n in _recent_notes])
+
     applied_weights = {}
     j_data = JOCKEY_MASTER.get(jock, JOCKEY_MASTER["その他（自由手入力）"])
     jockey_auto = {"ability": 0.0, "value": 0.0, "ride_status": "不明", "reasons": []}
@@ -7031,6 +7392,14 @@ for item in row_tmp_data:
         score_breakdown["血統・コース"] += detailed_lineage_adjustment
         evaluation_reasons.extend(detailed_lineage_reasons)
 
+        # 母父は父より弱い補助情報としてコース事典2へ統合。
+        damsire_adjustment, damsire_reasons = calculate_damsire_course_adjustment(
+            sel_course, _damsire, sex, wgh, num, sel_style, track_condition
+        )
+        horse_base_score += damsire_adjustment
+        score_breakdown["母父・血統"] += damsire_adjustment
+        evaluation_reasons.extend(damsire_reasons)
+
         # 当日のリアルタイム馬場バイアス
         bias_adjustment, bias_reasons = calculate_track_bias_adjustment(
             track_bias, sel_frame, sel_style
@@ -7122,7 +7491,10 @@ for item in row_tmp_data:
         calculated_results.append({
             "馬番": num, "馬名": name, "能力スコア": score, "妙味スコア": value_score, "最終スコア": score, "人気": pop, "単勝オッズ": win_odds, "斤量": wgt, "馬体重": wgh,
             "父馬": sire,
+            "母父": _damsire,
             "父系統": " / ".join([x for x in auto_detect_lineage(sire) if x != normalize_sire_name(sire)]) or "個別判定",
+            "前走": _prev_race,
+            "2走前": _second_race,
             "性齢": sex_age, "馬体重増減": body_change, "重道悪適性": final_apt, "騎手": jock,
             "前走騎手": previous_jockey, "継続・乗替": jockey_auto["ride_status"] if jock != "(未選択)" else "不明",
             "厩舎": trainer, "馬主": owner,
@@ -7219,6 +7591,8 @@ def _format_factor_comment(factor, value):
         "馬番・枠": "馬番・枠順",
         "血統・コース": "血統とコース適性",
         "脚質・距離": "脚質と距離条件",
+        "距離適性": "実走の距離別成績",
+        "コース実績": "実走のコース別成績",
         "騎手補正": "騎手適性",
         "騎手力指数": "リーディング・勝利数・騎乗数・勝率",
         "人気補正": "人気とのバランス",
