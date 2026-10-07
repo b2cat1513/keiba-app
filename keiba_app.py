@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.56"
+APP_PATCH_VERSION = "Ver1.19.57"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -28,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.56", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.56（U指数・騎手重複修正・G1検証準備版）")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.49", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.19.49（騎手取り込み修正・PC入力欄拡大・枠有利自動判定）")
 
 st.markdown("""
 <style>
@@ -2730,6 +2730,275 @@ def parse_umanity_desktop_table_image(uploaded_file, forced_start_gate=1):
     return sorted(rows, key=lambda r: int(r.get("馬番", 99)))
 
 
+
+def parse_umanity_screenshot_image_adaptive(uploaded_file, raw_text="", forced_start_gate=1):
+    """Ver1.19.57: ウマニティ画像の行位置を固定値ではなくOCR実測から自動検出する。
+
+    改善点:
+    - 1枚の画像に16～18頭が縦に写っているケースを自動検出。
+    - 画面サイズやスクロール位置が変わっても、U指数のOCR位置から各行中心を推定。
+    - 馬番が写っている場合は馬番を最優先キーにする。
+    - 馬番が写っていない横スクロール画像では指定した先頭馬番から連番化。
+    - 列位置はU指数列を基準に相対配置するため、横スクロールに強い。
+    """
+    if not OCR_AVAILABLE:
+        return []
+    try:
+        raw_bytes = uploaded_file.getvalue()
+        image = Image.open(io.BytesIO(raw_bytes))
+        image = ImageOps.exif_transpose(image).convert("RGB")
+        image.load()
+    except Exception:
+        return []
+
+    w, h = image.size
+    try:
+        start_gate = max(1, min(18, int(forced_start_gate or 1)))
+    except Exception:
+        start_gate = 1
+
+    def prep(crop, scale=3):
+        gray = ImageOps.autocontrast(ImageOps.grayscale(crop))
+        if scale > 1:
+            gray = gray.resize((gray.width * scale, gray.height * scale), resample=Image.Resampling.LANCZOS)
+        return gray.filter(ImageFilter.UnsharpMask(radius=1, percent=150, threshold=2))
+
+    def ocr_data():
+        try:
+            df = pytesseract.image_to_data(
+                prep(image, 2), lang="jpn+eng", config="--oem 3 --psm 6",
+                output_type=pytesseract.Output.DATAFRAME, timeout=30,
+            )
+            df = df.dropna(subset=["text"])
+            df = df[df["conf"] >= 20]
+            # prep(scale=2)なので座標を元画像へ戻す
+            for c in ("left", "top", "width", "height"):
+                df[c] = df[c].astype(float) / 2.0
+            return df
+        except Exception:
+            return None
+
+    df = ocr_data()
+    if df is None or df.empty:
+        return []
+
+    def txt(v):
+        return str(v or "").strip()
+
+    def parse_num(s):
+        s = txt(s).replace(",", ".").replace("．", ".")
+        m = re.search(r"(?<!\d)(\d{2,3})\s*[.]\s*(\d)(?!\d)", s)
+        if m:
+            v = float(m.group(1) + "." + m.group(2))
+            return v
+        m = re.search(r"(?<!\d)(\d{3})(?!\d)", s)
+        if m:
+            raw = m.group(1)
+            # 「102」はU指数102.0として扱う。
+            if 100 <= int(raw) <= 110:
+                return float(raw)
+            return float(raw[:2] + "." + raw[2:])
+        m = re.fullmatch(r"\d{1,3}", s)
+        return float(m.group(0)) if m else None
+
+    def u_value(s):
+        v = parse_num(s)
+        if v is not None and 80 <= v <= 110:
+            return round(v, 1)
+        return None
+
+    def row_text_crop(y, x1, x2, pad=22):
+        yy1 = max(0, int(y - pad))
+        yy2 = min(h, int(y + pad))
+        xx1 = max(0, int(x1))
+        xx2 = min(w, int(x2))
+        if xx2 <= xx1 or yy2 <= yy1:
+            return ""
+        try:
+            crop = image.crop((xx1, yy1, xx2, yy2))
+            return pytesseract.image_to_string(prep(crop, 4), lang="jpn+eng", config="--oem 3 --psm 7", timeout=8).strip()
+        except Exception:
+            return ""
+
+    def clean_name(s):
+        s = re.sub(r"\s+", "", txt(s))
+        ng = {"ウマニティ", "ニュース", "レース", "新出馬表", "プロ予想", "コロシアム", "プレミアム", "みんなの人気", "ブリンカー", "予想印", "性齢", "調教師", "斤量", "オッズ"}
+        cands = re.findall(r"[ァ-ヶーヴ]{2,20}", s)
+        cands = [normalize_horse_name(x) for x in cands if normalize_horse_name(x) not in ng]
+        return max(cands, key=len) if cands else ""
+
+    def jockey_from_text(s):
+        s = re.sub(r"[0-9０-９]+(?:[.,．]\d+)?", " ", txt(s))
+        cands = re.findall(r"[一-龥々ぁ-んァ-ヶー]{2,8}", s)
+        for cand in cands:
+            for master in JOCKEY_MASTER:
+                if master != "その他（自由手入力）" and cand == master:
+                    return master
+        best, score = None, 0.0
+        for cand in cands:
+            for master in JOCKEY_MASTER:
+                if master == "その他（自由手入力）":
+                    continue
+                cc = re.sub(r"\s+", "", str(master))
+                r = difflib.SequenceMatcher(None, cand, cc).ratio()
+                if len(cand) >= 2 and len(cc) >= 2 and cand[:2] == cc[:2]:
+                    r += 0.15
+                if r > score:
+                    score, best = r, master
+        return best if score >= 0.62 else (max(cands, key=len) if cands else "(未選択)")
+
+    # U指数トークンを探して行中心を作る。
+    u_tokens = []
+    for _, r in df.iterrows():
+        u = u_value(r["text"])
+        if u is None:
+            continue
+        x = float(r["left"] + r["width"] / 2)
+        y = float(r["top"] + r["height"] / 2)
+        # ステータスバーや下部メニューを除外
+        if 90 < y < h - 120:
+            u_tokens.append((x, y, u, float(r["conf"])))
+
+    if not u_tokens:
+        return []
+
+    # 同じ行にU指数が複数候補ある場合はy近傍で統合。
+    u_tokens.sort(key=lambda z: z[1])
+    row_groups = []
+    for item in u_tokens:
+        if not row_groups or abs(item[1] - row_groups[-1]["y"]) > max(10.0, h * 0.012):
+            row_groups.append({"y": item[1], "items": [item]})
+        else:
+            row_groups[-1]["items"].append(item)
+            row_groups[-1]["y"] = sum(x[1] for x in row_groups[-1]["items"]) / len(row_groups[-1]["items"])
+
+    # 行数は最大18。実際の出馬表だけを採用する。
+    row_groups = [g for g in row_groups if g["y"] > 100 and g["y"] < h - 100]
+    if len(row_groups) < 3:
+        return []
+    if len(row_groups) > 18:
+        # 近い行を落として、通常の表の等間隔性を優先
+        row_groups = sorted(row_groups, key=lambda g: g["y"])[:18]
+
+    # 馬番OCR。馬番が画面に写っている場合は、U指数より優先して行中心を決める。
+    gate_tokens = []
+    for _, r in df.iterrows():
+        cx = float(r["left"] + r["width"] / 2)
+        cy = float(r["top"] + r["height"] / 2)
+        if not (90 < cy < h - 100) or cx > w * 0.18:
+            continue
+        m = re.fullmatch(r"(?:0?([1-9]|1[0-8]))", re.sub(r"\s+", "", txt(r["text"])))
+        if m:
+            gate = int(m.group(1))
+            gate_tokens.append((gate, cy, float(r["conf"])))
+
+    unique_gate_tokens = {}
+    for gate, cy, conf in gate_tokens:
+        if gate not in unique_gate_tokens or conf > unique_gate_tokens[gate][1]:
+            unique_gate_tokens[gate] = (cy, conf)
+
+    if len(unique_gate_tokens) >= 3:
+        # 馬番列が見えている場合は、OCRの数字そのものではなく上から下の行順を主キーにする。
+        ordered_gate_y = sorted(unique_gate_tokens.values(), key=lambda v: v[0])
+        cleaned_y = []
+        for cy, conf in ordered_gate_y:
+            if not cleaned_y or abs(cy - cleaned_y[-1]) > max(12.0, h * 0.012):
+                cleaned_y.append(cy)
+        cleaned_y = cleaned_y[:18]
+        # 1頭分の行がOCRで欠けても、等間隔から欠落行を補う。
+        if len(cleaned_y) >= 8:
+            diffs = [cleaned_y[i+1] - cleaned_y[i] for i in range(len(cleaned_y)-1) if cleaned_y[i+1] > cleaned_y[i]]
+            if diffs:
+                diffs_sorted = sorted(diffs)
+                step = diffs_sorted[len(diffs_sorted)//2]
+                estimated_count = int(round((cleaned_y[-1] - cleaned_y[0]) / max(step, 1.0))) + 1
+                estimated_count = max(len(cleaned_y), min(18, estimated_count))
+                cleaned_y = [cleaned_y[0] + i * step for i in range(estimated_count)]
+        row_defs = [(start_gate + i, cy) for i, cy in enumerate(cleaned_y)]
+    else:
+        row_defs = [(start_gate + i, g["y"]) for i, g in enumerate(row_groups)]
+
+    # 列の基準は各行のU指数x。横スクロールしても相対位置はほぼ一定。
+    rows = []
+    for gi, (gate, y) in enumerate(row_defs):
+        # 同じ行のU指数候補を検索。見つからない行は直近行のU列xを使って再OCRする。
+        same_u = [item for item in u_tokens if abs(item[1] - y) <= max(14.0, h * 0.012)]
+        if same_u:
+            u_x = max(same_u, key=lambda z: z[3])[0]
+            u_index_detected = max(same_u, key=lambda z: z[3])[2]
+        else:
+            u_x = sum(g["items"][0][0] for g in row_groups) / max(1, len(row_groups))
+            u_index_detected = None
+            try:
+                u_crop_probe = image.crop((max(0,int(u_x-80)), max(0,int(y-22)), min(w,int(u_x+80)), min(h,int(y+22))))
+                probe = pytesseract.image_to_string(prep(u_crop_probe, 4), lang="eng", config="--oem 3 --psm 7", timeout=8)
+                pv = u_value(probe)
+                if pv is not None:
+                    u_index_detected = pv
+            except Exception:
+                pass
+        if gate > 18:
+            continue
+
+        # U列から見た相対位置。今回の実画像（716px）では
+        # 馬名≈U-525、騎手≈U-315、単勝≈U+165、斤量≈U+325。
+        name_text = row_text_crop(y, u_x - 610, u_x - 430, 18)
+        jockey_text = row_text_crop(y, u_x - 355, u_x - 235, 18)
+        odds_text = row_text_crop(y, u_x + 105, u_x + 225, 18)
+        weight_text = row_text_crop(y, u_x + 285, u_x + 360, 18)
+
+        name = clean_name(name_text)
+        jockey = jockey_from_text(jockey_text)
+        u_index = u_index_detected
+
+        def odds_from_text(s):
+            s = txt(s).replace(",", ".").replace("．", ".")
+            m = re.search(r"(?<!\d)(\d{1,3})\s*[.]\s*(\d{1,2})(?!\d)", s)
+            if not m:
+                m = re.search(r"(?<!\d)(\d{1,3})(?:\s+)(\d{1,2})(?!\d)", s)
+            if not m:
+                return None
+            v = float(m.group(1) + "." + m.group(2))
+            return v if 1 <= v <= 999 else None
+
+        def weight_from_text(s):
+            s = txt(s).replace(",", ".").replace("．", ".")
+            m = re.search(r"(?<!\d)(4[8-9]|5\d|6[0-2])(?:\s*[.]\s*(0|5))?(?!\d)", s)
+            if m:
+                return float(m.group(1) + ("." + m.group(2) if m.group(2) else ".0"))
+            return None
+
+        odds = odds_from_text(odds_text)
+        weight = weight_from_text(weight_text)
+        rows.append({
+            "_row_idx": gi,
+            "_gate_raw": gate,
+            "馬番": gate,
+            "馬名": name,
+            "性齢": "",
+            "今回騎手": jockey,
+            "斤量": weight,
+            "厩舎": "(未選択)",
+            "単勝": odds,
+            "人気": None,
+            "U指数": u_index,
+            "取得元": "ウマニティ画像(Ver1.19.57-行自動検出+U指数基準相対列OCR)",
+        })
+
+    # 馬番重複を排除し、情報量の多い行を残す。
+    out = {}
+    for r in rows:
+        g = int(r["馬番"])
+        old = out.get(g)
+        if old is None:
+            out[g] = r
+        else:
+            old_score = sum(bool(old.get(k)) for k in ("馬名", "今回騎手", "U指数", "単勝", "斤量"))
+            new_score = sum(bool(r.get(k)) for k in ("馬名", "今回騎手", "U指数", "単勝", "斤量"))
+            if new_score > old_score:
+                out[g] = r
+    return [out[k] for k in sorted(out)]
+
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
     """Ver1.18.33 ウマニティ実画面レイアウト固定OCR。
 
@@ -2742,6 +3011,16 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
     """
     if not OCR_AVAILABLE:
         return parse_umanity_screenshot_text(raw_text) if raw_text else []
+
+    # Ver1.19.57: まず画面全体から行を自動検出する。固定座標方式は予備に残す。
+    try:
+        _adaptive_rows = parse_umanity_screenshot_image_adaptive(
+            uploaded_file, raw_text=raw_text, forced_start_gate=forced_start_gate
+        )
+        if len(_adaptive_rows) >= 3:
+            return _adaptive_rows
+    except Exception:
+        pass
 
     # Ver1.19.42: 横長のPC出走表は専用OCRを先に試し、縦長スマホ画像は従来処理を維持。
     try:
@@ -5587,7 +5866,7 @@ if bulk_input_tab == "📷 画像OCR（予備）":
                         sg = int(u_start_map[f.name])
                         status_box.write(f"🔎 ウマニティ解析 {idx + 1}/{len(u_files)}：先頭 {sg}番")
                         recs = parse_umanity_screenshot_image(f, "", forced_start_gate=sg)
-                        expected = min(7, 19 - sg)
+                        expected = max(1, min(18 - sg + 1, 18))
                         raw = ""
                         if len(recs) < expected:
                             try:
@@ -5603,7 +5882,7 @@ if bulk_input_tab == "📷 画像OCR（予備）":
                         diagnostics.append({
                             "画像": f.name, "種類": "ウマニティ",
                             "指定": f"先頭 {sg}番", "抽出頭数": len(recs),
-                            "期待頭数": expected,
+                            "期待頭数": "自動検出",
                             "抽出馬": " / ".join(f"{r.get('馬番')} {r.get('馬名')}" for r in recs),
                         })
                     except Exception as exc:
@@ -5613,10 +5892,10 @@ if bulk_input_tab == "📷 画像OCR（予備）":
             status_box.empty()
             # 今回指定された馬番範囲は新結果で置換
             old = {int(r["馬番"]): r for r in st.session_state["v187_umanity_records"] if r.get("馬番")}
-            for f in u_files:
-                sg = int(u_start_map[f.name])
-                for g in range(sg, min(19, sg + 7)):
-                    old.pop(g, None)
+            # 固定7頭ではなく、実際に検出した馬番だけを置換する。
+            for r in new_records:
+                if r.get("馬番"):
+                    old.pop(int(r["馬番"]), None)
             for r in new_records:
                 if r.get("馬番"):
                     old[int(r["馬番"])] = r
@@ -5627,9 +5906,16 @@ if bulk_input_tab == "📷 画像OCR（予備）":
                 st.warning("一部の画像でエラーがありました。")
                 for e in errors:
                     st.code(e)
-            st.success(f"① ウマニティ：{len(new_records)}頭を解析しました。")
+            _detected_gates = sorted({int(r.get("馬番")) for r in new_records if r.get("馬番")})
+            st.success(f"① ウマニティ：{len(_detected_gates)}頭を解析しました。馬番 {min(_detected_gates) if _detected_gates else "-"}～{max(_detected_gates) if _detected_gates else "-"} を確認")
 
     u_records = st.session_state["v187_umanity_records"]
+    _u_gate_set = {int(r.get("馬番")) for r in u_records if r.get("馬番") not in (None, "")}
+    if _u_gate_set:
+        _missing_u_gates = [g for g in range(1, max(_u_gate_set) + 1) if g not in _u_gate_set]
+        if _missing_u_gates:
+            st.warning(f"⚠️ ウマニティ読み込み：欠落馬番があります → {", ".join(map(str, _missing_u_gates))}。予想前に確認してください。")
+
     gate_horse_map = {
         int(r["馬番"]): normalize_horse_name(r.get("馬名", ""))
         for r in u_records if r.get("馬番") and r.get("馬名")
