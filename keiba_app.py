@@ -1572,6 +1572,9 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         # 101.22 / 95.210 / 101.91 / 98.66 のように
         # U指数の小数1桁の直後に「みんなの人気」が連結する形式。
         compact = re.sub(r"\s+", "", str(line))
+        # 「87.4倍15」のような単勝オッズをU指数と誤認しない。
+        if "倍" in compact or "オッズ" in compact:
+            return None
         m = re.search(r"(?<!\d)(\d{2,3})\.(\d)", compact)
         if m:
             value = float(f"{m.group(1)}.{m.group(2)}")
@@ -1655,6 +1658,9 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         sex_match = re.search(r"[牡牝セ騙]\s*\d{1,2}", x)
         if sex_match:
             prefix = x[:sex_match.start()].strip()
+            # スマホコピーで「6ペアポルックス」「14ウインカーネリアン」の
+            # ように馬番が馬名へ連結することがある。先頭の馬番だけ除去する。
+            prefix = re.sub(r"^(?:\d{1,2}\s*)+", "", prefix).strip()
             prefix = re.sub(r"[|｜【】\[\]（）()]+$", "", prefix).strip()
             # スマホコピーでは「VIP馬名 牡5」のようにVIPが馬名へ
             # 接頭辞として連結することがあるため、馬名判定前に除去する。
@@ -2000,18 +2006,15 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                         rec["斤量"] = inline_weight
                     break
 
-    # --- Ver1.19.66: スマホの「全文コピー」列崩れ対策 ---
-    # ウマニティのスマホコピーでは、馬番の一部（特に色付き枠の行）が
-    # 単独の数字としてコピーされないことがあります。その状態で
-    # 「馬番ブロック」だけを基準にすると、6番・13番のような欠番が生じ、
-    # 後続の馬名がずれたり、4ヶ月などの別項目を馬名として拾います。
-    #
-    # そこで、性齢付きの「馬名本体行」を1頭=1セクションとして再構成します。
-    # セクション内から馬名・騎手・U指数・斤量を独立して取得し、
-    # セクション順＝馬番順として16頭（最大18頭）を復元します。
-    # 馬体重・人気・単勝オッズはここでは確定しません。
+    # --- Ver1.19.67: スマホ全文コピーの「欠番によるズレ」を防止 ---
+    # 重要：馬番がコピーから抜けた場合、セクション順をそのまま1,2,3...へ
+    # 再配番すると、14～16番が10～12番へズレる。今回は「近くにある明示馬番」を
+    # 優先し、14/15/16が見えていれば14/15/16として保持する。
+    # また、単勝オッズはユーザー方針どおりここでは一切確定しない。
     if 2 <= len(horse_sections) <= 18:
         section_records = []
+        used_gates = set()
+        previous_gate = 0
         field_size = len(horse_sections)
 
         for section_index, (line_index, section_name) in enumerate(horse_sections):
@@ -2022,17 +2025,26 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             )
             section_lines = lines[line_index:section_end]
 
-            # 基本はセクション順から馬番を復元。
-            # 直前に「純粋な馬番」が存在し、期待番号と一致する場合はそれを確認情報にする。
-            expected_gate = section_index + 1
-            detected_gate = None
-            for back in range(max(0, line_index - 3), line_index):
+            # 直前数行の純粋な馬番を探す。欠番があっても明示された14などを保持。
+            detected_candidates = []
+            for back in range(max(0, line_index - 6), line_index):
                 g = is_gate(lines[back])
                 if g is not None:
-                    detected_gate = g
-            gate = expected_gate
-            if detected_gate == expected_gate:
-                gate = detected_gate
+                    detected_candidates.append(g)
+            gate = detected_candidates[-1] if detected_candidates else None
+
+            # 明示馬番が無い場合だけ、直前の馬番から連番で補完。
+            if gate is None or gate <= previous_gate:
+                inferred = previous_gate + 1
+                # 既に使った番号は避ける。
+                while inferred in used_gates and inferred <= 18:
+                    inferred += 1
+                gate = inferred
+
+            if not (1 <= gate <= 18):
+                continue
+            used_gates.add(gate)
+            previous_gate = gate
 
             rec = {
                 "馬番": gate,
@@ -2043,14 +2055,14 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                 "斤量": None,
             }
 
-            # この馬のセクション内からU指数を1つだけ取得。
+            # U指数は「倍」を含むオッズ行を除外して取得。
             for line in section_lines:
                 u = parse_u(line)
                 if u is not None:
                     rec["U指数"] = u
                     break
 
-            # 騎手＋斤量、または騎手単独をセクション内から取得。
+            # 騎手＋斤量、または騎手単独をこのセクション内だけから取得。
             for line in section_lines[1:]:
                 prefix, inline_weight = split_jockey_weight(line)
                 candidate = prefix if prefix else line
@@ -2061,7 +2073,6 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                         rec["斤量"] = inline_weight
                     break
 
-            # 斤量が騎手行から取れなかった場合はセクション内を検索。
             if rec["斤量"] is None:
                 for line in section_lines[1:]:
                     w = parse_weight(line)
@@ -2069,23 +2080,15 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                         rec["斤量"] = w
                         break
 
-            # オッズは取得できても、画面側では後入力を優先するため保持のみ。
-            for line in section_lines[1:]:
-                o = parse_odds(line)
-                if o is not None:
-                    rec["単勝"] = o
-                    break
-
+            # 単勝オッズは後入力するため、コピー値は採用しない。
+            rec["単勝"] = None
             section_records.append(rec)
 
-        # セクション方式で十分なデータが取れた場合はこちらを正式採用。
-        # これにより、途中で馬番「6」「13」等がコピーから落ちても、
-        # 1頭ずつの順序が崩れません。
-        valid_named = sum(bool(r.get("馬名")) for r in section_records)
-        if valid_named == field_size:
+        # 同じ馬番が重複せず、名前が取れていれば採用。
+        if section_records and len({r["馬番"] for r in section_records}) == len(section_records):
             return section_records
 
-    return [results[g] for g in sorted(results) if 1 <= g <= 18]
+
 
 def safe_int_convert(value, default=0):
     """馬番等の安全な数値変換関数"""
