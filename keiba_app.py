@@ -1522,7 +1522,23 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
     if not text:
         return []
 
-    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    # Ver1.19.80: スマホコピーでは「6ペアポルックス」のように、
+    # 本来は前馬の末尾にある馬番「6」と次馬の馬名が同一行へ連結することがある。
+    # この「6」はペアポルックスの馬番ではなく、直前馬の区切りなので、
+    # 先に「6」と「ペアポルックス...」へ分離してから通常解析する。
+    _raw_lines = [x.strip() for x in text.splitlines() if x.strip()]
+    lines = []
+    for _line in _raw_lines:
+        _m_inline_gate = re.match(
+            r'^(1[0-8]|[1-9])(?=[一-龥々ぁ-んァ-ヶA-Za-z])(.+)$',
+            _line,
+        )
+        if _m_inline_gate and re.search(r'[牡牝セ騙]\s*\d{1,2}', _m_inline_gate.group(2)):
+            # 例: 「6ペアポルックス 牡5 ...」
+            lines.append(_m_inline_gate.group(1))
+            lines.append(_m_inline_gate.group(2).strip())
+        else:
+            lines.append(_line)
     results = {}
     # 既存の出馬表（Netkeiba等）に正しい馬名がある場合は、馬番をアンカーにして利用する。
     # OCRで「NO」「PHOTO」などを馬名と誤認しても、既存の正しい馬名を優先する。
@@ -1773,11 +1789,67 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             len(str(r.get("馬名", ""))) >= 4,
         ])
 
-    gate_positions = []
-    for i, line in enumerate(lines):
-        g = is_gate(line)
-        if g is not None:
-            gate_positions.append((i, g))
+    def build_logical_gate_positions(source_lines):
+        """ウマニティの連結コピー用に「馬番」を馬ブロック末尾へ正規化する。
+
+        例:
+          6ペアポルックス 牡5 ...
+          岩田康誠 58.0
+          98.00
+          7
+
+        この場合、6番は行頭にありますが、実際のブロック境界は98.00の直後です。
+        ここを通常の「馬情報→馬番」の並びに論理変換してから解析する。
+        """
+        positions = []
+        used_gates = set()
+
+        def inline_gate(line):
+            x = str(line or '').strip()
+            m = re.match(r'^(1[0-8]|[1-9])(?=[一-龥々ぁ-んァ-ヶA-Za-z])', x)
+            if not m:
+                return None
+            g = int(m.group(1))
+            return g if 1 <= g <= 18 else None
+
+        for li, line in enumerate(source_lines):
+            ig = inline_gate(line)
+            if ig is not None:
+                # 連結行自身にU指数がある場合は、その直後を境界にする。
+                if parse_u(line) is not None:
+                    boundary = li + 1
+                else:
+                    boundary = None
+                    # まず同一馬のU指数を探す。次の通常馬番を越えて探さない。
+                    for j in range(li + 1, len(source_lines)):
+                        if parse_u(source_lines[j]) is not None:
+                            boundary = j + 1
+                            break
+                        # 次の通常の馬番行に到達したら、この連結馬番は
+                        # U指数を伴わない特殊ケースとして次の境界を使う。
+                        xj = str(source_lines[j] or '').strip()
+                        if re.fullmatch(r'(?:1[0-8]|[1-9])', xj):
+                            boundary = j
+                            break
+                if boundary is None:
+                    boundary = li + 1
+                if ig not in used_gates:
+                    positions.append((boundary, ig))
+                    used_gates.add(ig)
+                continue
+
+            # 通常の単独馬番は、その行自体を境界とする。
+            m = re.fullmatch(r'(1[0-8]|[1-9])', str(line or '').strip())
+            if m:
+                g = int(m.group(1))
+                if g not in used_gates:
+                    positions.append((li, g))
+                    used_gates.add(g)
+
+        # コピー文字列上の位置順に並べ、同一境界は安定して処理する。
+        return sorted(positions, key=lambda x: (x[0], x[1]))
+
+    gate_positions = build_logical_gate_positions(lines)
 
     # --- Ver1.19.64 馬番ブロック単位の馬名確定 ---
     # 以前は「性齢付き馬名」を全頭まとめて抽出し、馬番順へ再配分していました。
@@ -2240,11 +2312,7 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
     # 混入したり、16番の騎手名が馬名欄へ入ることがある。ここでは馬番を
     # 区切りとして、その直前のブロックだけを1頭として確定する。
     gate_block_records = []
-    gate_positions2 = []
-    for li, line in enumerate(lines):
-        gv = is_gate(line)
-        if gv is not None:
-            gate_positions2.append((li, gv))
+    gate_positions2 = build_logical_gate_positions(lines)
 
     for gi, (gate_li, gate_no) in enumerate(gate_positions2):
         prev_gate_li = gate_positions2[gi - 1][0] if gi > 0 else -1
@@ -6029,10 +6097,13 @@ if bulk_input_tab == "🐎 ウマニティ文字入力":
             if not parsed_um_full:
                 st.error("馬データを解析できませんでした。ウマニティの出馬表部分をまとめてコピーしてください。")
             else:
-                # Ver1.19.78: 馬番の欠落をAI計算へ流さない安全チェック。
+                # Ver1.19.80: 馬番の欠落をAI計算へ流さない安全チェック。
                 # 16頭立てなら1～16が揃っていることを必須とする。
                 _max_gate = max([int(r.get("馬番")) for r in parsed_um_full if str(r.get("馬番", "")).isdigit()], default=0)
-                validation = validate_umanity_full_records(parsed_um_full, expected_count=_max_gate)
+                # 16頭立てを明示的に判定できる場合は1～16を必須とする。
+                # それ以外は従来どおり最大馬番を基準にする。
+                _expected_gate_count = 16 if _max_gate >= 16 else _max_gate
+                validation = validate_umanity_full_records(parsed_um_full, expected_count=_expected_gate_count)
                 if not validation["ok"]:
                     st.error(
                         f"⚠️ 出走馬データが完全ではありません（{validation['count']}/{validation['expected_count']}頭）。"
