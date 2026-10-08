@@ -1559,6 +1559,8 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         "池添謙-": "池添謙一",
         "M.デムー": "M.デムーロ",
         "Mデムー": "M.デムーロ",
+        "C.ルメー": "C.ルメール",
+        "Cルメー": "C.ルメール",
     }
 
     def is_gate(line):
@@ -2199,6 +2201,107 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             "斤量": weight,
         })
         used.add(gate)
+
+    # --- Ver1.19.71: 「馬名本体→騎手→U指数→馬番」のゲートブロックを最終確定源にする ---
+    # 実際のウマニティのスマホ全文コピーでは、各馬が次のような順序で並ぶ。
+    #   馬名＋性齢＋厩舎＋オッズ
+    #   騎手＋斤量＋間隔
+    #   U指数
+    #   馬番
+    # したがって「U指数を起点に前後を推測」すると、14～16番で前馬の騎手が
+    # 混入したり、16番の騎手名が馬名欄へ入ることがある。ここでは馬番を
+    # 区切りとして、その直前のブロックだけを1頭として確定する。
+    gate_block_records = []
+    gate_positions2 = []
+    for li, line in enumerate(lines):
+        gv = is_gate(line)
+        if gv is not None:
+            gate_positions2.append((li, gv))
+
+    for gi, (gate_li, gate_no) in enumerate(gate_positions2):
+        prev_gate_li = gate_positions2[gi - 1][0] if gi > 0 else -1
+        block = lines[prev_gate_li + 1:gate_li]
+        if not block:
+            continue
+
+        horse_name = ""
+        horse_line_index = None
+        # 馬名は性齢付き本体行からのみ確定する。
+        for bi, bl in enumerate(block):
+            if not is_sex_age_line(bl):
+                continue
+            cand = clean_name(bl)
+            if cand:
+                horse_name = cand
+                horse_line_index = bi
+                break
+
+        # U指数はこの馬のブロック内から取得。
+        u_value = None
+        u_line_index = None
+        for bi, bl in enumerate(block):
+            uv = parse_u(bl)
+            if uv is not None:
+                u_value = uv
+                u_line_index = bi
+                break
+
+        jockey = ""
+        weight = None
+        # 騎手は「馬名本体行～U指数」の間をまず検索する。
+        # ただし13番のように「馬名＋U指数」が同一行になり、
+        # その直後に「騎手＋斤量＋間隔」が来るコピー形式もあるため、
+        # 見つからなければU指数の後～馬番まで同じブロック内を検索する。
+        j_start = (horse_line_index + 1) if horse_line_index is not None else 0
+        j_end = u_line_index if u_line_index is not None else len(block)
+        search_ranges = [(j_start, j_end)]
+        if u_line_index is not None:
+            search_ranges.append((max(j_start, u_line_index + 1), len(block)))
+
+        for rs, re_ in search_ranges:
+            for bi in range(rs, re_):
+                raw_line = block[bi]
+                prefix, inline_weight = split_jockey_weight(raw_line)
+                candidate = prefix if prefix else raw_line
+                cj = clean_jockey(candidate)
+                if cj:
+                    jockey = jockey_fix.get(cj, cj)
+                    if inline_weight is not None:
+                        weight = inline_weight
+                    break
+            if jockey:
+                break
+
+        # 斤量が別行に分離しているコピー形式も、この馬のブロック内だけで補完。
+        if weight is None:
+            for bi in range(j_start, len(block)):
+                wv = parse_weight(block[bi])
+                if wv is not None:
+                    weight = wv
+                    break
+
+        odds = None
+        for bl in block:
+            ov = parse_odds(bl)
+            if ov is not None:
+                odds = ov
+                break
+
+        if horse_name or jockey or u_value is not None:
+            gate_block_records.append({
+                "馬番": gate_no,
+                "馬名": name_fix.get(horse_name, normalize_horse_name(horse_name)) if horse_name else "",
+                "U指数": u_value,
+                "今回騎手": jockey,
+                "単勝": odds,
+                "斤量": weight,
+            })
+
+    # 16頭など十分な頭数がゲートブロックから取れた場合は、これを最終結果とする。
+    # これにより旧U指数中心方式で発生していた「14・15番が松山弘平、16番が岩田望来」
+    # のような横流しを完全に切る。
+    if gate_block_records and len(gate_block_records) >= min(12, len(gate_positions2)):
+        return sorted(gate_block_records, key=lambda r: r["馬番"])
 
     # 13番のようにU指数自体がコピーから欠落した馬は推測で作らない。
     if len(records) >= 2:
