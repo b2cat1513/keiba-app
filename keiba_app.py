@@ -1740,33 +1740,11 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         if g is not None:
             gate_positions.append((i, g))
 
-    # --- Ver1.19.17 馬名確定ロジック ---
-    # ウマニティのスマホコピーでは、馬番や「前走」「2走前」等の画面ノイズが
-    # 馬名候補として混ざることがある。そこで「性齢を含む本体行」だけを
-    # 馬名の一次情報として全体から順番に抽出し、馬番の並びへ直接対応させる。
-    # 例:「キヤントウェイト 牡5 （美| 萱野浩二 ---倍」
-    #     ->「キヤントウェイト」
-    inline_horse_names = []
-    for line in lines:
-        sm = re.search(r"[牡牝セ騸騙]\s*\d{1,2}", str(line))
-        if not sm:
-            continue
-        prefix = str(line)[:sm.start()].strip()
-        # 性齢より前にあるUI記号だけを除去。馬名内部の記号は残す。
-        prefix = re.sub(r"^[|｜【】\[\]（）()\s]+", "", prefix)
-        prefix = re.sub(r"[|｜【】\[\]（）()\s]+$", "", prefix)
-        if not prefix or is_gate(prefix) is not None:
-            continue
-        # 明らかな画面ノイズは本体行であっても採用しない。
-        if prefix in ignored or any(k in re.sub(r"\s+", "", prefix).upper() for k in [
-            "PHOTO", "PH0TO", "NEWS", "DNEWL", "IPAT", "VIP", "予想コロシアム", "プロ予想MAX"
-        ]):
-            continue
-        candidate = normalize_horse_name(prefix)
-        if candidate and len(candidate) >= 2 and re.search(r"[一-龥々ぁ-んァ-ヶーA-Za-z]", candidate):
-            candidate = name_fix.get(candidate, candidate)
-            if candidate not in inline_horse_names:
-                inline_horse_names.append(candidate)
+    # --- Ver1.19.64 馬番ブロック単位の馬名確定 ---
+    # 以前は「性齢付き馬名」を全頭まとめて抽出し、馬番順へ再配分していました。
+    # しかしスマホコピーで1頭だけ性齢行が欠けると、その時点から全頭の馬名が
+    # 1頭ずつズレる問題が発生します。Ver1.19.64では各馬番のブロック内だけを
+    # 調べ、別の馬の名前を絶対に横流ししません。
 
     for pos, (i, gate) in enumerate(gate_positions):
         next_i = gate_positions[pos + 1][0] if pos + 1 < len(gate_positions) else len(lines)
@@ -1967,26 +1945,8 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             elif cj not in jockey_candidates:
                 rec["今回騎手"] = ""
 
-    # 既存データが無い場合でも、コピー文字列中の馬名候補を馬番順へ再配分する。
-    # 定型ノイズ・騎手名・数字行は除外し、重複しない候補だけを採用。
-    if not known_names:
-        horse_candidates = []
-        jockey_compact = {re.sub(r"\s+", "", c) for c in jockey_candidates}
-        for line in lines:
-            x = str(line).strip()
-            cleaned = clean_name(x)
-            if not cleaned:
-                continue
-            cc = re.sub(r"\s+", "", cleaned)
-            if cc in jockey_compact or cleaned in horse_candidates:
-                continue
-            if len(cleaned) < 3:
-                continue
-            horse_candidates.append(cleaned)
-        missing = [g for g in sorted(results) if not results[g].get("馬名")]
-        if len(horse_candidates) == len(results):
-            for gate, name in zip(sorted(results), horse_candidates):
-                results[gate]["馬名"] = name
+    # Ver1.19.64: 馬名の全体順再配分は廃止。
+    # 1頭分のブロックから判定できない馬は空欄のままにし、後から既存データ/手入力で補完する。
 
     # --- Ver1.19.44 騎手の馬別ブロック補完 ---
     # スマホからのコピーでは「馬番」行と「馬名・性齢」行の位置関係が
@@ -4681,19 +4641,16 @@ def parse_keibalab_history_copied_text(raw_text, horse_gate_map, fallback_horse=
 
 
 def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=None):
-    """競馬ラボプロフィールを文字列から構造化する。
+    """競馬ラボプロフィールのコピー文字を1頭分として安全に構造化する。
 
-    Ver1.19.63: 従来の父・調教師・馬主に加えて、プロフィール画面で
-    コピペされやすいプロフィール情報（性齢、前走、2走前、母、母父、生産者、
-    距離別成績、コース別成績）を抽出する。
-
-    馬体重・人気・単勝オッズはレース直前の後入力を正本とし、
-    プロフィールのコピペからは採用しない。
-
-    コピー時に「Q87」「データ••」「55..倍倍」などの画面ノイズが混ざっても、
-    数値を無理に採用せず、判定できた項目だけを返す。
+    Ver1.19.64:
+    - ラベル単位（父/母/母父/調教師/馬主/生産者）で取得
+    - 馬主・調教師は完全一致を優先し、曖昧なマスター補正で別名へ変換しない
+    - 母は「母父：」直前の文字列から取得
+    - 馬体重・人気・単勝オッズは取得しない（後入力を正本）
     """
-    lines = [_ocr_clean_line(x) for x in str(text).splitlines()]
+    raw = normalize_copied_text(text)
+    lines = [_ocr_clean_line(x) for x in raw.splitlines()]
     lines = [x for x in lines if x]
     joined = " ".join(lines)
 
@@ -4705,93 +4662,33 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
     if not horse_name or not gate:
         return []
 
-    def next_value_after_label(labels, idx, max_len=40):
-        """ラベル行/同一行/直後行の順で値を取得。"""
-        line = lines[idx].strip()
-        # 同一行: 「父 クロフネ」「馬主：塚田義広」など
-        for label in labels:
-            m = re.match(rf'^{re.escape(label)}(?:[：:\\s]+)(.+)$', line)
-            if m:
+    def label_value(label, max_len=80):
+        for i, line in enumerate(lines):
+            compact = re.sub(r"\s+", "", line)
+            target = re.sub(r"\s+", "", label)
+            if compact == target:
+                if i + 1 < len(lines):
+                    return lines[i + 1].strip()[:max_len]
+            # 「馬主：東京ホースレーシング」「調教師 蛯名正義(美)」にも対応
+            m = re.match(rf"^{re.escape(label)}\s*[：:]?\s*(.+)$", line)
+            if m and m.group(1).strip():
                 return m.group(1).strip()[:max_len]
-            m = re.match(rf'^{re.escape(label)}(.+)$', line)
-            if m:
-                tail = m.group(1).lstrip('：: \t').strip()
-                if tail:
-                    return tail[:max_len]
-        # ラベルだけの行なら次の行
-        if any(line == label or line.startswith(label + '：') or line.startswith(label + ':') for label in labels):
-            if idx + 1 < len(lines):
-                nxt = lines[idx + 1].strip()
-                if nxt and not any(nxt.startswith(x) for x in ('母', '母父', '調教師', '厩舎', '馬主', '生産者', '生産')):
-                    return nxt[:max_len]
-        return ''
+        return ""
 
-    # 父は「母父」を絶対に拾わない
-    sire = ''
-    for i, line in enumerate(lines):
-        if '母父' in line:
-            continue
-        val = next_value_after_label(['父馬', '父'], i, 40)
-        if val:
-            sire = val
-            break
-    sire = re.split(r'(?:母父|母|調教師|厩舎|馬主|生産者|生産|距離別|コース別)', sire)[0].strip()
-    sire = re.sub(r'^[：:\\s]+|[：:\\s]+$', '', sire)
-    if len(sire) < 2 or sire in {'データ', '過去走', '過去走+'}:
-        sire = ''
-
-    # 調教師は「調教師」または「厩舎」の同一行/次行に対応。
-    trainer_raw = ''
-    for i, line in enumerate(lines):
-        if line.startswith('調教師') or line.startswith('厩舎'):
-            trainer_raw = next_value_after_label(['調教師', '厩舎'], i, 40)
-            break
-        m = re.search(r'([一-龥ぁ-んァ-ヶー・]{2,16})\s*[（(](?:美|栗|美浦|栗東)[）)]', line)
-        if m:
-            trainer_raw = m.group(1).strip()
-            break
-    trainer_raw = re.sub(r'[（(](?:美|栗|美浦|栗東)[）)]', '', trainer_raw).strip()
-    trainer = '(未選択)'
-    if trainer_raw:
-        # マスターに存在する場合は正式名称へ寄せる。
-        # 未登録の調教師でも、コピー文字列を捨てずそのまま保持する。
-        candidates = [x for x in TRAINER_OPTIONS if x not in {'(未選択)', 'その他'}]
-        matched = _best_master_match(trainer_raw, candidates, 0.62) if candidates else '(未選択)'
-        trainer = matched if matched != '(未選択)' else trainer_raw
-
-    # 馬主は同一行/次行に対応。マスターに無ければ文字列をそのまま保持。
-    owner_raw = ''
-    for i, line in enumerate(lines):
-        if line.startswith('馬主'):
-            owner_raw = next_value_after_label(['馬主'], i, 60)
-            break
-    owner_raw = re.split(r'(?:生産者|生産|調教師|厩舎|距離別|コース別)', owner_raw)[0].strip()
-    owner = '(未選択)'
-    if owner_raw:
-        candidates = [x for x in OWNER_OPTIONS if x not in {'(未選択)', 'その他'}]
-        matched = _best_master_match(owner_raw, candidates, 0.42)
-        owner = matched if matched != '(未選択)' else owner_raw
-
-    # --- Ver1.19.63 プロフィール基本情報 ---
-    # 画像/OCRやスマホコピーでは記号・改行が混ざるため、厳しい正規表現で
-    # 「確実に読める値」だけを採用する。読めないものはNone/空欄のまま残す。
-    compact = re.sub(r"\s+", " ", joined).strip()
+    def clean_label_value(v):
+        v = re.sub(r"^[：:]\s*", "", str(v or "")).strip()
+        v = re.split(r"(?:距離別成績|コース別成績|馬場状態別成績|脚質別成績|時期別成績|斤量別成績|枠番別成績|レース間隔別成績)", v)[0]
+        return v.strip(" ・")
 
     sex_age = ""
-    m = re.search(r"([牡牝騸セ])\s*(\d{1,2})", compact)
+    m = re.search(r"([牡牝騸セ騙])\s*(\d{1,2})", joined)
     if m:
         sex_age = f"{m.group(1)}{m.group(2)}"
 
-    # 馬体重・増減はここでは取得しない。レース直前の後入力を正本とする。
-    body_weight = None
-    body_change = None
-
+    # 斤量はプロフィール見出しの「騎手名58.0」からのみ取得。
     weight_carried = None
-    # 「酒井学58.0」「幸英明56.0」のようなコピーは斤量として利用。
-    # 体重のkgや馬体重の数値を誤って拾わないよう、騎手マスター名の近傍を優先。
     for jockey_name in sorted((x for x in JOCKEY_MASTER if x != "その他（自由手入力）"), key=len, reverse=True):
-        jm = re.escape(jockey_name)
-        m = re.search(jm + r"\s*(\d{2}(?:\.\d)?)", compact)
+        m = re.search(re.escape(jockey_name) + r"\s*(\d{2}(?:\.\d)?)", joined)
         if m:
             try:
                 val = float(m.group(1))
@@ -4801,66 +4698,89 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
             except Exception:
                 pass
 
-    # 人気・単勝オッズもプロフィールからは取得しない。レース直前の後入力を正本とする。
-    popularity = None
-    odds = None
+    # 前走/2走前はラベル直後から次の主要ラベルまで。
+    compact = re.sub(r"\s+", " ", joined).strip()
+    def extract_segment(label, stops):
+        stop = "|".join(re.escape(x) for x in stops)
+        m = re.search(re.escape(label) + r"\s*(.+?)(?=(?:" + stop + r")|$)", compact)
+        return m.group(1).strip(" ：:・")[:120] if m else ""
 
-    # 前走・2走前は、画面ラベルの直後から次の主要ラベルまでを1項目として保持。
-    def extract_labeled_segment(label, stop_labels):
-        m = re.search(re.escape(label) + r"\s*(.+?)(?=(?:" + "|".join(re.escape(x) for x in stop_labels) + r")|$)", compact)
-        if not m:
-            return ""
-        val = m.group(1).strip(" ：:・")
-        return val[:100]
+    previous_race = extract_segment("前走", ["2走前", "データ", "過去走", "父", "母", "調教師", "馬主", "生産者", "距離別成績", "コース別成績"])
+    second_previous_race = extract_segment("2走前", ["3走前", "データ", "過去走", "父", "母", "調教師", "馬主", "生産者", "距離別成績", "コース別成績"])
 
-    previous_race = extract_labeled_segment("前走", ["2走前", "データ", "過去走", "父", "母", "調教師", "馬主", "生産者", "距離別成績", "コース別成績"])
-    second_previous_race = extract_labeled_segment("2走前", ["3走前", "データ", "過去走", "父", "母", "調教師", "馬主", "生産者", "距離別成績", "コース別成績"])
+    # 父：ラベル行の次を優先。
+    sire = label_value("父", 60)
+    if sire in {"", "5代血統表を見る"}:
+        sire = label_value("父馬", 60)
+    sire = clean_label_value(sire)
 
-    # 母・母父は「母 ウアジェト 母父：シンボリクリスエス」の連結形式を優先。
+    # 母：コピーでは「ラストグルーヴ 母父：ディープインパクト」の形になるため、
+    # 母父ラベルの直前トークンを母として採用する。
     dam = ""
     damsire = ""
-    m = re.search(r"母\s*[:：]?\s*([^\n]+?)(?:\s*母父\s*[:：]?\s*([^\n]+))?(?=\s*(?:5代血統表を見る|調教師|馬主|生産者|距離別成績|コース別成績|$))", compact)
-    if m:
-        dam = re.sub(r"\s+", " ", m.group(1)).strip(" ：:")
-        damsire = re.sub(r"\s+", " ", m.group(2) or "").strip(" ：:")
-    if not damsire:
-        m = re.search(r"母父\s*[:：]?\s*([^\s]+(?:\s+[^\s]+)?)", compact)
-        if m:
-            damsire = m.group(1).strip(" ：:")
-
-    breeder = ""
     for i, line in enumerate(lines):
-        if line.startswith('生産者') or line.startswith('生産'):
-            breeder = next_value_after_label(['生産者', '生産'], i, 60)
+        if re.search(r"母父\s*[：:]", line):
+            left, right = re.split(r"母父\s*[：:]", line, maxsplit=1)
+            left = left.strip(" ：:")
+            right = right.strip(" ：:")
+            if left and left not in {"母", "父"}:
+                dam = left[-40:]
+            damsire = right[:60]
+            break
+    if not damsire:
+        damsire = label_value("母父", 60)
+    if not dam:
+        # 「母」ラベルの次行が実馬名のコピー形式にも対応。
+        for i, line in enumerate(lines):
+            if re.fullmatch(r"母", re.sub(r"\s+", "", line)) and i + 1 < len(lines):
+                cand = lines[i + 1].strip()
+                if cand != "5代血統表を見る":
+                    dam = cand[:60]
+                    break
+
+    trainer_raw = clean_label_value(label_value("調教師", 60) or label_value("厩舎", 60))
+    trainer_raw = re.sub(r"\s*[（(](?:美|栗|美浦|栗東)[）)]", "", trainer_raw).strip()
+    trainer = trainer_raw or "(未選択)"
+    # 完全一致を最優先。未登録ならコピー文字列をそのまま保持。
+    trainer_compact = re.sub(r"\s+", "", trainer)
+    for cand in TRAINER_OPTIONS:
+        if cand in {"(未選択)", "その他"}:
+            continue
+        if re.sub(r"\s+", "", str(cand)) == trainer_compact:
+            trainer = cand
             break
 
-    # 距離別・コース別成績は「ラベルから次のラベル」までを原文のまま保持。
+    owner_raw = clean_label_value(label_value("馬主", 80))
+    owner = owner_raw or "(未選択)"
+    owner_compact = re.sub(r"\s+", "", owner)
+    for cand in OWNER_OPTIONS:
+        if cand in {"(未選択)", "その他"}:
+            continue
+        if re.sub(r"\s+", "", str(cand)) == owner_compact:
+            owner = cand
+            break
+
+    breeder = clean_label_value(label_value("生産者", 80) or label_value("生産", 80))
+
     distance_stats = ""
     course_stats = ""
-    distance_pos = next((i for i, x in enumerate(lines) if '距離別成績' in x), None)
-    course_pos = next((i for i, x in enumerate(lines) if 'コース別成績' in x), None)
-    if distance_pos is not None:
-        end = course_pos if course_pos is not None and course_pos > distance_pos else len(lines)
-        vals = [x for x in lines[distance_pos + 1:end] if x not in {'データ', '過去走', '過去走+'}]
-        distance_stats = " / ".join(vals[:12])
-    if course_pos is not None:
-        vals = [x for x in lines[course_pos + 1:] if x not in {'データ', '過去走', '過去走+'}]
-        course_stats = " / ".join(vals[:12])
-
-    # 文字列内の明らかなUIノイズは保存用メモから除外。
-    noise_tokens = {'Q87', 'Q84', 'Q86', 'データ••', 'データ•', '過去走O', '過去走O+'}
-    previous_race = " ".join(x for x in previous_race.split() if x not in noise_tokens)
-    second_previous_race = " ".join(x for x in second_previous_race.split() if x not in noise_tokens)
+    dpos = next((i for i,x in enumerate(lines) if re.sub(r"\s+", "", x) == "距離別成績"), None)
+    cpos = next((i for i,x in enumerate(lines) if re.sub(r"\s+", "", x) == "コース別成績"), None)
+    if dpos is not None:
+        end = cpos if cpos is not None and cpos > dpos else len(lines)
+        distance_stats = " / ".join(lines[dpos+1:end][:12])
+    if cpos is not None:
+        end = next((i for i in range(cpos+1,len(lines)) if re.sub(r"\s+", "", lines[i]) in {"馬場状態別成績","脚質別成績","時期別成績","斤量別成績","枠番別成績","レース間隔別成績"}), len(lines))
+        course_stats = " / ".join(lines[cpos+1:end][:12])
 
     return [{
-        '馬番': int(gate), '馬名': horse_name,
-        '性齢': sex_age, '馬体重': body_weight, '馬体重増減': body_change,
-        '斤量': weight_carried, '人気': popularity, '単勝': odds,
-        '前走': previous_race, '2走前': second_previous_race,
-        '父馬': sire, '母馬': dam, '母父': damsire,
-        '厩舎': trainer, '馬主': owner, '生産者': breeder,
+        '馬番': int(gate), '馬名': horse_name, '性齢': sex_age,
+        '馬体重': None, '馬体重増減': None, '斤量': weight_carried,
+        '人気': None, '単勝': None, '前走': previous_race,
+        '2走前': second_previous_race, '父馬': sire, '母馬': dam,
+        '母父': damsire, '厩舎': trainer, '馬主': owner, '生産者': breeder,
         '距離別成績': distance_stats, 'コース別成績': course_stats,
-        '取得元': '競馬ラボ・プロフィール文字貼り付け(Ver1.19.63)',
+        '取得元': '競馬ラボ・プロフィール文字貼り付け(Ver1.19.64)',
     }]
 
 def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=None):
