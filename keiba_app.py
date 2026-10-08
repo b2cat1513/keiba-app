@@ -1656,6 +1656,9 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         if sex_match:
             prefix = x[:sex_match.start()].strip()
             prefix = re.sub(r"[|｜【】\[\]（）()]+$", "", prefix).strip()
+            # スマホコピーでは「VIP馬名 牡5」のようにVIPが馬名へ
+            # 接頭辞として連結することがあるため、馬名判定前に除去する。
+            prefix = re.sub(r"^(?:VIP\s*)+", "", prefix, flags=re.I).strip()
             if prefix:
                 m_name = re.search(rf"({HORSE_NAME_PATTERN})\s*$", prefix)
                 if m_name:
@@ -1753,11 +1756,9 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         after = lines[i + 1:next_i]
         rec = {"馬番": gate, "馬名": "", "U指数": None, "今回騎手": "", "単勝": None, "斤量": None}
 
-        # 本体行から抽出した馬名を最優先で馬番へ対応付ける。
-        # gate_positions と inline_horse_names はどちらも出馬表の馬番順に並ぶため、
-        # ここでは「何行前か」ではなく「何頭目か」で対応させる。
-        if pos < len(inline_horse_names):
-            rec["馬名"] = inline_horse_names[pos]
+        # 馬名は下の「馬番ごとのブロック解析」で取得する。
+        # 旧版にあった inline_horse_names の再配分は、1頭欠けたときに
+        # 後続の馬名が全てズレるうえ、Ver1.19.64で変数未定義エラーも発生したため廃止。
 
         # 馬番直前の数行を後ろから調べ、U指数・騎手・馬名をそれぞれ独立して拾う。
         # コピー時には「騎手+斤量」「人気欄のノイズ」「U指数」が同じ並びになるため、
