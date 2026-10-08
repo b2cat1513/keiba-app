@@ -1663,6 +1663,11 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         x = str(line).strip()
         if x in ignored or is_gate(x) is not None:
             return ""
+        # Ver1.19.75: レース間隔などを馬名として保存しない。
+        # 例:「4ヶ月」「中4週」「中2週」「前2走」「2走前」
+        _name_noise = re.sub(r"\s+", "", x)
+        if re.fullmatch(r"(?:中\d+[週周]|\d+ヶ月|\d+か月|前\d+走|\d+走前)", _name_noise):
+            return ""
 
         # ウマニティのスマホコピーでは、馬名と性齢・厩舎が同じ行になる。
         # 例:「ウェイクフィールド 牡3 美| 嘉藤貴行 --倍」
@@ -1721,23 +1726,22 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             return ""
         if "人気" in x or ("---" in x and "倍" in x):
             return ""
-        if parse_u(x) is not None or parse_weight(x) is not None or parse_odds(x) is not None:
-            return ""
         if is_sex_age_line(x):
             return ""
         if re.fullmatch(r"(?:---\s*倍\d+[A-Za-z]*)", x):
             return ""
 
-        # スマホコピーでは「騎手 57.0 中6週」のように余計な情報が同じ行へ連結する。
-        # 騎手マスターに含まれる名前を優先して抽出し、それ以外は採用しない。
+        # Ver1.19.75: 「騎手名+U指数+斤量+間隔」の連結行にも対応。
+        # 数字列を先に弾くと「三浦皇成102.03 58.0 中4週」のような
+        # 実データから騎手だけ取り出せないため、騎手マスターを先に照合する。
         compact = re.sub(r"\s+", "", x)
-        # JOCKEY_MASTERは関数外の共通マスター。ここでローカル候補を作る。
         jockey_candidates = [c for c in JOCKEY_MASTER if c and c != "その他（自由手入力）"]
-        candidates = jockey_candidates
-        direct = [c for c in candidates if c.replace(" ", "") in compact]
+        direct = [c for c in jockey_candidates if c.replace(" ", "") in compact]
         if direct:
-            # 短い名前が長い名前の一部に含まれる場合を避け、最長一致を優先。
             return max(direct, key=lambda c: len(c.replace(" ", "")))
+
+        if parse_u(x) is not None or parse_weight(x) is not None or parse_odds(x) is not None:
+            return ""
 
         # マスターに完全一致しないOCRでも、数字・間隔情報を落としてから近似照合。
         stripped = re.sub(r"\d+(?:\.\d+)?", " ", x)
@@ -2307,7 +2311,7 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                 "斤量": weight,
             })
 
-    # Ver1.19.73: ゲートブロックを「最終結果そのもの」にしない。
+    # Ver1.19.75: ゲートブロックを「最終結果そのもの」にしない。
     # ゲートブロックは横流し防止には強い一方、スマホコピーの列崩れで
     # 10～12番の馬名、14～15番の騎手、14～15番の斤量などが空欄になる場合がある。
     # 以前はここで gate_block_records を丸ごと返していたため、
@@ -2321,9 +2325,12 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         for gbr in gate_block_records:
             gate = gbr.get("馬番")
             old = results.get(gate, {}) if gate is not None else {}
+            _gbr_name = gbr.get("馬名") or ""
+            if _is_suspicious_ocr_horse_name(_gbr_name):
+                _gbr_name = ""
             merged = {
                 "馬番": gate,
-                "馬名": gbr.get("馬名") or old.get("馬名") or known_names.get(gate, ""),
+                "馬名": _gbr_name or old.get("馬名") or known_names.get(gate, ""),
                 "U指数": gbr.get("U指数") if gbr.get("U指数") is not None else old.get("U指数"),
                 "今回騎手": gbr.get("今回騎手") or old.get("今回騎手", ""),
                 "単勝": gbr.get("単勝") if gbr.get("単勝") is not None else old.get("単勝"),
@@ -2335,10 +2342,10 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             if merged.get("馬名"):
                 merged["馬名"] = name_fix.get(merged["馬名"], normalize_horse_name(merged["馬名"]))
             final_records.append(merged)
+        # Ver1.19.75: ここではreturnしない。
+        # 直後のローカル窓補完で14/15番の騎手・斤量などを救済する。
 
-        return sorted(final_records, key=lambda r: r["馬番"])
-
-    # --- Ver1.19.74: 馬番直前ローカル窓による最終欠落補完 ---
+    # --- Ver1.19.74/75: 馬番直前ローカル窓による最終欠落補完 ---
     # スマホの列崩れでは「馬名→U指数→騎手→馬番」など順序が少し変わる。
     # その場合でも、各馬番の直前数行だけを対象に、
     # 1) 馬名 2) 騎手 3) 斤量 4) 単勝 を同じ馬番へ再補完する。
@@ -2439,7 +2446,8 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         for gate in sorted(by_gate):
             r = by_gate[gate]
             if r.get('馬名') and _is_suspicious_ocr_horse_name(r.get('馬名')):
-                r['馬名'] = known_names.get(gate, '')
+                _old_name = results.get(gate, {}).get('馬名', '') if gate in results else ''
+                r['馬名'] = _old_name if _old_name and not _is_suspicious_ocr_horse_name(_old_name) else known_names.get(gate, '')
             final74.append(r)
         if len(final74) >= min(12, len(gate_positions2)):
             return final74
