@@ -2297,11 +2297,36 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                 "斤量": weight,
             })
 
-    # 16頭など十分な頭数がゲートブロックから取れた場合は、これを最終結果とする。
-    # これにより旧U指数中心方式で発生していた「14・15番が松山弘平、16番が岩田望来」
-    # のような横流しを完全に切る。
+    # Ver1.19.73: ゲートブロックを「最終結果そのもの」にしない。
+    # ゲートブロックは横流し防止には強い一方、スマホコピーの列崩れで
+    # 10～12番の馬名、14～15番の騎手、14～15番の斤量などが空欄になる場合がある。
+    # 以前はここで gate_block_records を丸ごと返していたため、
+    # その空欄によって、それまで別の解析段階で正しく取れていた値まで消えていた。
+    #
+    # そこで、最終確定は「馬番ごとのブロック」を軸にしつつ、
+    # 各項目が空欄なら同じ馬番の既存解析結果を補完に使う。
+    # 別馬のデータを横流ししないため、補完元は必ず同じ馬番だけに限定する。
     if gate_block_records and len(gate_block_records) >= min(12, len(gate_positions2)):
-        return sorted(gate_block_records, key=lambda r: r["馬番"])
+        final_records = []
+        for gbr in gate_block_records:
+            gate = gbr.get("馬番")
+            old = results.get(gate, {}) if gate is not None else {}
+            merged = {
+                "馬番": gate,
+                "馬名": gbr.get("馬名") or old.get("馬名") or known_names.get(gate, ""),
+                "U指数": gbr.get("U指数") if gbr.get("U指数") is not None else old.get("U指数"),
+                "今回騎手": gbr.get("今回騎手") or old.get("今回騎手", ""),
+                "単勝": gbr.get("単勝") if gbr.get("単勝") is not None else old.get("単勝"),
+                "斤量": gbr.get("斤量") if gbr.get("斤量") is not None else old.get("斤量"),
+            }
+            # 騎手の既知表記を最後に統一。
+            if merged.get("今回騎手"):
+                merged["今回騎手"] = jockey_fix.get(merged["今回騎手"], merged["今回騎手"])
+            if merged.get("馬名"):
+                merged["馬名"] = name_fix.get(merged["馬名"], normalize_horse_name(merged["馬名"]))
+            final_records.append(merged)
+
+        return sorted(final_records, key=lambda r: r["馬番"])
 
     # 13番のようにU指数自体がコピーから欠落した馬は推測で作らない。
     if len(records) >= 2:
