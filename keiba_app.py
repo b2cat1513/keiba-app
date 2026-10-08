@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.63"
+APP_PATCH_VERSION = "Ver1.19.68"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -28,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.63", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.63（距離別・コース別成績をロジック統合）")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.68", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.19.68（距離別・コース別成績をロジック統合）")
 
 st.markdown("""
 <style>
@@ -2006,87 +2006,109 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                         rec["斤量"] = inline_weight
                     break
 
-    # --- Ver1.19.67: スマホ全文コピーの「欠番によるズレ」を防止 ---
-    # 重要：馬番がコピーから抜けた場合、セクション順をそのまま1,2,3...へ
-    # 再配番すると、14～16番が10～12番へズレる。今回は「近くにある明示馬番」を
-    # 優先し、14/15/16が見えていれば14/15/16として保持する。
-    # また、単勝オッズはユーザー方針どおりここでは一切確定しない。
-    if 2 <= len(horse_sections) <= 18:
-        section_records = []
-        used_gates = set()
-        previous_gate = 0
-        field_size = len(horse_sections)
+    # --- Ver1.19.69: U指数を中心に1頭分を確定 ---
+    # スマホ全文コピーでは、馬番が行境界へずれることがある。
+    # そのため「U指数→騎手→馬名→馬番境界」を1頭の単位として解析する。
+    def leading_boundary_gate(line):
+        x = str(line or "").strip()
+        m = re.match(r"^(1[0-8]|[1-9])(?=\s*[^0-9])", x)
+        if not m:
+            return None
+        g = int(m.group(1)); rest = x[m.end():].strip()
+        return g if is_sex_age_line(rest) and clean_name(rest) else None
 
-        for section_index, (line_index, section_name) in enumerate(horse_sections):
-            section_end = (
-                horse_sections[section_index + 1][0]
-                if section_index + 1 < field_size
-                else len(lines)
-            )
-            section_lines = lines[line_index:section_end]
+    u_positions = [(i, parse_u(line)) for i, line in enumerate(lines)]
+    u_positions = [(i, u) for i, u in u_positions if u is not None]
+    records = []
+    used = set()
 
-            # 直前数行の純粋な馬番を探す。欠番があっても明示された14などを保持。
-            detected_candidates = []
-            for back in range(max(0, line_index - 6), line_index):
-                g = is_gate(lines[back])
-                if g is not None:
-                    detected_candidates.append(g)
-            gate = detected_candidates[-1] if detected_candidates else None
+    for ui, (u_idx, u_value) in enumerate(u_positions):
+        next_u_idx = u_positions[ui + 1][0] if ui + 1 < len(u_positions) else len(lines)
+        before = lines[max(0, u_idx - 8):u_idx]
+        after = lines[u_idx + 1:next_u_idx]
 
-            # 明示馬番が無い場合だけ、直前の馬番から連番で補完。
-            if gate is None or gate <= previous_gate:
-                inferred = previous_gate + 1
-                # 既に使った番号は避ける。
-                while inferred in used_gates and inferred <= 18:
-                    inferred += 1
-                gate = inferred
+        # 馬名は「U指数の直前」にある最後の有効な馬名を優先。
+        # 9～12番のように「馬名→U指数→騎手」の並びでも正しく拾える。
+        name = ""
+        def plausible_horse_name(line):
+            x = str(line or "").strip()
+            if not x or is_gate(x) is not None:
+                return ""
+            compact = re.sub(r"\s+", "", x)
+            if re.fullmatch(r"(?:中\d+[週周]|\d+ヶ月|\d+か月|\d+走前|前\d+走)", compact):
+                return ""
+            if "VIP" in compact.upper() or "倍" in compact or "人気" in compact:
+                # 性齢付き本体行はclean_nameで処理できるので例外的に許可。
+                if not is_sex_age_line(x):
+                    return ""
+            return clean_name(x)
 
-            if not (1 <= gate <= 18):
-                continue
-            used_gates.add(gate)
-            previous_gate = gate
+        for line in reversed(before):
+            cand = plausible_horse_name(line)
+            if cand:
+                name = cand
+                break
 
-            rec = {
-                "馬番": gate,
-                "馬名": section_name,
-                "U指数": None,
-                "今回騎手": "",
-                "単勝": None,
-                "斤量": None,
-            }
-
-            # U指数は「倍」を含むオッズ行を除外して取得。
-            for line in section_lines:
-                u = parse_u(line)
-                if u is not None:
-                    rec["U指数"] = u
-                    break
-
-            # 騎手＋斤量、または騎手単独をこのセクション内だけから取得。
-            for line in section_lines[1:]:
+        # 騎手は「U指数の直後→次の馬番境界」を最優先。
+        # 9～12番のように馬名→U指数→騎手の並びに対応する。
+        # そこに騎手が無ければ、従来どおりU指数直前を探す。
+        jockey = ""; weight = None
+        after_until_gate = []
+        for line in after[:6]:
+            if is_gate(line) is not None or leading_boundary_gate(line) is not None:
+                break
+            after_until_gate.append(line)
+        for line in after_until_gate:
+            prefix, inline_weight = split_jockey_weight(line)
+            cand = prefix if prefix else line
+            cj = clean_jockey(cand)
+            if cj:
+                jockey = jockey_fix.get(cj, cj)
+                if inline_weight is not None:
+                    weight = inline_weight
+                break
+        if not jockey:
+            for line in reversed(before):
                 prefix, inline_weight = split_jockey_weight(line)
-                candidate = prefix if prefix else line
-                cj = clean_jockey(candidate)
+                cand = prefix if prefix else line
+                cj = clean_jockey(cand)
                 if cj:
-                    rec["今回騎手"] = jockey_fix.get(cj, cj)
+                    jockey = jockey_fix.get(cj, cj)
                     if inline_weight is not None:
-                        rec["斤量"] = inline_weight
+                        weight = inline_weight
                     break
 
-            if rec["斤量"] is None:
-                for line in section_lines[1:]:
-                    w = parse_weight(line)
-                    if w is not None:
-                        rec["斤量"] = w
-                        break
+        # 馬番はU指数の後から次のU指数までの境界を探す。
+        gate = None
+        for line in after:
+            g = is_gate(line)
+            if g is not None:
+                gate = g; break
+            g = leading_boundary_gate(line)
+            if g is not None:
+                gate = g; break
+        if gate is None or gate in used:
+            continue
 
-            # 単勝オッズは後入力するため、コピー値は採用しない。
-            rec["単勝"] = None
-            section_records.append(rec)
+        if weight is None:
+            for line in before:
+                w = parse_weight(line)
+                if w is not None:
+                    weight = w; break
 
-        # 同じ馬番が重複せず、名前が取れていれば採用。
-        if section_records and len({r["馬番"] for r in section_records}) == len(section_records):
-            return section_records
+        records.append({
+            "馬番": gate,
+            "馬名": name,
+            "U指数": u_value,
+            "今回騎手": jockey,
+            "単勝": None,
+            "斤量": weight,
+        })
+        used.add(gate)
+
+    # 13番のようにU指数自体がコピーから欠落した馬は推測で作らない。
+    if len(records) >= 2:
+        return sorted(records, key=lambda r: r["馬番"])
 
 
 
@@ -6914,7 +6936,7 @@ AUTO_ADJUST_ENABLED = is_auto_adjust_enabled()
 ACTIVE_LEARNING_WEIGHTS = load_learning_weights()
 
 # ==========================================
-# 📊 プロフィール実績解析（Ver1.19.63）
+# 📊 プロフィール実績解析（Ver1.19.68）
 # ==========================================
 def _parse_record_stats_text(raw_text):
     """「1000 0-0-0-0 / 1400 2-0-0-2」のような成績文字列を構造化する。"""
