@@ -1574,11 +1574,23 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
     }
 
     def is_gate(line):
-        m = re.fullmatch(r"(\d{1,2})", line)
-        if not m:
-            return None
-        n = int(m.group(1))
-        return n if 1 <= n <= 18 else None
+        """馬番行を認識する。スマホコピーでは「6ペアポルックス」のように
+        馬番と馬名が同一行へ連結されることがあるため、単独数字だけでなく
+        先頭の馬番+日本語/文字の形式も認識する。
+        ただし「99.3」「101.2」などのU指数やオッズは誤認しない。
+        """
+        x = str(line or "").strip()
+        m = re.fullmatch(r"(\d{1,2})", x)
+        if m:
+            n = int(m.group(1))
+            return n if 1 <= n <= 18 else None
+        # 例:「6ペアポルックス」「13パンジャタワー」「16ピューロマジック」
+        # 小数点・数字続きは対象外。
+        m = re.match(r"^(\d{1,2})(?=[一-龥々ぁ-んァ-ヶA-Za-z])", x)
+        if m:
+            n = int(m.group(1))
+            return n if 1 <= n <= 18 else None
+        return None
 
     def parse_u(line):
         # 101.22 / 95.210 / 101.91 / 98.66 のように
@@ -5924,6 +5936,63 @@ if bulk_input_tab == "📋 Netkeiba一括入力":
                             st.write(message)
                 st.rerun()
 
+def validate_umanity_full_records(records, expected_count=None):
+    """ウマニティ全文解析結果の完全性を確認する。
+
+    馬番の欠落・重複はAI計算へ進める前に検知する。
+    個別項目の欠落は、VIP表示やコピー形式によって起こり得るため警告扱い。
+    """
+    recs = records or []
+    gates = []
+    duplicates = []
+    for item in recs:
+        try:
+            g = int(item.get("馬番"))
+        except (TypeError, ValueError):
+            continue
+        if g in gates:
+            duplicates.append(g)
+        gates.append(g)
+
+    if expected_count is None:
+        # 通常のJRA出馬表は最大18頭。今回のような16頭立ても含め、
+        # 解析結果の最大馬番を基準に欠落を判定する。
+        expected_count = max(gates) if gates else 0
+
+    expected = set(range(1, int(expected_count) + 1)) if expected_count else set()
+    actual = set(gates)
+    missing = sorted(expected - actual)
+    extra = sorted(actual - expected)
+
+    incomplete_fields = []
+    for item in recs:
+        try:
+            g = int(item.get("馬番"))
+        except (TypeError, ValueError):
+            continue
+        missing_fields = []
+        if not str(item.get("馬名") or "").strip():
+            missing_fields.append("馬名")
+        if not str(item.get("今回騎手") or "").strip():
+            missing_fields.append("騎手")
+        if item.get("U指数") is None:
+            missing_fields.append("U指数")
+        if item.get("斤量") is None:
+            missing_fields.append("斤量")
+        if missing_fields:
+            incomplete_fields.append((g, missing_fields))
+
+    return {
+        "ok": bool(recs) and not missing and not duplicates and not extra,
+        "count": len(actual),
+        "expected_count": int(expected_count),
+        "missing": missing,
+        "duplicates": sorted(set(duplicates)),
+        "extra": extra,
+        "incomplete_fields": incomplete_fields,
+    }
+
+
 if bulk_input_tab == "🐎 ウマニティ文字入力":
     st.markdown("### 📋 ウマニティ文字貼り付け（おすすめ）")
     st.caption("ウマニティの出馬表をコピー → 下欄へCtrl+V → 解析。画像OCRより文字の誤読が少なく、馬名・騎手・U指数・斤量を取得します。馬体重・人気・単勝オッズはプロフィールから取り込まず、レース直前の後入力欄で確定します。")
@@ -5960,6 +6029,21 @@ if bulk_input_tab == "🐎 ウマニティ文字入力":
             if not parsed_um_full:
                 st.error("馬データを解析できませんでした。ウマニティの出馬表部分をまとめてコピーしてください。")
             else:
+                # Ver1.19.78: 馬番の欠落をAI計算へ流さない安全チェック。
+                # 16頭立てなら1～16が揃っていることを必須とする。
+                _max_gate = max([int(r.get("馬番")) for r in parsed_um_full if str(r.get("馬番", "")).isdigit()], default=0)
+                validation = validate_umanity_full_records(parsed_um_full, expected_count=_max_gate)
+                if not validation["ok"]:
+                    st.error(
+                        f"⚠️ 出走馬データが完全ではありません（{validation['count']}/{validation['expected_count']}頭）。"
+                    )
+                    if validation["missing"]:
+                        st.warning(f"不足している馬番：{', '.join(map(str, validation['missing']))}番")
+                    if validation["duplicates"]:
+                        st.warning(f"重複している馬番：{', '.join(map(str, validation['duplicates']))}番")
+                    st.info("入力データを修正せず、同じ出馬表をもう一度まとめてコピーして解析してください。\n\n※馬番が馬名に連結した『6ペアポルックス』のような形式にも対応しています。")
+                    st.stop()
+
                 st.session_state["loaded_data"].setdefault("rows", {})
                 updated_count = 0
                 created_count = 0
@@ -6021,7 +6105,10 @@ if bulk_input_tab == "🐎 ウマニティ文字入力":
 
                 # 解析結果の確認表も表示
                 st.session_state["v190_umanity_full_records"] = parsed_um_full
-                st.success(f"🎯 ウマニティ文字解析：更新 {updated_count}頭 / 新規 {created_count}頭")
+                st.success(f"🎯 ウマニティ文字解析：16頭すべて確認済み / 更新 {updated_count}頭 / 新規 {created_count}頭")
+                if validation["incomplete_fields"]:
+                    _field_msgs = [f"{g}番：{', '.join(fs)}" for g, fs in validation["incomplete_fields"]]
+                    st.warning("一部項目が空欄です（馬番自体は16頭確認済み）：" + " / ".join(_field_msgs))
                 if warnings:
                     st.warning(f"馬名不一致のため {len(warnings)}頭は既存データを維持しました。")
                     with st.expander("⚠️ 不一致の詳細"):
