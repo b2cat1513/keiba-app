@@ -1746,8 +1746,10 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         # マスターに完全一致しないOCRでも、数字・間隔情報を落としてから近似照合。
         stripped = re.sub(r"\d+(?:\.\d+)?", " ", x)
         stripped = re.sub(r"(?:中\d+週|中\d+周|\d+ヶ月|\d+か月|VIP|NO\s*PHOTO)", " ", stripped, flags=re.I)
-        if candidates:
-            guessed = _best_master_match(stripped, candidates, 0.55)
+        # Ver1.19.76: ここではこの関数内で作成した騎手候補を使う。
+        # 旧版は未定義の `candidates` を参照して NameError になっていた。
+        if jockey_candidates:
+            guessed = _best_master_match(stripped, jockey_candidates, 0.55)
             if guessed and guessed != "(未選択)":
                 return guessed
         return jockey_fix.get(x, "")
