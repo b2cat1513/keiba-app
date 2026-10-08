@@ -1533,7 +1533,17 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         except (TypeError, ValueError):
             continue
         _n = normalize_horse_name(_name)
-        if 1 <= _g <= 18 and _n:
+        # 既存テーブルに前回の誤読（例:「4ヶ月」「中4週」など）が
+        # 残っていても、それを正解アンカーとして再利用しない。
+        _bad_known = (
+            re.fullmatch(r"中[0-9０-９]+週", _n)
+            or re.fullmatch(r"[0-9０-９]+週", _n)
+            or re.fullmatch(r"[0-9０-９]+ヶ月", _n)
+            or re.fullmatch(r"[0-9０-９]+か月", _n)
+            or re.fullmatch(r"前[0-9０-９]+走", _n)
+            or re.fullmatch(r"[0-9０-９]+走前", _n)
+        )
+        if 1 <= _g <= 18 and _n and not _bad_known:
             known_names[_g] = _n
     ignored = {
         "ウマニティ", "ニュース", "レース", "新出馬表", "予想コロシアム",
@@ -2327,6 +2337,112 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             final_records.append(merged)
 
         return sorted(final_records, key=lambda r: r["馬番"])
+
+    # --- Ver1.19.74: 馬番直前ローカル窓による最終欠落補完 ---
+    # スマホの列崩れでは「馬名→U指数→騎手→馬番」など順序が少し変わる。
+    # その場合でも、各馬番の直前数行だけを対象に、
+    # 1) 馬名 2) 騎手 3) 斤量 4) 単勝 を同じ馬番へ再補完する。
+    # 別馬のデータを横流ししないため、対象範囲は必ずその馬番の直前～
+    # 直前の馬番までに限定する。
+    def _local_horse_candidate(x):
+        x = str(x or '').strip()
+        if not x or is_gate(x) is not None:
+            return ''
+        compact = re.sub(r'\s+', '', x)
+        if re.fullmatch(r'(?:中\d+[週周]|\d+ヶ月|\d+か月|\d+走前|前\d+走)', compact):
+            return ''
+        if parse_u(x) is not None or parse_weight(x) is not None or parse_odds(x) is not None:
+            return ''
+        if not re.search(r'[一-龥々ぁ-んァ-ヶーA-Za-z]', x):
+            return ''
+        # 性齢付き本体行ならclean_nameが最も信頼できる。
+        c = clean_name(x)
+        if c and not _is_suspicious_ocr_horse_name(c):
+            return c
+        # 単独馬名行も許可する。ただし騎手マスターとの一致は除外。
+        jc = clean_jockey(x)
+        if jc:
+            return ''
+        if len(compact) >= 2 and len(compact) <= 16:
+            return name_fix.get(compact, normalize_horse_name(compact))
+        return ''
+
+    for gi, (gate_li, gate_no) in enumerate(gate_positions2):
+        prev_gate_li = gate_positions2[gi - 1][0] if gi > 0 else -1
+        local = lines[prev_gate_li + 1:gate_li]
+        if not local:
+            continue
+        target = next((r for r in gate_block_records if r.get('馬番') == gate_no), None)
+        if target is None:
+            target = results.setdefault(gate_no, {
+                '馬番': gate_no, '馬名': '', 'U指数': None, '今回騎手': '',
+                '単勝': None, '斤量': None
+            })
+
+        # 馬名：馬番直前の候補を後ろから探す。間隔・騎手・数字行は除外。
+        if not target.get('馬名') or _is_suspicious_ocr_horse_name(target.get('馬名')):
+            for line in reversed(local[-7:]):
+                cand = _local_horse_candidate(line)
+                if cand and cand not in {target.get('今回騎手', '')}:
+                    target['馬名'] = cand
+                    break
+
+        # 騎手：同じローカル窓の中で騎手マスター完全一致を優先。
+        if not target.get('今回騎手'):
+            for line in reversed(local[-7:]):
+                prefix, inline_weight = split_jockey_weight(line)
+                candidate = prefix if prefix else line
+                cj = clean_jockey(candidate)
+                if cj:
+                    target['今回騎手'] = jockey_fix.get(cj, cj)
+                    if inline_weight is not None and target.get('斤量') is None:
+                        target['斤量'] = inline_weight
+                    break
+
+        # 斤量：同じ馬番ブロックからのみ補完。
+        if target.get('斤量') is None:
+            for line in reversed(local[-7:]):
+                w = parse_weight(line)
+                if w is not None:
+                    target['斤量'] = w
+                    break
+
+        # 単勝：同じ馬番ブロックからのみ補完。
+        if target.get('単勝') is None:
+            for line in local:
+                o = parse_odds(line)
+                if o is not None:
+                    target['単勝'] = o
+                    break
+
+    # gate_block_recordsを更新してから返す。
+    if gate_block_records:
+        by_gate = {int(r.get('馬番')): r for r in gate_block_records if r.get('馬番') is not None}
+        for gate, rec in results.items():
+            if gate in by_gate:
+                # ローカル窓で新しく補完できた値を優先し、
+                # その後で「まだ空欄の項目」だけ既存解析結果から補う。
+                cur = by_gate[gate]
+                if not cur.get('馬名') or _is_suspicious_ocr_horse_name(cur.get('馬名')):
+                    if rec.get('馬名') and not _is_suspicious_ocr_horse_name(rec.get('馬名')):
+                        cur['馬名'] = rec.get('馬名')
+                if not cur.get('今回騎手') and rec.get('今回騎手'):
+                    cur['今回騎手'] = rec.get('今回騎手')
+                if cur.get('斤量') is None and rec.get('斤量') is not None:
+                    cur['斤量'] = rec.get('斤量')
+                if cur.get('単勝') is None and rec.get('単勝') is not None:
+                    cur['単勝'] = rec.get('単勝')
+                if cur.get('U指数') is None and rec.get('U指数') is not None:
+                    cur['U指数'] = rec.get('U指数')
+        # ここでは既存の最終返却ロジックに入る前なので、更新済みデータを返す。
+        final74 = []
+        for gate in sorted(by_gate):
+            r = by_gate[gate]
+            if r.get('馬名') and _is_suspicious_ocr_horse_name(r.get('馬名')):
+                r['馬名'] = known_names.get(gate, '')
+            final74.append(r)
+        if len(final74) >= min(12, len(gate_positions2)):
+            return final74
 
     # 13番のようにU指数自体がコピーから欠落した馬は推測で作らない。
     if len(records) >= 2:
