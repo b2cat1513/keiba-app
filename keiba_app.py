@@ -1955,6 +1955,100 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
     # Ver1.19.64: 馬名の全体順再配分は廃止。
     # 1頭分のブロックから判定できない馬は空欄のままにし、後から既存データ/手入力で補完する。
 
+    # --- Ver1.19.69: 性齢付き「馬本体ブロック」を最優先する再構築 ---
+    # スマホの実コピーは「馬名→性齢/厩舎→騎手→U指数→馬番」の順になるため、
+    # 馬番の直前数行だけを見て騎手を探すと、直前の馬の騎手を拾うことがあります。
+    # 特に連続する13～16番でこのズレが発生しやすかったため、
+    # 「性齢行から次の性齢行まで」を1頭の完全なブロックとして再解析します。
+    # この処理では、ブロック内のU指数の後に現れる単独馬番をその馬の馬番とします。
+    # そのため、後続馬の騎手・馬名が前の馬へ横流しされません。
+    authoritative = {}
+    section_starts = []
+    for li, line in enumerate(lines):
+        if is_sex_age_line(line):
+            nm = clean_name(line)
+            if nm:
+                section_starts.append((li, nm))
+
+    for si, (start_li, section_name) in enumerate(section_starts):
+        end_li = section_starts[si + 1][0] if si + 1 < len(section_starts) else len(lines)
+        block = lines[start_li:end_li]
+        if not block:
+            continue
+
+        # U指数をブロック内から取得。馬番より前にあるU指数を優先。
+        u_local = None
+        u_index = None
+        for bj, bl in enumerate(block):
+            uv = parse_u(bl)
+            if uv is not None:
+                u_local = uv
+                u_index = bj
+                break
+        if u_local is None:
+            continue
+
+        # U指数より後ろにある単独の1～18を馬番とする。
+        gate_local = None
+        gate_index = None
+        for bj in range(u_index + 1, len(block)):
+            gv = is_gate(block[bj])
+            if gv is not None:
+                gate_local = gv
+                gate_index = bj
+                break
+        if gate_local is None:
+            continue
+
+        # 騎手は「馬名本体行の後～U指数の前」だけから探す。
+        # これにより前馬の騎手を拾うことを防止。
+        jockey = ""
+        weight = None
+        jockey_end = u_index
+        for bj in range(1, jockey_end):
+            candidate_line = block[bj]
+            prefix, inline_weight = split_jockey_weight(candidate_line)
+            candidate = prefix if prefix else candidate_line
+            cj = clean_jockey(candidate)
+            if cj:
+                jockey = cj
+                if inline_weight is not None:
+                    weight = inline_weight
+                break
+
+        # 斤量は騎手行を含め、U指数より前～馬番までのブロックから取得。
+        if weight is None:
+            for bj in range(1, min(gate_index + 1, len(block))):
+                wv = parse_weight(block[bj])
+                if wv is not None:
+                    weight = wv
+                    break
+
+        authoritative[gate_local] = {
+            "馬番": gate_local,
+            "馬名": name_fix.get(section_name, normalize_horse_name(section_name)),
+            "U指数": u_local,
+            "今回騎手": jockey_fix.get(jockey, jockey),
+            "単勝": None,
+            "斤量": weight,
+        }
+
+    # 16頭すべてを性齢付き本体ブロックから確定できた場合は、
+    # 既存の「馬番直前5行」方式よりこちらを優先する。
+    # 1頭でも不足している場合は既存結果を壊さず、取得できた馬だけ上書き。
+    for gate, arec in authoritative.items():
+        old = results.get(gate)
+        if old is None:
+            results[gate] = arec
+        else:
+            # 馬名・騎手・U指数・斤量をブロック由来の値で確定。
+            # 単勝は後段の馬番ブロック処理で取得した値を保持。
+            old["馬名"] = arec["馬名"] or old.get("馬名", "")
+            old["今回騎手"] = arec["今回騎手"] or old.get("今回騎手", "")
+            old["U指数"] = arec["U指数"] if arec["U指数"] is not None else old.get("U指数")
+            if arec["斤量"] is not None:
+                old["斤量"] = arec["斤量"]
+
     # --- Ver1.19.44 騎手の馬別ブロック補完 ---
     # スマホからのコピーでは「馬番」行と「馬名・性齢」行の位置関係が
     # 一定しないことがあるため、性齢付き馬名行を境界に各馬のブロックを作り、
