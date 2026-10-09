@@ -29,7 +29,7 @@ except Exception:
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
 st.set_page_config(page_title="ジェニーAI予想ver1.19.68", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.68（距離別・コース別成績をロジック統合）")
+st.title("🏆 ジェニーAI予想ver1.19.83（コース別成績OCR修正）")
 
 st.markdown("""
 <style>
@@ -2014,13 +2014,60 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             if rec["斤量"] is not None and rec["単勝"] is not None:
                 break
 
+        # Ver1.19.82: 騎手名を基準に「近接行」まで含めて斤量を再照合。
+        # スマホコピーでは、
+        #   三浦皇成
+        #   58.0 中4週
+        # のように騎手と斤量が別行になる場合がある。
+        # 従来の「騎手と同じ行」だけの判定では、この58.0を拾えず、
+        # 後続馬の56.0を14番へ誤って割り当てる危険があった。
+        # まず騎手が出現した行を特定し、その前後2行だけを同一馬の近接情報として確認する。
+        if rec.get("今回騎手"):
+            jockey_key = re.sub(r"\s+", "", str(rec["今回騎手"]))
+            local_lines = list(horse_block) + list(after) + list(before)
+
+            # 同一馬ブロック内で騎手行を探す。
+            jockey_local_indices = []
+            for li, local_line in enumerate(local_lines):
+                compact_local = re.sub(r"\s+", "", str(local_line or ""))
+                if jockey_key and jockey_key in compact_local:
+                    jockey_local_indices.append(li)
+
+            # 騎手行そのものを最優先。
+            for li in jockey_local_indices:
+                w_local = parse_weight(local_lines[li])
+                if w_local is not None:
+                    rec["斤量"] = w_local
+                    break
+
+            # 騎手と斤量が別行なら、騎手行の直前・直後2行を確認。
+            if rec.get("斤量") is None:
+                for li in jockey_local_indices:
+                    lo = max(0, li - 2)
+                    hi = min(len(local_lines), li + 3)
+                    for near_line in local_lines[lo:hi]:
+                        # 次の馬番そのものを越えて別馬の斤量を拾わない。
+                        if is_gate(near_line) is not None:
+                            continue
+                        w_local = parse_weight(near_line)
+                        if w_local is not None:
+                            rec["斤量"] = w_local
+                            break
+                    if rec.get("斤量") is not None:
+                        break
+
         # 「騎手+斤量」が馬番直前にあった場合、斤量を優先保持。
+        # これは同一行に騎手名が実在する場合だけ採用し、
+        # 別馬の単独斤量を誤って拾わない。
         if rec["斤量"] is None:
             for candidate in reversed(before):
                 prefix, inline_weight = split_jockey_weight(candidate)
                 if prefix and inline_weight is not None:
-                    if not rec["今回騎手"]:
-                        rec["今回騎手"] = clean_jockey(prefix)
+                    cj = clean_jockey(prefix)
+                    if rec["今回騎手"] and cj and cj != rec["今回騎手"]:
+                        continue
+                    if not rec["今回騎手"] and cj:
+                        rec["今回騎手"] = cj
                     rec["斤量"] = inline_weight
                     break
 
@@ -5303,14 +5350,63 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
 
     distance_stats = ""
     course_stats = ""
-    dpos = next((i for i,x in enumerate(lines) if re.sub(r"\s+", "", x) == "距離別成績"), None)
-    cpos = next((i for i,x in enumerate(lines) if re.sub(r"\s+", "", x) == "コース別成績"), None)
+
+    # OCRでは、横並びの「距離別成績」「コース別成績」が同じ行に連結されることがある。
+    # 完全一致ではなく見出しを含む行も認識し、通常の縦並び形式を優先して取得する。
+    compact_lines = [re.sub(r"\s+", "", x) for x in lines]
+    dpos = next((i for i, x in enumerate(compact_lines) if "距離別成績" in x), None)
+    cpos = next((i for i, x in enumerate(compact_lines) if "コース別成績" in x), None)
+    section_stops = ("馬場状態別成績", "脚質別成績", "時期別成績", "斤量別成績", "枠番別成績", "レース間隔別成績")
+
     if dpos is not None:
-        end = cpos if cpos is not None and cpos > dpos else len(lines)
-        distance_stats = " / ".join(lines[dpos+1:end][:12])
+        dline = lines[dpos]
+        # 同一行に両見出しがある場合は、距離見出しとコース見出しの間だけを採用。
+        d_after = re.split(r"距離別成績", dline, maxsplit=1)[-1]
+        if "コース別成績" in d_after:
+            d_after = d_after.split("コース別成績", 1)[0]
+            distance_parts = [d_after]
+        else:
+            end_d = cpos if cpos is not None and cpos > dpos else next(
+                (i for i in range(dpos + 1, len(lines)) if any(k in compact_lines[i] for k in section_stops)), len(lines)
+            )
+            distance_parts = [d_after] + lines[dpos + 1:end_d]
+        distance_stats = " / ".join(x.strip() for x in distance_parts if x.strip())
+
     if cpos is not None:
-        end = next((i for i in range(cpos+1,len(lines)) if re.sub(r"\s+", "", lines[i]) in {"馬場状態別成績","脚質別成績","時期別成績","斤量別成績","枠番別成績","レース間隔別成績"}), len(lines))
-        course_stats = " / ".join(lines[cpos+1:end][:12])
+        cline = lines[cpos]
+        c_after = re.split(r"コース別成績", cline, maxsplit=1)[-1]
+        if any(k in re.sub(r"\s+", "", c_after) for k in section_stops):
+            for k in section_stops:
+                if k in c_after:
+                    c_after = c_after.split(k, 1)[0]
+        end_c = next((i for i in range(cpos + 1, len(lines)) if any(k in compact_lines[i] for k in section_stops)), len(lines))
+        course_parts = [c_after] + lines[cpos + 1:end_c]
+        course_stats = " / ".join(x.strip() for x in course_parts if x.strip())
+
+    # 横並びの表がOCRで1行に混在した場合の保険。距離（1600等）と
+    # コース区分（全・全左・中芝・東芝等）を別々に抽出し、誤った列への混入を防ぐ。
+    if not distance_stats or not course_stats:
+        all_text = " / ".join(lines)
+        if not distance_stats:
+            distance_pairs = re.findall(r"(\d{3,4})\s*(\d{1,3}-\d{1,3}-\d{1,3}-\d{1,3})", all_text)
+            if distance_pairs:
+                distance_stats = " / ".join(f"{label} {result}" for label, result in distance_pairs[:12])
+        if not course_stats:
+            course_pairs = re.findall(
+                r"(全左|全右|全芝|全ダート|全|中芝|東芝|西芝|中ダ|東ダ|西ダ|札芝|函芝|福芝|新芝|名芝|小芝|札ダ|函ダ|福ダ|新ダ|名ダ|小ダ)\s*(\d{1,3}-\d{1,3}-\d{1,3}-\d{1,3})",
+                all_text
+            )
+            if course_pairs:
+                # 同じ項目の重複を除いて順序を維持。
+                seen_course = set()
+                unique_course = []
+                for label, result in course_pairs:
+                    pair = (label, result)
+                    if pair not in seen_course:
+                        seen_course.add(pair)
+                        unique_course.append(f"{label} {result}")
+                course_stats = " / ".join(unique_course[:12])
+
 
     return [{
         '馬番': int(gate), '馬名': horse_name, '性齢': sex_age,
