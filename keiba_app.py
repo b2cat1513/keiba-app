@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.87"
+APP_PATCH_VERSION = "Ver1.19.88"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -29,7 +29,7 @@ except Exception:
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
 st.set_page_config(page_title=f"ジェニーAI予想{APP_PATCH_VERSION}", layout="wide", initial_sidebar_state="collapsed")
-st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（騎手同期・プロフィール補完修正版）")
+st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（ウマニティ解析補強・欠落検知版）")
 
 st.markdown("""
 <style>
@@ -1623,14 +1623,14 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         m = re.search(r"(?<!\d)(\d{2,3})\.(\d)", compact)
         if m:
             value = float(f"{m.group(1)}.{m.group(2)}")
-            return value if 80.0 <= value <= 110.0 else None
+            return value if 60.0 <= value <= 110.0 else None
         # コピー時に小数点が欠落する例（例: 098 -> 98.0、1003 -> 100.3）
         m = re.fullmatch(r"0?(\d{2})(?:([0-9]))?", compact)
         if m:
             integer = int(m.group(1))
             digit = m.group(2)
             value = float(f"{integer}.{digit}") if digit is not None else float(integer)
-            return value if 80.0 <= value <= 110.0 else None
+            return value if 60.0 <= value <= 110.0 else None
         return None
 
     def parse_weight(line):
@@ -6185,7 +6185,7 @@ if bulk_input_tab == "🐎 ウマニティ文字入力":
                         st.warning(f"不足している馬番：{', '.join(map(str, validation['missing']))}番")
                     if validation["duplicates"]:
                         st.warning(f"重複している馬番：{', '.join(map(str, validation['duplicates']))}番")
-                    st.info("入力データを修正せず、同じ出馬表をもう一度まとめてコピーして解析してください。\n\n※出走頭数は馬番から自動判定します。18番まであるレースでは1～18番が必要です。\n※馬番が馬名に連結した『6ペアポルックス』のような形式にも対応しています。")
+                    st.info("入力データを修正せず、同じ出馬表をもう一度まとめてコピーして解析してください。\n\n※出走頭数は馬番から自動判定します。18番まであるレースでは1～18番が必要です。\n※馬番が馬名に連結した『6ペアポルックス』形式に加え、『79.1 8』のようなU指数＋馬番の同一行にも対応しました。\n※欠番が残る場合は、誤った馬へ指数・騎手を割り当てないため予想計算を停止します。")
                     st.stop()
 
                 st.session_state["loaded_data"].setdefault("rows", {})
