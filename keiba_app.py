@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.92"
+APP_PATCH_VERSION = "Ver1.19.93"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -1868,7 +1868,7 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                     positions.append((boundary, ig))
                     used_gates.add(ig)
                 else:
-                    # Ver1.19.92: ウマニティのコピーで「6ネオトキオ / 79.1 8」のように
+                    # Ver1.19.93: ウマニティのコピーで「6ネオトキオ / 79.1 8」のように
                     # 前の馬番が次の馬名へ連結し、U指数の直後に次々馬番(8)が出ることがある。
                     # 既に6番が登録済みなら、ネオトキオは7番の情報と判断し、7番の境界を
                     # U指数直後へ補う。後ろに出てくる単独7番境界は重複として除去する。
@@ -1906,6 +1906,33 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         return sorted(positions, key=lambda x: (x[0], x[1]))
 
     gate_positions = build_logical_gate_positions(lines)
+
+    # Ver1.19.93: スマホの列単位コピーで、7番の馬名・U指数が先に出てから
+    # 「79.1 / 8 / 安藤洋一 57.0 / 7 / 牡6 ...」のように並ぶケースを補正。
+    # U指数直後の「8」は次の馬番列の値であり、ここで境界にすると
+    # 7番の馬名が8番のブロックへ分断され、7番が空欄になる。
+    # 直後数行にひとつ前の馬番(7)がある場合は、U指数直後の境界(8)を除き、
+    # 後置された7番境界を採用する。指数自体はそのまま7番の直前情報として残す。
+    _drop_boundary_positions = set()
+    for _li, _line in enumerate(lines[:-1]):
+        _u_here = parse_u(_line)
+        _next_gate_match = re.fullmatch(r'(1[0-8]|[1-9])', str(lines[_li + 1] or '').strip())
+        if _u_here is None or not _next_gate_match:
+            continue
+        _inline_next_gate = int(_next_gate_match.group(1))
+        if _inline_next_gate <= 1:
+            continue
+        _previous_gate = _inline_next_gate - 1
+        for _look_pos in range(_li + 2, min(len(lines), _li + 7)):
+            _look_text = str(lines[_look_pos] or '').strip()
+            _look_gate = re.fullmatch(r'(1[0-8]|[1-9])', _look_text)
+            if _look_gate:
+                if int(_look_gate.group(1)) == _previous_gate:
+                    _drop_boundary_positions.add((_li + 1, _inline_next_gate))
+                break
+    if _drop_boundary_positions:
+        gate_positions = [gp for gp in gate_positions if gp not in _drop_boundary_positions]
+        gate_positions = sorted(gate_positions, key=lambda x: (x[0], x[1]))
 
     def _apply_uindex_inline_gate_boundary_repair(records_to_fix):
         """U指数+次馬番の同一行と前馬番の後置表示を使い、U指数を正しい馬番へ補正。
