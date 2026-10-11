@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.68"
+APP_PATCH_VERSION = "Ver1.19.83"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -28,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.68", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.83（コース別成績OCR修正）")
+st.set_page_config(page_title="ジェニーAI予想ver1.19.83", layout="wide", initial_sidebar_state="collapsed")
+st.title("🏆 ジェニーAI予想ver1.19.83（騎手同期・プロフィール補完修正版）")
 
 st.markdown("""
 <style>
@@ -5249,14 +5249,17 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
         return []
 
     def label_value(label, max_len=80):
+        """プロフィールの項目ラベルを誤って部分一致させずに値を取る。"""
         for i, line in enumerate(lines):
             compact = re.sub(r"\s+", "", line)
             target = re.sub(r"\s+", "", label)
             if compact == target:
                 if i + 1 < len(lines):
                     return lines[i + 1].strip()[:max_len]
-            # 「馬主：東京ホースレーシング」「調教師 蛯名正義(美)」にも対応
-            m = re.match(rf"^{re.escape(label)}\s*[：:]?\s*(.+)$", line)
+            # ラベル単独の直後に値が続く形式を優先。
+            # 例: 父\nドゥラメンテ / 調教師\n○○(美)
+            # 「父馬」を「父」の値と誤認しないよう境界を必須にする。
+            m = re.match(rf"^{re.escape(label)}(?:\s*[：:]\s*|\s+)(.+)$", line)
             if m and m.group(1).strip():
                 return m.group(1).strip()[:max_len]
         return ""
@@ -5350,63 +5353,14 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
 
     distance_stats = ""
     course_stats = ""
-
-    # OCRでは、横並びの「距離別成績」「コース別成績」が同じ行に連結されることがある。
-    # 完全一致ではなく見出しを含む行も認識し、通常の縦並び形式を優先して取得する。
-    compact_lines = [re.sub(r"\s+", "", x) for x in lines]
-    dpos = next((i for i, x in enumerate(compact_lines) if "距離別成績" in x), None)
-    cpos = next((i for i, x in enumerate(compact_lines) if "コース別成績" in x), None)
-    section_stops = ("馬場状態別成績", "脚質別成績", "時期別成績", "斤量別成績", "枠番別成績", "レース間隔別成績")
-
+    dpos = next((i for i,x in enumerate(lines) if re.sub(r"\s+", "", x) == "距離別成績"), None)
+    cpos = next((i for i,x in enumerate(lines) if re.sub(r"\s+", "", x) == "コース別成績"), None)
     if dpos is not None:
-        dline = lines[dpos]
-        # 同一行に両見出しがある場合は、距離見出しとコース見出しの間だけを採用。
-        d_after = re.split(r"距離別成績", dline, maxsplit=1)[-1]
-        if "コース別成績" in d_after:
-            d_after = d_after.split("コース別成績", 1)[0]
-            distance_parts = [d_after]
-        else:
-            end_d = cpos if cpos is not None and cpos > dpos else next(
-                (i for i in range(dpos + 1, len(lines)) if any(k in compact_lines[i] for k in section_stops)), len(lines)
-            )
-            distance_parts = [d_after] + lines[dpos + 1:end_d]
-        distance_stats = " / ".join(x.strip() for x in distance_parts if x.strip())
-
+        end = cpos if cpos is not None and cpos > dpos else len(lines)
+        distance_stats = " / ".join(lines[dpos+1:end][:12])
     if cpos is not None:
-        cline = lines[cpos]
-        c_after = re.split(r"コース別成績", cline, maxsplit=1)[-1]
-        if any(k in re.sub(r"\s+", "", c_after) for k in section_stops):
-            for k in section_stops:
-                if k in c_after:
-                    c_after = c_after.split(k, 1)[0]
-        end_c = next((i for i in range(cpos + 1, len(lines)) if any(k in compact_lines[i] for k in section_stops)), len(lines))
-        course_parts = [c_after] + lines[cpos + 1:end_c]
-        course_stats = " / ".join(x.strip() for x in course_parts if x.strip())
-
-    # 横並びの表がOCRで1行に混在した場合の保険。距離（1600等）と
-    # コース区分（全・全左・中芝・東芝等）を別々に抽出し、誤った列への混入を防ぐ。
-    if not distance_stats or not course_stats:
-        all_text = " / ".join(lines)
-        if not distance_stats:
-            distance_pairs = re.findall(r"(\d{3,4})\s*(\d{1,3}-\d{1,3}-\d{1,3}-\d{1,3})", all_text)
-            if distance_pairs:
-                distance_stats = " / ".join(f"{label} {result}" for label, result in distance_pairs[:12])
-        if not course_stats:
-            course_pairs = re.findall(
-                r"(全左|全右|全芝|全ダート|全|中芝|東芝|西芝|中ダ|東ダ|西ダ|札芝|函芝|福芝|新芝|名芝|小芝|札ダ|函ダ|福ダ|新ダ|名ダ|小ダ)\s*(\d{1,3}-\d{1,3}-\d{1,3}-\d{1,3})",
-                all_text
-            )
-            if course_pairs:
-                # 同じ項目の重複を除いて順序を維持。
-                seen_course = set()
-                unique_course = []
-                for label, result in course_pairs:
-                    pair = (label, result)
-                    if pair not in seen_course:
-                        seen_course.add(pair)
-                        unique_course.append(f"{label} {result}")
-                course_stats = " / ".join(unique_course[:12])
-
+        end = next((i for i in range(cpos+1,len(lines)) if re.sub(r"\s+", "", lines[i]) in {"馬場状態別成績","脚質別成績","時期別成績","斤量別成績","枠番別成績","レース間隔別成績"}), len(lines))
+        course_stats = " / ".join(lines[cpos+1:end][:12])
 
     return [{
         '馬番': int(gate), '馬名': horse_name, '性齢': sex_age,
@@ -5929,8 +5883,8 @@ def apply_specialized_image_records(records, auto_track_value):
             "wgt": float(rec.get("斤量") if rec.get("斤量") is not None else prev.get("wgt", 56.0)),
             "jock": rec.get("今回騎手") if rec.get("今回騎手") in JOCKEY_MASTER else prev.get("jock", "(未選択)"),
             "sire": rec.get("父馬") or prev.get("sire", ""),
-            "trainer": trainer if trainer in TRAINER_OPTIONS else prev.get("trainer", "(未選択)"),
-            "owner": owner if owner in OWNER_OPTIONS else prev.get("owner", "(未選択)"),
+            "trainer": trainer if trainer not in {"", "(未選択)"} and trainer in TRAINER_OPTIONS else prev.get("trainer", "(未選択)"),
+            "owner": owner if owner not in {"", "(未選択)"} and owner in OWNER_OPTIONS else prev.get("owner", "(未選択)"),
             "l3f": float(rec.get("上がり3F平均") if rec.get("上がり3F平均") is not None else prev.get("l3f", 35.0)),
             "sel_style": rec.get("脚質") if rec.get("脚質") in {"逃げ", "先行", "差し", "追い込み"} else prev.get("sel_style", "選択なし"),
             # 馬体重・人気・単勝オッズは後入力を正本にする。
@@ -5940,17 +5894,17 @@ def apply_specialized_image_records(records, auto_track_value):
             "win_odds": float(prev.get("win_odds", 0.0) or 0.0),
             "heavy_record": prev.get("heavy_record", False),
             "previous_jockey": rec.get("前走騎手") if rec.get("前走騎手") in JOCKEY_MASTER else prev.get("previous_jockey", "(未選択)"),
-            "profile_sex_age": rec.get("性齢", prev.get("profile_sex_age", "")),
+            "profile_sex_age": rec.get("性齢") or prev.get("profile_sex_age", ""),
             "profile_body_weight": rec.get("馬体重", prev.get("profile_body_weight")),
             "profile_body_change": rec.get("馬体重増減", prev.get("profile_body_change")),
             "profile_popularity": rec.get("人気", prev.get("profile_popularity")),
-            "profile_previous_race": rec.get("前走", prev.get("profile_previous_race", "")),
-            "profile_second_previous_race": rec.get("2走前", prev.get("profile_second_previous_race", "")),
-            "profile_dam": rec.get("母馬", prev.get("profile_dam", "")),
-            "profile_damsire": rec.get("母父", prev.get("profile_damsire", "")),
-            "profile_breeder": rec.get("生産者", prev.get("profile_breeder", "")),
-            "profile_distance_stats": rec.get("距離別成績", prev.get("profile_distance_stats", "")),
-            "profile_course_stats": rec.get("コース別成績", prev.get("profile_course_stats", "")),
+            "profile_previous_race": rec.get("前走") or prev.get("profile_previous_race", ""),
+            "profile_second_previous_race": rec.get("2走前") or prev.get("profile_second_previous_race", ""),
+            "profile_dam": rec.get("母馬") or prev.get("profile_dam", ""),
+            "profile_damsire": rec.get("母父") or prev.get("profile_damsire", ""),
+            "profile_breeder": rec.get("生産者") or prev.get("profile_breeder", ""),
+            "profile_distance_stats": rec.get("距離別成績") or prev.get("profile_distance_stats", ""),
+            "profile_course_stats": rec.get("コース別成績") or prev.get("profile_course_stats", ""),
             "l3f_history_values": rec.get("過去5走3F入力値", prev.get("l3f_history_values", [None, None, None, None, None])),
             "custom_note": prev.get("custom_note", ""),
             "sel_track": prev.get("sel_track", auto_track_value if auto_track_value in ["芝", "ダート"] else "選択なし"),
@@ -5961,10 +5915,19 @@ def apply_specialized_image_records(records, auto_track_value):
         # 既に生成済みのStreamlitウィジェットキーが残っていても、
         # 新しいレースのOCR結果を次回描画へ確実に同期する。
         row = st.session_state["loaded_data"]["rows"][key]
+        # Streamlitのselectboxはキーが既に存在すると、data/valueよりも
+        # 古いsession_stateを優先する。インポート後に特に1番の騎手が
+        # 「未選択」のまま残ることがあるため、関連キーも一括同期する。
         for _field, _widget_key in (("num", f"num_{gate}"), ("name", f"name_{gate}"),
                                     ("idx", f"idx_{gate}"), ("wgt", f"wgt_{gate}"),
-                                    ("wgh", f"wgh_{gate}"), ("l3f", f"l3f_{gate}"),
-                                    ("sire", f"sire_{gate}"), ("custom_note", f"custom_note_{gate}")):
+                                    ("wgh", f"wgh_{gate}"), ("pop", f"pop_{gate}"),
+                                    ("win_odds", f"win_odds_{gate}"), ("l3f", f"l3f_{gate}"),
+                                    ("sire", f"sire_{gate}"), ("jock", f"jock_{gate}"),
+                                    ("previous_jockey", f"previous_jockey_{gate}"),
+                                    ("trainer", f"trainer_{gate}"), ("owner", f"owner_{gate}"),
+                                    ("custom_note", f"custom_note_{gate}"),
+                                    ("sel_track", f"track_{gate}"), ("sel_style", f"style_{gate}"),
+                                    ("sel_frame", f"frame_{gate}"), ("sel_dist_change", f"dist_change_{gate}")):
             if _field in row:
                 st.session_state[_widget_key] = row[_field]
 
@@ -6733,16 +6696,32 @@ if bulk_input_tab == "📷 画像OCR（予備）":
 
     p_gate_map = {}
     gate_choices = sorted(gate_horse_map.keys()) if gate_horse_map else list(range(1,19))
-    for idx, f in enumerate(p_files):
-        c1, c2 = st.columns([2.6, 1])
-        c1.write(f"📷 {f.name}")
-        default_index = min(idx, len(gate_choices)-1) if gate_choices else 0
-        p_gate_map[f.name] = c2.selectbox(
-            "対象馬番", gate_choices,
-            index=default_index,
-            key=f"p_gate_v187_{idx}_{f.name}",
-            label_visibility="collapsed",
+    if upload_mode == "📱 スマホ：1枚ずつ":
+        # スマホでは画像を差し替えるたびにファイル名ベースの選択欄が作り直され、
+        # 対象馬番が毎回1番へ戻りやすいため、独立した固定キーの選択欄を使う。
+        if "mobile_profile_gate" not in st.session_state:
+            st.session_state["mobile_profile_gate"] = gate_choices[0] if gate_choices else 1
+        if st.session_state["mobile_profile_gate"] not in gate_choices and gate_choices:
+            st.session_state["mobile_profile_gate"] = gate_choices[0]
+        mobile_profile_gate = st.selectbox(
+            "このプロフィール画像の対象馬番（必ず確認）",
+            gate_choices,
+            key="mobile_profile_gate",
+            help="画像に写っている馬の馬番を選んでから「プロフィールだけ解析」を押してください。選択した馬番は次の画像でも保持されます。",
         )
+        for f in p_files:
+            p_gate_map[f.name] = int(mobile_profile_gate)
+    else:
+        for idx, f in enumerate(p_files):
+            c1, c2 = st.columns([2.6, 1])
+            c1.write(f"📷 {f.name}")
+            default_index = min(idx, len(gate_choices)-1) if gate_choices else 0
+            p_gate_map[f.name] = c2.selectbox(
+                "対象馬番", gate_choices,
+                index=default_index,
+                key=f"p_gate_v187_{idx}_{f.name}",
+                label_visibility="collapsed",
+            )
 
     if st.button("② プロフィールだけ解析", use_container_width=True, disabled=not p_files):
         if not u_records:
@@ -6791,7 +6770,17 @@ if bulk_input_tab == "📷 画像OCR（予備）":
 
             old = {int(r["馬番"]): r for r in st.session_state["v187_profile_records"] if r.get("馬番")}
             for r in new_records:
-                old[int(r["馬番"])] = r
+                gate = int(r["馬番"])
+                # 同じ馬を複数回読み込む場合、今回OCRで取れなかった空欄で
+                # 以前に取得済みのプロフィール項目を消さない。
+                previous = old.get(gate, {})
+                merged_profile = dict(previous)
+                for key, value in r.items():
+                    if value not in (None, "", "(未選択)", "選択なし"):
+                        merged_profile[key] = value
+                    elif key not in merged_profile:
+                        merged_profile[key] = value
+                old[gate] = merged_profile
             st.session_state["v187_profile_records"] = [old[k] for k in sorted(old)]
             st.session_state["v187_raw_texts"].extend(new_raw)
             st.session_state["v187_diagnostics"].extend(diagnostics)
@@ -6799,7 +6788,9 @@ if bulk_input_tab == "📷 画像OCR（予備）":
                 st.warning("一部のプロフィール画像で取得できませんでした。")
                 for e in errors:
                     st.code(e)
-            st.success(f"② プロフィール：{len(new_records)}頭分を解析しました。")
+            st.success(f"② プロフィール：{len(new_records)}頭分を解析しました。対象馬番：" +
+                       "、".join(f"{r.get('馬番')}番 {r.get('馬名')}" for r in new_records))
+
 
     # ③ 競馬ラボ・過去5走（画像OCR）
     if upload_mode == "📱 スマホ：1枚ずつ":
