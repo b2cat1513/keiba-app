@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.86"
+APP_PATCH_VERSION = "Ver1.19.87"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -28,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.83", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.83（騎手同期・プロフィール補完修正版）")
+st.set_page_config(page_title=f"ジェニーAI予想{APP_PATCH_VERSION}", layout="wide", initial_sidebar_state="collapsed")
+st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（騎手同期・プロフィール補完修正版）")
 
 st.markdown("""
 <style>
@@ -6249,7 +6249,7 @@ if bulk_input_tab == "🐎 ウマニティ文字入力":
 
                 # 解析結果の確認表も表示
                 st.session_state["v190_umanity_full_records"] = parsed_um_full
-                st.success(f"🎯 ウマニティ文字解析：16頭すべて確認済み / 更新 {updated_count}頭 / 新規 {created_count}頭")
+                st.success(f"🎯 ウマニティ文字解析：{validation['count']}/{validation['expected_count']}頭を確認 / 更新 {updated_count}頭 / 新規 {created_count}頭")
                 if validation["incomplete_fields"]:
                     _field_msgs = [f"{g}番：{', '.join(fs)}" for g, fs in validation["incomplete_fields"]]
                     st.warning("一部項目が空欄です（馬番自体は16頭確認済み）：" + " / ".join(_field_msgs))
