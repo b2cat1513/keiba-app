@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.90"
+APP_PATCH_VERSION = "Ver1.19.91"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -1562,7 +1562,7 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             r'^(1[0-8]|[1-9])(?=[一-龥々ぁ-んァ-ヶA-Za-z])(.+)$',
             _line,
         )
-        if _m_inline_gate and re.search(r'[牡牝セ騙]\s*\d{1,2}', _m_inline_gate.group(2)):
+        if _m_inline_gate and re.search(r'[牡牝セ騙]\s*(?:[一-龥ぁ-んァ-ヶA-Za-z]{0,2}\s*)?\d{1,2}', _m_inline_gate.group(2)):
             # 例: 「6ペアポルックス 牡5 ...」
             lines.append(_m_inline_gate.group(1))
             lines.append(_m_inline_gate.group(2).strip())
@@ -1714,7 +1714,9 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         return prefix, weight if 48.0 <= weight <= 62.5 else None
 
     def is_sex_age_line(line):
-        return bool(re.search(r"[牡牝セ騙]\s*\d{1,2}", str(line)))
+        # ウマニティのコピー文字列では「牡社6」「牡 社6」など、
+        # 性齢と調教師欄が連結・文字化けしていても馬本体行として認識する。
+        return bool(re.search(r"[牡牝セ騙]\s*(?:[一-龥ぁ-んァ-ヶA-Za-z]{0,2}\s*)?\d{1,2}", str(line)))
 
     def clean_name(line):
         x = str(line).strip()
@@ -1729,7 +1731,7 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         # ウマニティのスマホコピーでは、馬名と性齢・厩舎が同じ行になる。
         # 例:「ウェイクフィールド 牡3 美| 嘉藤貴行 --倍」
         # この場合は性齢の直前までを馬名として抽出する。
-        sex_match = re.search(r"[牡牝セ騙]\s*\d{1,2}", x)
+        sex_match = re.search(r"[牡牝セ騙]\s*(?:[一-龥ぁ-んァ-ヶA-Za-z]{0,2}\s*)?\d{1,2}", x)
         if sex_match:
             prefix = x[:sex_match.start()].strip()
             # スマホコピーで「6ペアポルックス」「14ウインカーネリアン」の
