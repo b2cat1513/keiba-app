@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.88"
+APP_PATCH_VERSION = "Ver1.19.90"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -29,7 +29,7 @@ except Exception:
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
 st.set_page_config(page_title=f"ジェニーAI予想{APP_PATCH_VERSION}", layout="wide", initial_sidebar_state="collapsed")
-st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（ウマニティ解析補強・欠落検知版）")
+st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（ウマニティU指数79台・馬番境界修正版）")
 
 st.markdown("""
 <style>
@@ -1532,6 +1532,30 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
     # この「6」はペアポルックスの馬番ではなく、直前馬の区切りなので、
     # 先に「6」と「ペアポルックス...」へ分離してから通常解析する。
     _raw_lines = [x.strip() for x in text.splitlines() if x.strip()]
+    # Ver1.19.90: 境界補正前の行も保持する。U指数79.1のような80未満の値でも、
+    # 「79.1 8」＋近接する単独「7」の並びなら、79.1を7番へ結び直すために使う。
+    _original_raw_lines = list(_raw_lines)
+    # Ver1.19.89: スマホのコピーで「79.1 8」のように、U指数と馬番が
+    # 同じ行へ連結することがある。直後数行にひとつ前の馬番が現れる場合は、
+    # 末尾の数字を馬番として採用すると馬番順が逆転し、7番のブロックが消えるため、
+    # その行はU指数だけに戻す。通常の「U指数→次馬番」形式は分割して保持する。
+    _normalized_lines = []
+    for _i, _line in enumerate(_raw_lines):
+        _m_index_gate = re.fullmatch(r"(\d{2,3}\.\d{1,3})\s+(1[0-8]|[1-9])", _line)
+        if _m_index_gate:
+            _inline_gate = int(_m_index_gate.group(2))
+            _next_gates = []
+            for _look in _raw_lines[_i + 1:_i + 5]:
+                _gm = re.fullmatch(r"(1[0-8]|[1-9])", _look)
+                if _gm:
+                    _next_gates.append(int(_gm.group(1)))
+            if _inline_gate > 1 and (_inline_gate - 1) in _next_gates:
+                _normalized_lines.append(_m_index_gate.group(1))
+                continue
+            _normalized_lines.extend([_m_index_gate.group(1), _m_index_gate.group(2)])
+            continue
+        _normalized_lines.append(_line)
+    _raw_lines = _normalized_lines
     lines = []
     for _line in _raw_lines:
         _m_inline_gate = re.match(
@@ -1855,6 +1879,59 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         return sorted(positions, key=lambda x: (x[0], x[1]))
 
     gate_positions = build_logical_gate_positions(lines)
+
+    def _apply_uindex_inline_gate_boundary_repair(records_to_fix):
+        """U指数+次馬番の同一行と前馬番の後置表示を使い、U指数を正しい馬番へ補正。
+
+        例: 79.1 8 / 騎手・斤量 / 7 / 牡... のように、U指数の次馬番(8)より
+        直後に前馬番(7)が現れるスマホコピーでは、79.1は7番に属する。
+        80未満という理由で指数候補から落とさず、馬番境界だけを補正する。
+        """
+        by_gate_fix = {}
+        for _rec in records_to_fix or []:
+            try:
+                _g = int(_rec.get("馬番"))
+            except (TypeError, ValueError):
+                continue
+            by_gate_fix[_g] = _rec
+        for _ri, _raw in enumerate(_original_raw_lines):
+            _match = re.fullmatch(r"(\d{2,3}\.\d{1,3})\s+(1[0-8]|[1-9])", _raw.strip())
+            if not _match:
+                continue
+            try:
+                _u = round(float(_match.group(1)), 1)
+                _next_gate = int(_match.group(2))
+            except Exception:
+                continue
+            # U指数として妥当な範囲。79.1等80未満も明示的に許可。
+            if not (60.0 <= _u <= 110.0) or _next_gate <= 1:
+                continue
+            _previous_gate = _next_gate - 1
+            _found_previous_gate = False
+            for _look in _original_raw_lines[_ri + 1:_ri + 5]:
+                _gm = re.fullmatch(r"(1[0-8]|[1-9])", _look.strip())
+                if _gm and int(_gm.group(1)) == _previous_gate:
+                    _found_previous_gate = True
+                    break
+            if not _found_previous_gate:
+                continue
+            _target = by_gate_fix.get(_previous_gate)
+            if _target is None:
+                _target = {"馬番": _previous_gate, "馬名": "", "U指数": None,
+                           "今回騎手": "", "単勝": None, "斤量": None}
+                records_to_fix.append(_target)
+                by_gate_fix[_previous_gate] = _target
+            _target["U指数"] = _u
+            # 同じ指数が誤って次馬番へ付いていた場合だけ取り除く。
+            _next_rec = by_gate_fix.get(_next_gate)
+            if _next_rec is not None and _next_rec is not _target:
+                try:
+                    _next_u = _next_rec.get("U指数")
+                    if _next_u is not None and abs(float(_next_u) - _u) < 0.051:
+                        _next_rec["U指数"] = None
+                except Exception:
+                    pass
+        return sorted(by_gate_fix.values(), key=lambda _r: int(_r.get("馬番") or 99))
 
     # --- Ver1.19.64 馬番ブロック単位の馬名確定 ---
     # 以前は「性齢付き馬名」を全頭まとめて抽出し、馬番順へ再配分していました。
@@ -2584,11 +2661,11 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                 r['馬名'] = _old_name if _old_name and not _is_suspicious_ocr_horse_name(_old_name) else known_names.get(gate, '')
             final74.append(r)
         if len(final74) >= min(12, len(gate_positions2)):
-            return final74
+            return _apply_uindex_inline_gate_boundary_repair(final74)
 
     # 13番のようにU指数自体がコピーから欠落した馬は推測で作らない。
     if len(records) >= 2:
-        return sorted(records, key=lambda r: r["馬番"])
+        return _apply_uindex_inline_gate_boundary_repair(sorted(records, key=lambda r: r["馬番"]))
 
 
 
