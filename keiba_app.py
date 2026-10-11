@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.83"
+APP_PATCH_VERSION = "Ver1.19.86"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -6167,12 +6167,15 @@ if bulk_input_tab == "🐎 ウマニティ文字入力":
             if not parsed_um_full:
                 st.error("馬データを解析できませんでした。ウマニティの出馬表部分をまとめてコピーしてください。")
             else:
-                # Ver1.19.80: 馬番の欠落をAI計算へ流さない安全チェック。
-                # 16頭立てなら1～16が揃っていることを必須とする。
-                _max_gate = max([int(r.get("馬番")) for r in parsed_um_full if str(r.get("馬番", "")).isdigit()], default=0)
-                # 16頭立てを明示的に判定できる場合は1～16を必須とする。
-                # それ以外は従来どおり最大馬番を基準にする。
-                _expected_gate_count = 16 if _max_gate >= 16 else _max_gate
+                # Ver1.19.86: 出走頭数を16頭に固定しない。
+                # 18番まで解析できたレースでは1～18番を検証し、
+                # 17番までなら1～17番を検証する。欠番を見落として計算へ流さない。
+                _max_gate = max(
+                    [int(r.get("馬番")) for r in parsed_um_full
+                     if str(r.get("馬番", "")).isdigit()],
+                    default=0,
+                )
+                _expected_gate_count = _max_gate
                 validation = validate_umanity_full_records(parsed_um_full, expected_count=_expected_gate_count)
                 if not validation["ok"]:
                     st.error(
@@ -6182,7 +6185,7 @@ if bulk_input_tab == "🐎 ウマニティ文字入力":
                         st.warning(f"不足している馬番：{', '.join(map(str, validation['missing']))}番")
                     if validation["duplicates"]:
                         st.warning(f"重複している馬番：{', '.join(map(str, validation['duplicates']))}番")
-                    st.info("入力データを修正せず、同じ出馬表をもう一度まとめてコピーして解析してください。\n\n※馬番が馬名に連結した『6ペアポルックス』のような形式にも対応しています。")
+                    st.info("入力データを修正せず、同じ出馬表をもう一度まとめてコピーして解析してください。\n\n※出走頭数は馬番から自動判定します。18番まであるレースでは1～18番が必要です。\n※馬番が馬名に連結した『6ペアポルックス』のような形式にも対応しています。")
                     st.stop()
 
                 st.session_state["loaded_data"].setdefault("rows", {})
