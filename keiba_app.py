@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.91"
+APP_PATCH_VERSION = "Ver1.19.92"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -29,7 +29,7 @@ except Exception:
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
 st.set_page_config(page_title=f"ジェニーAI予想{APP_PATCH_VERSION}", layout="wide", initial_sidebar_state="collapsed")
-st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（ウマニティU指数79台・馬番境界修正版）")
+st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（ウマニティ7番境界補正・馬名欠落修正版）")
 
 st.markdown("""
 <style>
@@ -1867,6 +1867,31 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                 if ig not in used_gates:
                     positions.append((boundary, ig))
                     used_gates.add(ig)
+                else:
+                    # Ver1.19.92: ウマニティのコピーで「6ネオトキオ / 79.1 8」のように
+                    # 前の馬番が次の馬名へ連結し、U指数の直後に次々馬番(8)が出ることがある。
+                    # 既に6番が登録済みなら、ネオトキオは7番の情報と判断し、7番の境界を
+                    # U指数直後へ補う。後ろに出てくる単独7番境界は重複として除去する。
+                    _found_u = None
+                    _following_gate = None
+                    for _j in range(li + 1, min(len(source_lines), li + 7)):
+                        if _found_u is None and parse_u(source_lines[_j]) is not None:
+                            _found_u = _j
+                            continue
+                        if _found_u is not None:
+                            _gm_after_u = re.fullmatch(r'(1[0-8]|[1-9])', str(source_lines[_j] or '').strip())
+                            if _gm_after_u:
+                                _following_gate = (int(_gm_after_u.group(1)), _j)
+                                break
+                    if _found_u is not None and _following_gate is not None:
+                        _next_gate_num, _next_gate_pos = _following_gate
+                        _missing_gate = ig + 1
+                        if _next_gate_num == ig + 2 and _missing_gate not in used_gates:
+                            _new_boundary = _found_u + 1
+                            positions = [(_p, _g) for (_p, _g) in positions
+                                         if not (_g == _missing_gate and _p > _new_boundary)]
+                            positions.append((_new_boundary, _missing_gate))
+                            used_gates.add(_missing_gate)
                 continue
 
             # 通常の単独馬番は、その行自体を境界とする。
