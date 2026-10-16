@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.93"
+APP_PATCH_VERSION = "Ver1.19.94"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -29,7 +29,7 @@ except Exception:
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
 st.set_page_config(page_title=f"ジェニーAI予想{APP_PATCH_VERSION}", layout="wide", initial_sidebar_state="collapsed")
-st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（ウマニティ7番境界補正・馬名欠落修正版）")
+st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（ウマニティ欠番・馬名復元補正版）")
 
 st.markdown("""
 <style>
@@ -2714,6 +2714,58 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                 _old_name = results.get(gate, {}).get('馬名', '') if gate in results else ''
                 r['馬名'] = _old_name if _old_name and not _is_suspicious_ocr_horse_name(_old_name) else known_names.get(gate, '')
             final74.append(r)
+        # Ver1.19.94: スマホの全文コピーで「馬名 → U指数 → 騎手/斤量 → 馬番」
+        # の順になる馬が、性齢・調教師行の位置ずれにより gate_positions2 から
+        # まるごと落ちるケースを救済する。特に「テイエムアイラン / 89.40 /
+        # 富田暁 55.0 中9週 / 2 / 宮地貴稔 / 牝3 栗 5.9倍」のような並び。
+        # 既に取得済みの馬番は絶対に上書きせず、欠けている馬番だけを追加する。
+        _final_by_gate = {int(r.get("馬番")): r for r in final74 if r.get("馬番") is not None}
+        _all_u_positions = [(ii, parse_u(ll)) for ii, ll in enumerate(lines)]
+        _all_u_positions = [(ii, uv) for ii, uv in _all_u_positions if uv is not None]
+        _max_seen_gate = max([int(g) for g in _final_by_gate] + [int(g) for _, g in gate_positions2] + [0])
+        _expected_gates = set(range(1, _max_seen_gate + 1))
+        _missing_gates = _expected_gates - set(_final_by_gate)
+        for _ui, (_u_line_idx, _u_value) in enumerate(_all_u_positions):
+            _next_u_idx = _all_u_positions[_ui + 1][0] if _ui + 1 < len(_all_u_positions) else len(lines)
+            _segment_after_u = lines[_u_line_idx + 1:_next_u_idx]
+            _recovered_gate = None
+            _gate_local_pos = None
+            for _sj, _sline in enumerate(_segment_after_u[:8]):
+                _gm = re.fullmatch(r"(1[0-8]|[1-9])", str(_sline or "").strip())
+                if _gm:
+                    _recovered_gate = int(_gm.group(1))
+                    _gate_local_pos = _sj
+                    break
+            if _recovered_gate is None or _recovered_gate not in _missing_gates:
+                continue
+            _name = ""
+            for _prior_line in reversed(lines[max(0, _u_line_idx - 8):_u_line_idx]):
+                _candidate_name = plausible_horse_name(_prior_line)
+                if _candidate_name and not clean_jockey(_prior_line):
+                    _name = _candidate_name
+                    break
+            _jockey = ""
+            _weight = None
+            for _sline in _segment_after_u[:_gate_local_pos]:
+                _prefix, _inline_weight = split_jockey_weight(_sline)
+                _candidate_jockey = _prefix if _prefix else _sline
+                _cj = clean_jockey(_candidate_jockey)
+                if _cj:
+                    _jockey = jockey_fix.get(_cj, _cj)
+                    if _inline_weight is not None:
+                        _weight = _inline_weight
+                    break
+                if _weight is None:
+                    _weight = parse_weight(_sline)
+            if not _name and _recovered_gate in known_names:
+                _name = known_names[_recovered_gate]
+            if _name or _u_value is not None or _jockey:
+                final74.append({
+                    "馬番": _recovered_gate, "馬名": _name, "U指数": _u_value,
+                    "今回騎手": _jockey, "単勝": None, "斤量": _weight,
+                })
+                _final_by_gate[_recovered_gate] = final74[-1]
+                _missing_gates.discard(_recovered_gate)
         if len(final74) >= min(12, len(gate_positions2)):
             return _apply_uindex_inline_gate_boundary_repair(final74)
 
