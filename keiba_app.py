@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.94"
+APP_PATCH_VERSION = "Ver1.19.96"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -29,7 +29,7 @@ except Exception:
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
 st.set_page_config(page_title=f"ジェニーAI予想{APP_PATCH_VERSION}", layout="wide", initial_sidebar_state="collapsed")
-st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（ウマニティ欠番・馬名復元補正版）")
+st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（ウマニティ馬名最終検査版）")
 
 st.markdown("""
 <style>
@@ -1734,6 +1734,9 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         sex_match = re.search(r"[牡牝セ騙]\s*(?:[一-龥ぁ-んァ-ヶA-Za-z]{0,2}\s*)?\d{1,2}", x)
         if sex_match:
             prefix = x[:sex_match.start()].strip()
+            # Ver1.19.95: オッズ欠落時に「-倍ドリームコア」のような断片が
+            # 馬名へ付くため、先頭のオッズ記号を除去してから馬名を確定する。
+            prefix = re.sub(r"^(?:(?:---|--|-|—)\s*倍\s*)+", "", prefix).strip()
             # スマホコピーで「6ペアポルックス」「14ウインカーネリアン」の
             # ように馬番が馬名へ連結することがある。先頭の馬番だけ除去する。
             prefix = re.sub(r"^(?:\d{1,2}\s*)+", "", prefix).strip()
@@ -2416,6 +2419,11 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             compact = re.sub(r"\s+", "", x)
             if re.fullmatch(r"(?:中\d+[週周]|\d+ヶ月|\d+か月|\d+走前|前\d+走)", compact):
                 return ""
+            # Ver1.19.95: 騎手名を馬名候補にしない。
+            # 馬名とU指数の間に騎手名があるコピー形式で、近い騎手名を馬名として
+            # 拾ってしまうと、6番以降の馬名がずれたり重複したりするため。
+            if not is_sex_age_line(x) and clean_jockey(x):
+                return ""
             if "VIP" in compact.upper() or "倍" in compact or "人気" in compact:
                 # 性齢付き本体行はclean_nameで処理できるので例外的に許可。
                 if not is_sex_age_line(x):
@@ -2627,11 +2635,16 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             return ''
         if not re.search(r'[一-龥々ぁ-んァ-ヶーA-Za-z]', x):
             return ''
+        # Ver1.19.95: 騎手マスター一致をclean_nameより先に除外する。
+        # 旧順序では「田山旺佑」「佐々木大」などが有効な日本語として
+        # clean_nameを通過し、馬名欄へ混入していた。
+        if not is_sex_age_line(x) and clean_jockey(x):
+            return ''
         # 性齢付き本体行ならclean_nameが最も信頼できる。
         c = clean_name(x)
         if c and not _is_suspicious_ocr_horse_name(c):
             return c
-        # 単独馬名行も許可する。ただし騎手マスターとの一致は除外。
+        # 単独馬名行も許可する。
         jc = clean_jockey(x)
         if jc:
             return ''
@@ -2767,11 +2780,46 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                 _final_by_gate[_recovered_gate] = final74[-1]
                 _missing_gates.discard(_recovered_gate)
         if len(final74) >= min(12, len(gate_positions2)):
-            return _apply_uindex_inline_gate_boundary_repair(final74)
+            return _final_horse_name_safety(_apply_uindex_inline_gate_boundary_repair(final74))
+
+    # Ver1.19.96: 最終安全検査。
+    # 馬名欄に騎手名・同一馬の重複・オッズ断片が残ると、誤った馬番対応のまま
+    # 予想ロジックへ進んでしまう。確信できない馬名は空欄にして誤登録を防ぐ。
+    def _final_horse_name_safety(records_to_check):
+        checked = sorted(records_to_check or [], key=lambda r: int(r.get("馬番") or 99))
+        jockey_compact_names = {
+            re.sub(r"\s+", "", str(j)) for j in JOCKEY_MASTER
+            if j and j != "その他（自由手入力）"
+        }
+        seen_names = set()
+        for _rec in checked:
+            _name = normalize_horse_name(str(_rec.get("馬名") or ""))
+            _name = re.sub(r"^(?:[-ー―]?倍)+", "", _name).strip()
+            _compact = re.sub(r"\s+", "", _name)
+            _is_jockey = bool(_compact and (
+                _compact in jockey_compact_names
+                or any(j.startswith(_compact) and len(_compact) >= 4 for j in jockey_compact_names)
+            ))
+            _is_noise = bool(
+                not _name
+                or re.fullmatch(r"(?:中)?[0-9０-９]+週", _name)
+                or re.fullmatch(r"[0-9０-９]+ヶ月", _name)
+                or "VIP" in _name.upper()
+                or "倍" in _name
+                or "人気" in _name
+            )
+            if _is_jockey or _is_noise or (_compact and _compact in seen_names):
+                _rec["馬名"] = ""
+            else:
+                _rec["馬名"] = _name
+                seen_names.add(_compact)
+        return checked
 
     # 13番のようにU指数自体がコピーから欠落した馬は推測で作らない。
     if len(records) >= 2:
-        return _apply_uindex_inline_gate_boundary_repair(sorted(records, key=lambda r: r["馬番"]))
+        return _final_horse_name_safety(
+            _apply_uindex_inline_gate_boundary_repair(sorted(records, key=lambda r: r["馬番"]))
+        )
 
 
 
