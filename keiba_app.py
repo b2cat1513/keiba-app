@@ -2290,8 +2290,33 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
     for li, line in enumerate(lines):
         if is_sex_age_line(line):
             nm = clean_name(line)
+            name_li = li
+            # Ver1.19.98の修正: VIP表示やコピーの改行により、馬名と
+            # 性齢・厩舎が別行になる形式を扱う。
+            # 性齢行自体に馬名がなければ、直前の同一馬ブロック内から
+            # 「VIP」を除去した馬名候補を探す。騎手・U指数・馬番・厩舎は除外。
+            if not nm:
+                for back_li in range(li - 1, max(-1, li - 9), -1):
+                    raw_candidate = str(lines[back_li] or '').strip()
+                    if not raw_candidate:
+                        continue
+                    candidate = re.sub(r'^(?:VIP\s*)+', '', raw_candidate, flags=re.I).strip()
+                    if (not candidate or is_gate(candidate) is not None
+                            or is_sex_age_line(candidate)
+                            or parse_u(candidate) is not None
+                            or parse_weight(candidate) is not None
+                            or parse_odds(candidate) is not None
+                            or clean_jockey(candidate)):
+                        continue
+                    candidate_name = clean_name(candidate)
+                    if candidate_name:
+                        nm = candidate_name
+                        name_li = back_li
+                        break
             if nm:
-                section_starts.append((li, nm))
+                # 同じ馬名を性齢行と前方の単独馬名行の両方から登録しない。
+                if not section_starts or name_li > section_starts[-1][0]:
+                    section_starts.append((name_li, nm))
 
     for si, (start_li, section_name) in enumerate(section_starts):
         end_li = section_starts[si + 1][0] if si + 1 < len(section_starts) else len(lines)
@@ -2449,9 +2474,6 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         name = ""
         def plausible_horse_name(line):
             x = str(line or "").strip()
-            # Ver1.19.98: VIP表示と馬名が同じ行に連結された場合、
-            # VIPを除去してから候補判定する（例: VIPバースデイフライト）。
-            x = re.sub(r"^(?:VIP\s*)+", "", x, flags=re.I).strip()
             if not x or is_gate(x) is not None:
                 return ""
             compact = re.sub(r"\s+", "", x)
@@ -2664,9 +2686,6 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
     # 直前の馬番までに限定する。
     def _local_horse_candidate(x):
         x = str(x or '').strip()
-        # Ver1.19.98: VIP表示と単独馬名が連結した行を救済する。
-        # VIP自体を馬名として保存せず、接頭辞を除いてから判定する。
-        x = re.sub(r'^(?:VIP\s*)+', '', x, flags=re.I).strip()
         if not x or is_gate(x) is not None:
             return ''
         compact = re.sub(r'\s+', '', x)
