@@ -2449,6 +2449,9 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         name = ""
         def plausible_horse_name(line):
             x = str(line or "").strip()
+            # Ver1.19.98: VIP表示と馬名が同じ行に連結された場合、
+            # VIPを除去してから候補判定する（例: VIPバースデイフライト）。
+            x = re.sub(r"^(?:VIP\s*)+", "", x, flags=re.I).strip()
             if not x or is_gate(x) is not None:
                 return ""
             compact = re.sub(r"\s+", "", x)
@@ -2661,6 +2664,9 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
     # 直前の馬番までに限定する。
     def _local_horse_candidate(x):
         x = str(x or '').strip()
+        # Ver1.19.98: VIP表示と単独馬名が連結した行を救済する。
+        # VIP自体を馬名として保存せず、接頭辞を除いてから判定する。
+        x = re.sub(r'^(?:VIP\s*)+', '', x, flags=re.I).strip()
         if not x or is_gate(x) is not None:
             return ''
         compact = re.sub(r'\s+', '', x)
