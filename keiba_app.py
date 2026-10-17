@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.96"
+APP_PATCH_VERSION = "Ver1.19.97"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -1189,6 +1189,8 @@ def parse_netkeiba_multi_line(raw_text):
     if not text:
         return []
 
+
+
     lines = text.splitlines()
     horses = []
     used_gates = set()
@@ -1526,6 +1528,39 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
     text = normalize_copied_text(raw_text)
     if not text:
         return []
+
+    # Ver1.19.96: 最終安全検査。
+    # 馬名欄に騎手名・同一馬の重複・オッズ断片が残ると、誤った馬番対応のまま
+    # 予想ロジックへ進んでしまう。確信できない馬名は空欄にして誤登録を防ぐ。
+    def _final_horse_name_safety(records_to_check):
+        checked = sorted(records_to_check or [], key=lambda r: int(r.get("馬番") or 99))
+        jockey_compact_names = {
+            re.sub(r"\s+", "", str(j)) for j in JOCKEY_MASTER
+            if j and j != "その他（自由手入力）"
+        }
+        seen_names = set()
+        for _rec in checked:
+            _name = normalize_horse_name(str(_rec.get("馬名") or ""))
+            _name = re.sub(r"^(?:[-ー―]?倍)+", "", _name).strip()
+            _compact = re.sub(r"\s+", "", _name)
+            _is_jockey = bool(_compact and (
+                _compact in jockey_compact_names
+                or any(j.startswith(_compact) and len(_compact) >= 4 for j in jockey_compact_names)
+            ))
+            _is_noise = bool(
+                not _name
+                or re.fullmatch(r"(?:中)?[0-9０-９]+週", _name)
+                or re.fullmatch(r"[0-9０-９]+ヶ月", _name)
+                or "VIP" in _name.upper()
+                or "倍" in _name
+                or "人気" in _name
+            )
+            if _is_jockey or _is_noise or (_compact and _compact in seen_names):
+                _rec["馬名"] = ""
+            else:
+                _rec["馬名"] = _name
+                seen_names.add(_compact)
+        return checked
 
     # Ver1.19.80: スマホコピーでは「6ペアポルックス」のように、
     # 本来は前馬の末尾にある馬番「6」と次馬の馬名が同一行へ連結することがある。
@@ -2782,38 +2817,7 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         if len(final74) >= min(12, len(gate_positions2)):
             return _final_horse_name_safety(_apply_uindex_inline_gate_boundary_repair(final74))
 
-    # Ver1.19.96: 最終安全検査。
-    # 馬名欄に騎手名・同一馬の重複・オッズ断片が残ると、誤った馬番対応のまま
-    # 予想ロジックへ進んでしまう。確信できない馬名は空欄にして誤登録を防ぐ。
-    def _final_horse_name_safety(records_to_check):
-        checked = sorted(records_to_check or [], key=lambda r: int(r.get("馬番") or 99))
-        jockey_compact_names = {
-            re.sub(r"\s+", "", str(j)) for j in JOCKEY_MASTER
-            if j and j != "その他（自由手入力）"
-        }
-        seen_names = set()
-        for _rec in checked:
-            _name = normalize_horse_name(str(_rec.get("馬名") or ""))
-            _name = re.sub(r"^(?:[-ー―]?倍)+", "", _name).strip()
-            _compact = re.sub(r"\s+", "", _name)
-            _is_jockey = bool(_compact and (
-                _compact in jockey_compact_names
-                or any(j.startswith(_compact) and len(_compact) >= 4 for j in jockey_compact_names)
-            ))
-            _is_noise = bool(
-                not _name
-                or re.fullmatch(r"(?:中)?[0-9０-９]+週", _name)
-                or re.fullmatch(r"[0-9０-９]+ヶ月", _name)
-                or "VIP" in _name.upper()
-                or "倍" in _name
-                or "人気" in _name
-            )
-            if _is_jockey or _is_noise or (_compact and _compact in seen_names):
-                _rec["馬名"] = ""
-            else:
-                _rec["馬名"] = _name
-                seen_names.add(_compact)
-        return checked
+
 
     # 13番のようにU指数自体がコピーから欠落した馬は推測で作らない。
     if len(records) >= 2:
