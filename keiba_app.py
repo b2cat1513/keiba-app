@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.31"
+APP_PATCH_VERSION = "Ver1.19.32"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -1669,6 +1669,8 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                 break
 
         # 騎手候補はU指数より前を優先。連結形式にも対応。
+        # マスター未登録の騎手名もあるため、U指数の直前行を構造上の騎手候補として扱い、
+        # その一つ前を馬名候補にする。これにより田山旺佑・佐々木大などが馬名欄へ入るのを防ぐ。
         jockey_pos = None
         search_before = before[:u_pos] if u_pos is not None else before
         for bi in range(len(search_before) - 1, -1, -1):
@@ -1685,6 +1687,19 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                 rec["今回騎手"] = cj
                 jockey_pos = bi
                 break
+        if jockey_pos is None and u_pos is not None and u_pos > 0:
+            possible_jockey = search_before[-1].strip() if search_before else ""
+            # 馬番の直前がU指数、さらにその直前が騎手という並びに限って救済。
+            # 数字・性齢・オッズ・VIPなどは騎手として採用しない。
+            compact_j = re.sub(r"\s+", "", possible_jockey)
+            if (possible_jockey and not is_sex_age_line(possible_jockey)
+                    and parse_u(possible_jockey) is None
+                    and parse_weight(possible_jockey) is None
+                    and parse_odds(possible_jockey) is None
+                    and possible_jockey not in ignored
+                    and re.fullmatch(r"[一-龥々ぁ-んァ-ヶー・.]+", compact_j)):
+                rec["今回騎手"] = possible_jockey
+                jockey_pos = len(search_before) - 1
 
         # 馬名は1頭分のブロックから探す。
         # 最優先は「性齢を含む本体行」(例: ヴーレヴー 牝4 栗 武幸四郎...)。
