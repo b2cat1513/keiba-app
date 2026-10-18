@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.30"
+APP_PATCH_VERSION = "Ver1.19.31"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -1552,7 +1552,7 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
 
     def clean_name(line):
         x = str(line).strip()
-        # コピー時にVIPバッジや欠損オッズが馬名へ直結するケースを除去
+        # 馬名の先頭に混入するVIP・オッズ表示のノイズを除去
         x = re.sub(r"^(?:VIP)+", "", x, flags=re.I).strip()
         x = re.sub(r"^(?:---?\s*倍|一倍|\d+(?:\.\d+)?倍)+", "", x).strip()
         if x in ignored or is_gate(x) is not None:
@@ -1686,23 +1686,33 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                 jockey_pos = bi
                 break
 
-        # 馬名は「今回の馬番より前」にある当該馬の名前候補から探す。
-        # 重要：コピー順は「前の馬番→前馬の性齢/厩舎→次馬名→騎手→U指数→今回馬番」
-        # となる場合がある。馬番間ブロックの先頭にある性齢行を優先すると、
-        # 前の馬の厩舎名などを今回の馬名として誤登録するため、性齢行の優先判定をやめる。
-        # まずU指数・騎手より前の範囲を後ろから見て、最も近い馬名候補を採用する。
+        # 馬名は1頭分のブロックから探す。
+        # 最優先は「性齢を含む本体行」(例: ヴーレヴー 牝4 栗 武幸四郎...)。
+        # これなら「前走」「2走前」「- = III」などの画面ノイズを馬名として拾わない。
+        horse_block_start = 0
+        if pos > 0:
+            horse_block_start = gate_positions[pos - 1][0] + 1
+        horse_block = lines[horse_block_start:i + 1]
+
+        # 馬番直前側の「馬名候補」を最優先する。
+        # 前の馬の性齢・厩舎行を現在の馬名として誤採用しない。
         name_before = search_before[:jockey_pos] if jockey_pos is not None else search_before
         for bi in range(len(name_before) - 1, -1, -1):
-            candidate_line = name_before[bi]
-            cand = clean_name(candidate_line)
-            if cand and cand != rec.get("今回騎手", "") and not clean_jockey(candidate_line):
+            cand = clean_name(name_before[bi])
+            if cand and cand != rec.get("今回騎手", ""):
                 rec["馬名"] = cand
                 break
 
-        # 特殊形式では騎手より後ろに馬名が現れる場合があるため、同一馬番間だけで救済。
+        # 馬番直前に馬名がない特殊形式に限り、現在の馬番ブロック内を後ろから救済検索。
         if not rec["馬名"]:
-            horse_block_start = gate_positions[pos - 1][0] + 1 if pos > 0 else 0
-            horse_block = lines[horse_block_start:i + 1]
+            for block_line in reversed(horse_block):
+                if not is_sex_age_line(block_line):
+                    continue
+                cand = clean_name(block_line)
+                if cand and cand != rec.get("今回騎手", ""):
+                    rec["馬名"] = cand
+                    break
+        if not rec["馬名"]:
             for block_line in reversed(horse_block):
                 cand = clean_name(block_line)
                 if cand and cand != rec.get("今回騎手", "") and not clean_jockey(block_line):
