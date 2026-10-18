@@ -1504,13 +1504,17 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             return None
 
     def parse_odds(line):
-        # --- 倍 は無視し、実数オッズだけ取得
-        m = re.search(r"(?<!\d)(\d{1,3})\s*\.\s*(\d{1,2})\s*倍", str(line))
+        # 「41.1倍G」「20.6倍4」「13.7倍3」など、コピー時に
+        # 人気欄の文字・数字が「倍」の直後へ連結してもオッズ自体は取得する。
+        # 人気は parse_popularity() 側で別途、明示された数字だけを判定する。
+        raw = str(line or "")
+        m = re.search(r"(?<!\d)(\d{1,3})\s*\.\s*(\d{1,2})\s*倍", raw)
         if not m:
             return None
         try:
-            return float(f"{m.group(1)}.{m.group(2)}")
-        except ValueError:
+            value = float(f"{m.group(1)}.{m.group(2)}")
+            return value if 1.0 <= value <= 999.9 else None
+        except (ValueError, TypeError):
             return None
 
     def parse_popularity(line):
@@ -1721,7 +1725,8 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
 
         # 斤量・単勝・人気は当該馬番直後の短い範囲だけを検索する。
         # 次の馬の「馬名→騎手→U指数」を越えて値を拾わない。
-        after = after[:7]
+        # 性齢・厩舎・オッズが馬番の後ろ側に長く並ぶ形式があるため、
+        # 次の馬番までは馬ごとの範囲として検索する（隣馬の範囲には入らない）。
         for line in after:
             if rec["斤量"] is None:
                 w = parse_weight(line)
