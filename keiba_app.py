@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.28"
+APP_PATCH_VERSION = "Ver1.19.33"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -1559,7 +1559,17 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         # 馬名の途中は変更せず、確定できない場合は空欄のままにする。
         x = re.sub(r"^(?:VIP)+", "", x, flags=re.I).strip()
         x = re.sub(r"^(?:---?\s*倍|一倍|\d+(?:\.\d+)?倍)+", "", x).strip()
-        if x in ignored or is_gate(x) is not None:
+        # 行単位コピーで馬名欄に混ざる「中5週」「6ヶ月」「VIP」「---倍」等は
+        # 馬名候補にしない。空欄にして警告し、他馬の値で補完しない。
+        compact_x = re.sub(r"\s+", "", x)
+        if (
+            not x
+            or x in ignored
+            or is_gate(x) is not None
+            or re.fullmatch(r"(?:中\d+[週周]|\d+ヶ月|\d+か月|\d+週|\d+周)", compact_x)
+            or re.fullmatch(r"(?:---?倍|一倍|\d+(?:\.\d+)?倍)(?:[①-⑱⓪-⑳0-9]*)", compact_x)
+            or compact_x.upper() == "VIP"
+        ):
             return ""
 
         # ウマニティのスマホコピーでは、馬名と性齢・厩舎が同じ行になる。
@@ -1604,6 +1614,14 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             return ""
         # 数字・記号中心のOCRノイズを排除
         if not re.search(r"[一-龥々ぁ-んァ-ヶーA-Za-z]", x):
+            return ""
+        # 騎手名を馬名として登録しない。馬名欄が欠落した場合は空欄で警告する。
+        compact_candidate = re.sub(r"\s+", "", x)
+        if any(
+            re.sub(r"\s+", "", str(j)) == compact_candidate
+            for j in JOCKEY_MASTER
+            if j and j != "その他（自由手入力）"
+        ):
             return ""
         return name_fix.get(x, normalize_horse_name(x))
 
