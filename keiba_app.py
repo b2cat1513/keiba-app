@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.32"
+APP_PATCH_VERSION = "Ver1.19.28"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -1463,6 +1463,10 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             # ウマニティのコピーでは「101.22」が U指数101.2・U指数順位2位を
             # 表すことがある。末尾の順位が明示されている場合だけ保持する。
             rank = int(m.group(3)) if m.group(3) and 1 <= int(m.group(3)) <= 18 else None
+            if rank is None:
+                circled = re.search(r"[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱]", compact[m.end():])
+                if circled:
+                    rank = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱".index(circled.group(0)) + 1
             return value, rank
         # コピー時に小数点が欠落する例（例: 098 -> 98.0、1003 -> 100.3）
         m = re.fullmatch(r"0?(\d{2})(?:([0-9]))?", compact)
@@ -1504,17 +1508,13 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             return None
 
     def parse_odds(line):
-        # 「41.1倍G」「20.6倍4」「13.7倍3」など、コピー時に
-        # 人気欄の文字・数字が「倍」の直後へ連結してもオッズ自体は取得する。
-        # 人気は parse_popularity() 側で別途、明示された数字だけを判定する。
-        raw = str(line or "")
-        m = re.search(r"(?<!\d)(\d{1,3})\s*\.\s*(\d{1,2})\s*倍", raw)
+        # --- 倍 は無視し、実数オッズだけ取得
+        m = re.search(r"(?<!\d)(\d{1,3})\s*\.\s*(\d{1,2})\s*倍", str(line))
         if not m:
             return None
         try:
-            value = float(f"{m.group(1)}.{m.group(2)}")
-            return value if 1.0 <= value <= 999.9 else None
-        except (ValueError, TypeError):
+            return float(f"{m.group(1)}.{m.group(2)}")
+        except ValueError:
             return None
 
     def parse_popularity(line):
@@ -1523,10 +1523,13 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         m = re.search(r"(?:倍|人気)(\d{1,2})(?:番人気)?$", compact)
         if not m:
             m = re.search(r"(\d{1,2})番人気", compact)
-        if not m:
-            return None
-        value = int(m.group(1))
-        return value if 1 <= value <= 18 else None
+        if m:
+            value = int(m.group(1))
+            return value if 1 <= value <= 18 else None
+        circled = re.search(r"(?:倍|人気)([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱])$", compact)
+        if circled:
+            return "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱".index(circled.group(1)) + 1
+        return None
 
     def split_jockey_weight(line):
         """騎手名と斤量が同一行に連結されたスマホコピーを分離する。"""
@@ -1552,7 +1555,8 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
 
     def clean_name(line):
         x = str(line).strip()
-        # 馬名の先頭に混入するVIP・オッズ表示のノイズを除去
+        # コピー列の先頭に混入する表示ノイズだけを除去する。
+        # 馬名の途中は変更せず、確定できない場合は空欄のままにする。
         x = re.sub(r"^(?:VIP)+", "", x, flags=re.I).strip()
         x = re.sub(r"^(?:---?\s*倍|一倍|\d+(?:\.\d+)?倍)+", "", x).strip()
         if x in ignored or is_gate(x) is not None:
@@ -1669,8 +1673,6 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                 break
 
         # 騎手候補はU指数より前を優先。連結形式にも対応。
-        # マスター未登録の騎手名もあるため、U指数の直前行を構造上の騎手候補として扱い、
-        # その一つ前を馬名候補にする。これにより田山旺佑・佐々木大などが馬名欄へ入るのを防ぐ。
         jockey_pos = None
         search_before = before[:u_pos] if u_pos is not None else before
         for bi in range(len(search_before) - 1, -1, -1):
@@ -1687,19 +1689,6 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                 rec["今回騎手"] = cj
                 jockey_pos = bi
                 break
-        if jockey_pos is None and u_pos is not None and u_pos > 0:
-            possible_jockey = search_before[-1].strip() if search_before else ""
-            # 馬番の直前がU指数、さらにその直前が騎手という並びに限って救済。
-            # 数字・性齢・オッズ・VIPなどは騎手として採用しない。
-            compact_j = re.sub(r"\s+", "", possible_jockey)
-            if (possible_jockey and not is_sex_age_line(possible_jockey)
-                    and parse_u(possible_jockey) is None
-                    and parse_weight(possible_jockey) is None
-                    and parse_odds(possible_jockey) is None
-                    and possible_jockey not in ignored
-                    and re.fullmatch(r"[一-龥々ぁ-んァ-ヶー・.]+", compact_j)):
-                rec["今回騎手"] = possible_jockey
-                jockey_pos = len(search_before) - 1
 
         # 馬名は1頭分のブロックから探す。
         # 最優先は「性齢を含む本体行」(例: ヴーレヴー 牝4 栗 武幸四郎...)。
@@ -1709,8 +1698,9 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             horse_block_start = gate_positions[pos - 1][0] + 1
         horse_block = lines[horse_block_start:i + 1]
 
-        # 馬番直前側の「馬名候補」を最優先する。
-        # 前の馬の性齢・厩舎行を現在の馬名として誤採用しない。
+        # 馬番直前側の候補を最優先する。スマホコピーは「前馬の馬番→
+        # 性齢/厩舎→斤量/オッズ→次馬の馬名→騎手→U指数→次馬番」と並ぶため、
+        # ブロックの先頭にある性齢行を先に採ると前馬を誤割当てする。
         name_before = search_before[:jockey_pos] if jockey_pos is not None else search_before
         for bi in range(len(name_before) - 1, -1, -1):
             cand = clean_name(name_before[bi])
@@ -1718,7 +1708,7 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                 rec["馬名"] = cand
                 break
 
-        # 馬番直前に馬名がない特殊形式に限り、現在の馬番ブロック内を後ろから救済検索。
+        # 馬番直前に馬名がない形式だけ、現在の馬番ブロックを後ろから救済する。
         if not rec["馬名"]:
             for block_line in reversed(horse_block):
                 if not is_sex_age_line(block_line):
@@ -1727,6 +1717,8 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                 if cand and cand != rec.get("今回騎手", ""):
                     rec["馬名"] = cand
                     break
+
+        # 性齢付き行もない特殊なコピーだけを最後に救済する。
         if not rec["馬名"]:
             for block_line in reversed(horse_block):
                 cand = clean_name(block_line)
@@ -1742,8 +1734,6 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
 
         # 斤量・単勝・人気は当該馬番直後の短い範囲だけを検索する。
         # 次の馬の「馬名→騎手→U指数」を越えて値を拾わない。
-        # 性齢・厩舎・オッズが馬番の後ろ側に長く並ぶ形式があるため、
-        # 次の馬番までは馬ごとの範囲として検索する（隣馬の範囲には入らない）。
         for line in after:
             if rec["斤量"] is None:
                 w = parse_weight(line)
@@ -1811,6 +1801,26 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                 rec["今回騎手"] = max(direct, key=lambda c: len(re.sub(r"\s+", "", str(c))))
             elif cj not in jockey_candidates:
                 rec["今回騎手"] = ""
+
+    # 馬番の欠落・重複は、値を別馬に補うのではなく確認表へ警告として出す。
+    # 単独数字はコピー形式により馬番以外にもなり得るため、ここでは自動修正しない。
+    gate_counts = {}
+    for _, gate in gate_positions:
+        gate_counts[gate] = gate_counts.get(gate, 0) + 1
+    duplicate_gates = sorted(gate for gate, count in gate_counts.items() if count > 1)
+    parsed_gates = sorted(results)
+    missing_gates = []
+    if parsed_gates:
+        missing_gates = [gate for gate in range(1, max(parsed_gates) + 1) if gate not in results]
+    layout_warnings = []
+    if duplicate_gates:
+        layout_warnings.append("馬番重複候補: " + ", ".join(map(str, duplicate_gates)))
+    if missing_gates:
+        layout_warnings.append("馬番欠落: " + ", ".join(map(str, missing_gates)))
+    if layout_warnings:
+        layout_warning = " / ".join(layout_warnings)
+        for rec in results.values():
+            rec["解析警告"] = " / ".join(filter(None, [rec.get("解析警告", ""), layout_warning]))
 
     return [results[g] for g in sorted(results) if 1 <= g <= 18]
 
@@ -4536,13 +4546,18 @@ def apply_specialized_image_records(records, auto_track_value):
         }
 
 
-def apply_umanity_text_records(records, overwrite_existing=False):
+def apply_umanity_text_records(records, overwrite_existing=False, replace_existing_race=False):
     """確認済みのウマニティ文字解析結果を馬番キーで反映する。
 
     既存値は既定で保持する。馬名が同じ馬番で不一致の場合は、どの項目も
     反映せず確認を促す。これにより別馬への混入を防ぐ。
     """
     st.session_state["loaded_data"].setdefault("rows", {})
+    # レース変更は馬番だけでは識別できない。利用者が確認表を見て
+    # 「新しいレース」と明示した場合だけ、旧レースの行を退避せず置換する。
+    # これにより同じ馬番の別馬へ旧値が残ることを防ぐ。
+    if replace_existing_race:
+        st.session_state["loaded_data"]["rows"] = {}
     updated, created, warnings = 0, 0, []
     empty_values = (None, "", "(未選択)", "その他（自由手入力）")
 
@@ -4775,6 +4790,12 @@ if bulk_input_tab == "🐎 ウマニティ文字入力":
         key="um_overwrite_existing_v1928",
         help="オフでは、既に手入力・既存取込済みの値を保持し、空欄の項目だけを反映します。",
     )
+    replace_umanity_race = st.checkbox(
+        "新しいレースとして、現在の出馬表をこの解析結果で置き換える",
+        value=False,
+        key="um_replace_existing_race_v1932",
+        help="スワンSから秋華賞のようにレースを切り替える場合だけ選択します。確認済みの解析結果以外は反映しません。",
+    )
 
     if clear_full:
         st.session_state["um_text_v1913"] = ""
@@ -4784,14 +4805,9 @@ if bulk_input_tab == "🐎 ウマニティ文字入力":
         if not copied_text_um.strip():
             st.warning("まずウマニティの文字を貼り付けてください。")
         else:
-            known_names_by_gate = {
-                int(k): v.get("name", "")
-                for k, v in st.session_state.get("loaded_data", {}).get("rows", {}).items()
-                if str(v.get("name", "")).strip()
-            }
-            parsed_um_full = parse_umanity_full_copied_text(
-                copied_text_um, known_names_by_gate=known_names_by_gate
-            )
+            # レースが変わると同じ馬番に別の馬が入るため、既存の出馬表を
+            # 馬名の補完元に使わない。不明値は空欄と警告にして確認表で止める。
+            parsed_um_full = parse_umanity_full_copied_text(copied_text_um)
             if not parsed_um_full:
                 st.error("馬データを解析できませんでした。ウマニティの出馬表部分をまとめてコピーしてください。")
             else:
@@ -4817,7 +4833,11 @@ if bulk_input_tab == "🐎 ウマニティ文字入力":
                 for warning in parse_warnings:
                     st.write(warning)
         if st.button("✅ 確認したウマニティ文字結果を出馬表へ反映", type="primary", use_container_width=True):
-            outcome = apply_umanity_text_records(full_records, overwrite_existing=overwrite_umanity_values)
+            outcome = apply_umanity_text_records(
+                full_records,
+                overwrite_existing=overwrite_umanity_values,
+                replace_existing_race=replace_umanity_race,
+            )
             if outcome["warnings"]:
                 with st.expander(f"⚠️ 反映時の警告：{len(outcome['warnings'])}件", expanded=True):
                     for warning in outcome["warnings"]:
