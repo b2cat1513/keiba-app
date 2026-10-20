@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.99"
+APP_PATCH_VERSION = "Ver1.20.00"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -29,7 +29,7 @@ except Exception:
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
 st.set_page_config(page_title=f"ジェニーAI予想{APP_PATCH_VERSION}", layout="wide", initial_sidebar_state="collapsed")
-st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（ウマニティ馬名最終検査版）")
+st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（ウマニティ馬番対応安全版）")
 
 st.markdown("""
 <style>
@@ -2421,56 +2421,10 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             if arec["斤量"] is not None:
                 old["斤量"] = arec["斤量"]
 
-    # --- Ver1.19.44 騎手の馬別ブロック補完 ---
-    # スマホからのコピーでは「馬番」行と「馬名・性齢」行の位置関係が
-    # 一定しないことがあるため、性齢付き馬名行を境界に各馬のブロックを作り、
-    # その馬のブロック内だけから騎手を補完する。既に取得済みの騎手は上書きしない。
-    horse_sections = []
-    for line_index, line in enumerate(lines):
-        if is_sex_age_line(line):
-            horse_name = clean_name(line)
-            if horse_name:
-                horse_sections.append((line_index, horse_name))
-
-    sorted_gates = sorted(g for g in results if 1 <= g <= 18)
-    if horse_sections and len(horse_sections) == len(sorted_gates):
-        for section_index, (line_index, section_name) in enumerate(horse_sections):
-            gate = sorted_gates[section_index]
-            rec = results.get(gate)
-            if not rec or rec.get("今回騎手"):
-                continue
-            section_end = (
-                horse_sections[section_index + 1][0]
-                if section_index + 1 < len(horse_sections)
-                else len(lines)
-            )
-            # 馬名・性齢行の後から次の馬名行までを検索。
-            for candidate_line in lines[line_index + 1:section_end]:
-                raw_candidate = str(candidate_line or "").strip()
-                if not raw_candidate:
-                    continue
-                prefix, inline_weight = split_jockey_weight(raw_candidate)
-                candidate = prefix if prefix else raw_candidate
-                candidate_compact = re.sub(r"\s+", "", candidate)
-                # 既知のOCR誤読を補正してから、騎手マスターと照合する。
-                candidate_compact = candidate_compact.replace("絞島克駿", "鮫島克駿")
-                matched = ""
-                for master_name in sorted(jockey_candidates, key=lambda name: len(re.sub(r"\s+", "", name)), reverse=True):
-                    master_compact = re.sub(r"\s+", "", master_name)
-                    if candidate_compact == master_compact:
-                        matched = master_name
-                        break
-                    # C.ルメー等、末尾1文字程度が欠けたコピーだけを補完する。
-                    if (len(candidate_compact) >= 5
-                            and master_compact.startswith(candidate_compact)
-                            and len(master_compact) - len(candidate_compact) <= 2):
-                        matched = master_name
-                        break
-                if matched:
-                    rec["今回騎手"] = matched
-                    if inline_weight is not None and rec.get("斤量") is None:
-                        rec["斤量"] = inline_weight
-                    break
+    # Ver1.20.00: 馬名ブロックの数と馬番の数が一致したときに、
+    # 出現順だけで騎手を割り当てる旧処理を廃止。
+    # スマホコピーで1頭の性齢行が欠けると、以降の騎手が全頭ずれるため、
+    # 騎手は上の馬番ブロック内で確認できた場合だけ採用する。
 
     # --- Ver1.19.69: U指数を中心に1頭分を確定 ---
     # スマホ全文コピーでは、馬番が行境界へずれることがある。
