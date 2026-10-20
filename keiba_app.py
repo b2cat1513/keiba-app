@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.33"
+APP_PATCH_VERSION = "Ver1.19.34"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -1567,7 +1567,7 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             or x in ignored
             or is_gate(x) is not None
             or re.fullmatch(r"(?:中\d+[週周]|\d+ヶ月|\d+か月|\d+週|\d+周)", compact_x)
-            or re.fullmatch(r"(?:---?倍|一倍|\d+(?:\.\d+)?倍)(?:[①-⑱⓪-⑳0-9]*)", compact_x)
+            or re.fullmatch(r"(?:---?倍|一倍|\d+(?:\.\d+)?倍)(?:[⓪①-⑳0-9]*)", compact_x)
             or compact_x.upper() == "VIP"
         ):
             return ""
