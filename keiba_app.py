@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.34"
+APP_PATCH_VERSION = "Ver1.19.99"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -28,8 +28,8 @@ except Exception:
 # ==========================================
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
-st.set_page_config(page_title="ジェニーAI予想ver1.19.32", layout="wide", initial_sidebar_state="collapsed")
-st.title("🏆 ジェニーAI予想ver1.19.22（ウマニティ・競馬ラボ文字貼り付け対応版）")
+st.set_page_config(page_title=f"ジェニーAI予想{APP_PATCH_VERSION}", layout="wide", initial_sidebar_state="collapsed")
+st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（ウマニティ馬名最終検査版）")
 
 st.markdown("""
 <style>
@@ -467,6 +467,90 @@ JOCKEY_NAME_ALIASES = {
     "大野拓哉": "大野拓弥",
 }
 
+# 2026年9月現在：ユーザー提供のJRAリーディング上位10名
+# 順位・騎乗数・1着数・勝率(%)。上位10名以外はリーディング加点なし。
+JOCKEY_LEADING_TOP10 = {
+    "岩田望来": {"rank": 1, "rides": 349, "wins": 114, "win_rate": 32.7},
+    "C.ルメール": {"rank": 2, "rides": 162, "wins": 113, "win_rate": 69.8},
+    "松山弘平": {"rank": 3, "rides": 379, "wins": 101, "win_rate": 26.6},
+    "横山武史": {"rank": 4, "rides": 363, "wins": 83, "win_rate": 22.9},
+    "川田将雅": {"rank": 5, "rides": 171, "wins": 81, "win_rate": 47.4},
+    "坂井瑠星": {"rank": 6, "rides": 270, "wins": 80, "win_rate": 29.6},
+    "西村淳也": {"rank": 7, "rides": 372, "wins": 79, "win_rate": 21.2},
+    "丹内祐次": {"rank": 8, "rides": 483, "wins": 66, "win_rate": 13.7},
+    "戸崎圭太": {"rank": 9, "rides": 268, "wins": 64, "win_rate": 23.9},
+    "横山和生": {"rank": 10, "rides": 304, "wins": 62, "win_rate": 20.4},
+}
+
+
+def calculate_jockey_leading_bonus(jockey_name):
+    """上位10名の順位・勝利数・騎乗数・勝率を統合し、最大+5点を返す。"""
+    name = normalize_jockey_name(jockey_name)
+    record = JOCKEY_LEADING_TOP10.get(name)
+    if not record:
+        return 0.0
+
+    # 各指標を上位10名内で0～1へ正規化。順位は1位が高得点。
+    fields = {
+        "rank_score": [11 - row["rank"] for row in JOCKEY_LEADING_TOP10.values()],
+        "wins": [row["wins"] for row in JOCKEY_LEADING_TOP10.values()],
+        "rides": [row["rides"] for row in JOCKEY_LEADING_TOP10.values()],
+        "win_rate": [row["win_rate"] for row in JOCKEY_LEADING_TOP10.values()],
+    }
+    weights = {"rank_score": 0.35, "wins": 0.25, "rides": 0.15, "win_rate": 0.25}
+    composite_scores = {}
+    for jockey, row in JOCKEY_LEADING_TOP10.items():
+        raw = {
+            "rank_score": 11 - row["rank"],
+            "wins": row["wins"],
+            "rides": row["rides"],
+            "win_rate": row["win_rate"],
+        }
+        composite = 0.0
+        for field, values in fields.items():
+            low, high = min(values), max(values)
+            normalized = (raw[field] - low) / (high - low) if high > low else 0.0
+            composite += normalized * weights[field]
+        composite_scores[jockey] = composite
+
+    low_score, high_score = min(composite_scores.values()), max(composite_scores.values())
+    if high_score <= low_score:
+        return 0.0
+    return round(0.5 + 4.5 * (composite_scores[name] - low_score) / (high_score - low_score), 2)
+
+def scale_u_index(index_value):
+    """U指数を能力スコア用へ連続変換する。
+
+    旧ロジックは70.0以下では指数そのもの、70.1以上では
+    (指数-50)*0.8 としていたため、70.0→70.0、70.1→16.08という
+    不連続が発生していた。現在は旧来の高指数側の意図を保ち、
+    50を基準に0.8倍へ一貫して変換する。
+    """
+    try:
+        value = float(index_value)
+    except (TypeError, ValueError):
+        return 0.0
+    if value <= 0:
+        return 0.0
+    return round(max(0.0, (value - 50.0) * 0.8), 2)
+
+
+def calculate_jockey_leading_rate_adjustment(jockey_name):
+    """リーディング実績を騎手倍率へ小さく反映する。
+
+    旧仕様の+0.5～+5.0点を能力スコアへそのまま加算すると、
+    騎手基礎力・条件補正と同じ要素を二重三重に評価しやすい。
+    そこでリーディングは「騎手力の補助情報」として倍率側へ
+    最大でも約±3.4%程度だけ反映し、独立加点は行わない。
+    """
+    bonus = calculate_jockey_leading_bonus(jockey_name)
+    if bonus <= 0:
+        return 0.0
+    # 上位10名内の中間値付近を0とし、順位・勝利数・勝率を
+    # すでに統合した旧bonusを小さな倍率補助へ変換する。
+    return round((bonus - 2.75) * 0.015, 4)
+
+
 def normalize_jockey_name(name):
     normalized = str(name or "").strip().replace("　", " ")
     normalized = re.sub(r"[（(].*?[）)]", "", normalized).strip()
@@ -595,9 +679,9 @@ COURSE_MASTER = {
         "good_lineage": ["ロードカナロア", "エピファネイア", "モーリス", "ドゥラメンテ", "イスラボニータ", "キズナ", "スワーヴリチャード", "ディープインパクト系", "ハーツクライ系"]
     },
     "東京芝1800m": {
-        "note": "開幕週は内枠先行有利、基本は実力通りの外差し◯。距離延長組より同距離・距離短縮組◯。エピファネイア/キズナ/モーリス/スワーヴリチャード/ロードカナロア。", 
-        "track": "芝", "dist": "中距離", "fav_style": "差し",
-        "good_lineage": ["エピファネイア", "キズナ", "モーリス", "スワーヴリチャード", "ロードカナロア"]
+        "note": "良馬場なら適性馬や実力馬○。道悪は逃げ先行○。", 
+        "track": "芝", "dist": "中距離", "fav_style": "先行",
+        "good_lineage": ["ドゥラメンテ", "エピファネイア", "モーリス", "ロードカナロア", "キズナ", "キタサンブラック"]
     },
     "東京芝2000m": {
         "note": "1枠有利（内枠◯）。前走同距離や距離短縮が好走。エピファネイア/モーリス牡馬/キズナ/キタサンブラック/ロードカナロア/ハーツクライ系。", 
@@ -684,6 +768,11 @@ COURSE_MASTER = {
         "track": "ダート", "dist": "中距離", "fav_style": "逃げ先行",
         "good_lineage": ["ドレフォン", "ヘニーヒューズ", "ダノンレジェンド", "マジェスティックウォリアー", "シニスターミニスター", "キズナ", "リアルスティール", "ホッコータルマエ"]
     },
+    "京都芝1400m(外)": {
+        "note": "荒れた馬場やDコースは外枠有利。前走同距離・距離短縮馬◯。ロードカナロア/モーリス/ドゥラメンテ/ミッキーアイル牝馬/ビッグアーサー/キタサンブラック牝馬。",
+        "track": "芝", "dist": "短距離", "fav_style": "先行",
+        "good_lineage": ["ロードカナロア", "モーリス", "ドゥラメンテ", "ミッキーアイル", "ビッグアーサー", "キタサンブラック"]
+    },
     "京都芝1600m(外)": {
         "note": "同距離や距離短縮馬◯。高速馬場は上がり時計重視◯。荒れ馬場は外枠有利。荒れ馬場の東京で負けた馬の巻き返し◯。イスラボニータ/ルーラーシップ/リオンディーズ/キタサンブラック/ハービンジャー/キズナ/エピファネイア/ロードカナロア。", 
         "track": "芝", "dist": "中距離", "fav_style": "差し",
@@ -698,6 +787,11 @@ COURSE_MASTER = {
         "note": "エリザベス女王杯など。馬場良好なら内枠有利。非根幹距離適性が必要。キズナ/サトノダイヤモンド/ハーツクライ/ゴールドシップ/オルフェーヴル/モーリス。", 
         "track": "芝", "dist": "中距離", "fav_style": "先行・差し",
         "good_lineage": ["キズナ", "サトノダイヤモンド", "ハーツクライ", "ゴールドシップ", "オルフェーヴル", "モーリス"]
+    },
+    "京都芝2400m": {
+        "note": "ディープインパクト系○。キズナ産駒牡馬○。",
+        "track": "芝", "dist": "長距離", "fav_style": "選択なし",
+        "good_lineage": ["キズナ", "ディープインパクト系", "エピファネイア", "ディープインパクト", "ゴールドシップ", "ドゥラメンテ"]
     },
     "京都芝3000m": {
         "note": "菊花賞コース。外枠有利。スタミナ必須。父または母父ステイゴールド系◯。エピファネイア/ゴールドシップ/オルフェーヴル/キタサンブラック/ステイゴールド系。", 
@@ -1056,9 +1150,37 @@ def parse_body_weight(text):
     return 480, 0
 
 
-def calculate_frame_position(gate):
-    """アプリ既存仕様に合わせ、1～8番を内枠、それ以降を外枠とする。"""
-    return "内枠" if int(gate) <= 8 else "外枠"
+def calculate_frame_number(gate, field_size=16):
+    """出走頭数に応じて馬番からJRAの枠番を推定する。"""
+    try:
+        gate = int(gate)
+        field_size = max(1, min(18, int(field_size)))
+    except (TypeError, ValueError):
+        return None
+    if not 1 <= gate <= field_size:
+        return None
+    if field_size <= 8:
+        return gate
+    # 9～16頭：余った頭数分、内側から2頭ずつ配置。
+    if field_size <= 16:
+        doubled_frames = field_size - 8
+        if gate <= doubled_frames * 2:
+            return (gate + 1) // 2
+        return gate - doubled_frames
+    # 17・18頭：1～14番を1～7枠へ2頭ずつ、15番以降は8枠。
+    if gate <= 14:
+        return (gate + 1) // 2
+    return 8
+
+
+def calculate_frame_position(gate, field_size=16):
+    """枠番1・2を内枠、7・8を外枠、3～6を選択なしにする。"""
+    frame_no = calculate_frame_number(gate, field_size)
+    if frame_no in (1, 2):
+        return "内枠"
+    if frame_no in (7, 8):
+        return "外枠"
+    return "選択なし"
 
 
 def parse_netkeiba_multi_line(raw_text):
@@ -1405,7 +1527,47 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
     if not text:
         return []
 
-    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    # Ver1.19.80: スマホコピーでは「6ペアポルックス」のように、
+    # 本来は前馬の末尾にある馬番「6」と次馬の馬名が同一行へ連結することがある。
+    # この「6」はペアポルックスの馬番ではなく、直前馬の区切りなので、
+    # 先に「6」と「ペアポルックス...」へ分離してから通常解析する。
+    _raw_lines = [x.strip() for x in text.splitlines() if x.strip()]
+    # Ver1.19.90: 境界補正前の行も保持する。U指数79.1のような80未満の値でも、
+    # 「79.1 8」＋近接する単独「7」の並びなら、79.1を7番へ結び直すために使う。
+    _original_raw_lines = list(_raw_lines)
+    # Ver1.19.89: スマホのコピーで「79.1 8」のように、U指数と馬番が
+    # 同じ行へ連結することがある。直後数行にひとつ前の馬番が現れる場合は、
+    # 末尾の数字を馬番として採用すると馬番順が逆転し、7番のブロックが消えるため、
+    # その行はU指数だけに戻す。通常の「U指数→次馬番」形式は分割して保持する。
+    _normalized_lines = []
+    for _i, _line in enumerate(_raw_lines):
+        _m_index_gate = re.fullmatch(r"(\d{2,3}\.\d{1,3})\s+(1[0-8]|[1-9])", _line)
+        if _m_index_gate:
+            _inline_gate = int(_m_index_gate.group(2))
+            _next_gates = []
+            for _look in _raw_lines[_i + 1:_i + 5]:
+                _gm = re.fullmatch(r"(1[0-8]|[1-9])", _look)
+                if _gm:
+                    _next_gates.append(int(_gm.group(1)))
+            if _inline_gate > 1 and (_inline_gate - 1) in _next_gates:
+                _normalized_lines.append(_m_index_gate.group(1))
+                continue
+            _normalized_lines.extend([_m_index_gate.group(1), _m_index_gate.group(2)])
+            continue
+        _normalized_lines.append(_line)
+    _raw_lines = _normalized_lines
+    lines = []
+    for _line in _raw_lines:
+        _m_inline_gate = re.match(
+            r'^(1[0-8]|[1-9])(?=[一-龥々ぁ-んァ-ヶA-Za-z])(.+)$',
+            _line,
+        )
+        if _m_inline_gate and re.search(r'[牡牝セ騙]\s*(?:[一-龥ぁ-んァ-ヶA-Za-z]{0,2}\s*)?\d{1,2}', _m_inline_gate.group(2)):
+            # 例: 「6ペアポルックス 牡5 ...」
+            lines.append(_m_inline_gate.group(1))
+            lines.append(_m_inline_gate.group(2).strip())
+        else:
+            lines.append(_line)
     results = {}
     # 既存の出馬表（Netkeiba等）に正しい馬名がある場合は、馬番をアンカーにして利用する。
     # OCRで「NO」「PHOTO」などを馬名と誤認しても、既存の正しい馬名を優先する。
@@ -1416,7 +1578,17 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         except (TypeError, ValueError):
             continue
         _n = normalize_horse_name(_name)
-        if 1 <= _g <= 18 and _n:
+        # 既存テーブルに前回の誤読（例:「4ヶ月」「中4週」など）が
+        # 残っていても、それを正解アンカーとして再利用しない。
+        _bad_known = (
+            re.fullmatch(r"中[0-9０-９]+週", _n)
+            or re.fullmatch(r"[0-9０-９]+週", _n)
+            or re.fullmatch(r"[0-9０-９]+ヶ月", _n)
+            or re.fullmatch(r"[0-9０-９]+か月", _n)
+            or re.fullmatch(r"前[0-9０-９]+走", _n)
+            or re.fullmatch(r"[0-9０-９]+走前", _n)
+        )
+        if 1 <= _g <= 18 and _n and not _bad_known:
             known_names[_g] = _n
     ignored = {
         "ウマニティ", "ニュース", "レース", "新出馬表", "予想コロシアム",
@@ -1442,43 +1614,48 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         "池添謙-": "池添謙一",
         "M.デムー": "M.デムーロ",
         "Mデムー": "M.デムーロ",
+        "C.ルメー": "C.ルメール",
+        "Cルメー": "C.ルメール",
     }
 
     def is_gate(line):
-        m = re.fullmatch(r"(\d{1,2})", line)
-        if not m:
-            return None
-        n = int(m.group(1))
-        return n if 1 <= n <= 18 else None
+        """馬番行を認識する。スマホコピーでは「6ペアポルックス」のように
+        馬番と馬名が同一行へ連結されることがあるため、単独数字だけでなく
+        先頭の馬番+日本語/文字の形式も認識する。
+        ただし「99.3」「101.2」などのU指数やオッズは誤認しない。
+        """
+        x = str(line or "").strip()
+        m = re.fullmatch(r"(\d{1,2})", x)
+        if m:
+            n = int(m.group(1))
+            return n if 1 <= n <= 18 else None
+        # 例:「6ペアポルックス」「13パンジャタワー」「16ピューロマジック」
+        # 小数点・数字続きは対象外。
+        m = re.match(r"^(\d{1,2})(?=[一-龥々ぁ-んァ-ヶA-Za-z])", x)
+        if m:
+            n = int(m.group(1))
+            return n if 1 <= n <= 18 else None
+        return None
 
-    def parse_u_details(line):
+    def parse_u(line):
         # 101.22 / 95.210 / 101.91 / 98.66 のように
         # U指数の小数1桁の直後に「みんなの人気」が連結する形式。
         compact = re.sub(r"\s+", "", str(line))
-        m = re.search(r"(?<!\d)(\d{2,3})\.(\d)(\d{1,2})?(?!\d)", compact)
+        # 「87.4倍15」のような単勝オッズをU指数と誤認しない。
+        if "倍" in compact or "オッズ" in compact:
+            return None
+        m = re.search(r"(?<!\d)(\d{2,3})\.(\d)", compact)
         if m:
             value = float(f"{m.group(1)}.{m.group(2)}")
-            if not 80.0 <= value <= 110.0:
-                return None, None
-            # ウマニティのコピーでは「101.22」が U指数101.2・U指数順位2位を
-            # 表すことがある。末尾の順位が明示されている場合だけ保持する。
-            rank = int(m.group(3)) if m.group(3) and 1 <= int(m.group(3)) <= 18 else None
-            if rank is None:
-                circled = re.search(r"[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱]", compact[m.end():])
-                if circled:
-                    rank = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱".index(circled.group(0)) + 1
-            return value, rank
+            return value if 60.0 <= value <= 110.0 else None
         # コピー時に小数点が欠落する例（例: 098 -> 98.0、1003 -> 100.3）
         m = re.fullmatch(r"0?(\d{2})(?:([0-9]))?", compact)
         if m:
             integer = int(m.group(1))
             digit = m.group(2)
             value = float(f"{integer}.{digit}") if digit is not None else float(integer)
-            return (value, None) if 80.0 <= value <= 110.0 else (None, None)
-        return None, None
-
-    def parse_u(line):
-        return parse_u_details(line)[0]
+            return value if 60.0 <= value <= 110.0 else None
+        return None
 
     def parse_weight(line):
         """ウマニティのスマホコピーから斤量を安全に抽出する。
@@ -1517,20 +1694,6 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         except ValueError:
             return None
 
-    def parse_popularity(line):
-        """「10.3倍5」「5番人気」のように明示された人気だけを取得する。"""
-        compact = re.sub(r"\s+", "", str(line or ""))
-        m = re.search(r"(?:倍|人気)(\d{1,2})(?:番人気)?$", compact)
-        if not m:
-            m = re.search(r"(\d{1,2})番人気", compact)
-        if m:
-            value = int(m.group(1))
-            return value if 1 <= value <= 18 else None
-        circled = re.search(r"(?:倍|人気)([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱])$", compact)
-        if circled:
-            return "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱".index(circled.group(1)) + 1
-        return None
-
     def split_jockey_weight(line):
         """騎手名と斤量が同一行に連結されたスマホコピーを分離する。"""
         x = str(line or "").strip()
@@ -1551,34 +1714,36 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         return prefix, weight if 48.0 <= weight <= 62.5 else None
 
     def is_sex_age_line(line):
-        return bool(re.search(r"[牡牝セ騙]\s*\d{1,2}", str(line)))
+        # ウマニティのコピー文字列では「牡社6」「牡 社6」など、
+        # 性齢と調教師欄が連結・文字化けしていても馬本体行として認識する。
+        return bool(re.search(r"[牡牝セ騙]\s*(?:[一-龥ぁ-んァ-ヶA-Za-z]{0,2}\s*)?\d{1,2}", str(line)))
 
     def clean_name(line):
         x = str(line).strip()
-        # コピー列の先頭に混入する表示ノイズだけを除去する。
-        # 馬名の途中は変更せず、確定できない場合は空欄のままにする。
-        x = re.sub(r"^(?:VIP)+", "", x, flags=re.I).strip()
-        x = re.sub(r"^(?:---?\s*倍|一倍|\d+(?:\.\d+)?倍)+", "", x).strip()
-        # 行単位コピーで馬名欄に混ざる「中5週」「6ヶ月」「VIP」「---倍」等は
-        # 馬名候補にしない。空欄にして警告し、他馬の値で補完しない。
-        compact_x = re.sub(r"\s+", "", x)
-        if (
-            not x
-            or x in ignored
-            or is_gate(x) is not None
-            or re.fullmatch(r"(?:中\d+[週周]|\d+ヶ月|\d+か月|\d+週|\d+周)", compact_x)
-            or re.fullmatch(r"(?:---?倍|一倍|\d+(?:\.\d+)?倍)(?:[⓪①-⑳0-9]*)", compact_x)
-            or compact_x.upper() == "VIP"
-        ):
+        if x in ignored or is_gate(x) is not None:
+            return ""
+        # Ver1.19.75: レース間隔などを馬名として保存しない。
+        # 例:「4ヶ月」「中4週」「中2週」「前2走」「2走前」
+        _name_noise = re.sub(r"\s+", "", x)
+        if re.fullmatch(r"(?:中\d+[週周]|\d+ヶ月|\d+か月|前\d+走|\d+走前)", _name_noise):
             return ""
 
         # ウマニティのスマホコピーでは、馬名と性齢・厩舎が同じ行になる。
         # 例:「ウェイクフィールド 牡3 美| 嘉藤貴行 --倍」
         # この場合は性齢の直前までを馬名として抽出する。
-        sex_match = re.search(r"[牡牝セ騙]\s*\d{1,2}", x)
+        sex_match = re.search(r"[牡牝セ騙]\s*(?:[一-龥ぁ-んァ-ヶA-Za-z]{0,2}\s*)?\d{1,2}", x)
         if sex_match:
             prefix = x[:sex_match.start()].strip()
+            # Ver1.19.95: オッズ欠落時に「-倍ドリームコア」のような断片が
+            # 馬名へ付くため、先頭のオッズ記号を除去してから馬名を確定する。
+            prefix = re.sub(r"^(?:(?:---|--|-|—)\s*倍\s*)+", "", prefix).strip()
+            # スマホコピーで「6ペアポルックス」「14ウインカーネリアン」の
+            # ように馬番が馬名へ連結することがある。先頭の馬番だけ除去する。
+            prefix = re.sub(r"^(?:\d{1,2}\s*)+", "", prefix).strip()
             prefix = re.sub(r"[|｜【】\[\]（）()]+$", "", prefix).strip()
+            # スマホコピーでは「VIP馬名 牡5」のようにVIPが馬名へ
+            # 接頭辞として連結することがあるため、馬名判定前に除去する。
+            prefix = re.sub(r"^(?:VIP\s*)+", "", prefix, flags=re.I).strip()
             if prefix:
                 m_name = re.search(rf"({HORSE_NAME_PATTERN})\s*$", prefix)
                 if m_name:
@@ -1615,14 +1780,6 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         # 数字・記号中心のOCRノイズを排除
         if not re.search(r"[一-龥々ぁ-んァ-ヶーA-Za-z]", x):
             return ""
-        # 騎手名を馬名として登録しない。馬名欄が欠落した場合は空欄で警告する。
-        compact_candidate = re.sub(r"\s+", "", x)
-        if any(
-            re.sub(r"\s+", "", str(j)) == compact_candidate
-            for j in JOCKEY_MASTER
-            if j and j != "その他（自由手入力）"
-        ):
-            return ""
         return name_fix.get(x, normalize_horse_name(x))
 
     def clean_jockey(line):
@@ -1631,26 +1788,32 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             return ""
         if "人気" in x or ("---" in x and "倍" in x):
             return ""
-        if parse_u(x) is not None or parse_weight(x) is not None or parse_odds(x) is not None:
-            return ""
         if is_sex_age_line(x):
             return ""
         if re.fullmatch(r"(?:---\s*倍\d+[A-Za-z]*)", x):
             return ""
 
-        # スマホコピーでは「騎手 57.0 中6週」のように余計な情報が同じ行へ連結する。
-        # 騎手マスターに含まれる名前を優先して抽出し、それ以外は採用しない。
+        # Ver1.19.75: 「騎手名+U指数+斤量+間隔」の連結行にも対応。
+        # 数字列を先に弾くと「三浦皇成102.03 58.0 中4週」のような
+        # 実データから騎手だけ取り出せないため、騎手マスターを先に照合する。
         compact = re.sub(r"\s+", "", x)
-        # JOCKEY_MASTERは関数外の共通マスター。ここでローカル候補を作る。
         jockey_candidates = [c for c in JOCKEY_MASTER if c and c != "その他（自由手入力）"]
-        candidates = jockey_candidates
-        direct = [c for c in candidates if c.replace(" ", "") in compact]
+        direct = [c for c in jockey_candidates if c.replace(" ", "") in compact]
         if direct:
-            # 短い名前が長い名前の一部に含まれる場合を避け、最長一致を優先。
             return max(direct, key=lambda c: len(c.replace(" ", "")))
 
-        # 文字貼り付けでは近似一致をしない。別騎手への誤割当てを防ぐため、
-        # マスターにない表記は確認表で未取得として扱う。
+        if parse_u(x) is not None or parse_weight(x) is not None or parse_odds(x) is not None:
+            return ""
+
+        # マスターに完全一致しないOCRでも、数字・間隔情報を落としてから近似照合。
+        stripped = re.sub(r"\d+(?:\.\d+)?", " ", x)
+        stripped = re.sub(r"(?:中\d+週|中\d+周|\d+ヶ月|\d+か月|VIP|NO\s*PHOTO)", " ", stripped, flags=re.I)
+        # Ver1.19.76: ここではこの関数内で作成した騎手候補を使う。
+        # 旧版は未定義の `candidates` を参照して NameError になっていた。
+        if jockey_candidates:
+            guessed = _best_master_match(stripped, jockey_candidates, 0.55)
+            if guessed and guessed != "(未選択)":
+                return guessed
         return jockey_fix.get(x, "")
 
     def score(r):
@@ -1660,21 +1823,224 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             len(str(r.get("馬名", ""))) >= 4,
         ])
 
-    gate_positions = []
-    for i, line in enumerate(lines):
-        g = is_gate(line)
-        if g is not None:
-            gate_positions.append((i, g))
+    def build_logical_gate_positions(source_lines):
+        """ウマニティの連結コピー用に「馬番」を馬ブロック末尾へ正規化する。
 
-    # --- Ver1.19.28 馬番主キーの文字貼り付け解析 ---
-    # 馬名候補を全体の順番で馬番へ再配分しない。各馬番の前後ブロック内だけで
-    # 解析し、取得できない場合は空欄と警告にする。
+        例:
+          6ペアポルックス 牡5 ...
+          岩田康誠 58.0
+          98.00
+          7
+
+        この場合、6番は行頭にありますが、実際のブロック境界は98.00の直後です。
+        ここを通常の「馬情報→馬番」の並びに論理変換してから解析する。
+        """
+        positions = []
+        used_gates = set()
+
+        def inline_gate(line):
+            x = str(line or '').strip()
+            m = re.match(r'^(1[0-8]|[1-9])(?=[一-龥々ぁ-んァ-ヶA-Za-z])', x)
+            if not m:
+                return None
+            g = int(m.group(1))
+            return g if 1 <= g <= 18 else None
+
+        for li, line in enumerate(source_lines):
+            ig = inline_gate(line)
+            if ig is not None:
+                # 連結行自身にU指数がある場合は、その直後を境界にする。
+                if parse_u(line) is not None:
+                    boundary = li + 1
+                else:
+                    boundary = None
+                    # まず同一馬のU指数を探す。次の通常馬番を越えて探さない。
+                    for j in range(li + 1, len(source_lines)):
+                        if parse_u(source_lines[j]) is not None:
+                            boundary = j + 1
+                            break
+                        # 次の通常の馬番行に到達したら、この連結馬番は
+                        # U指数を伴わない特殊ケースとして次の境界を使う。
+                        xj = str(source_lines[j] or '').strip()
+                        if re.fullmatch(r'(?:1[0-8]|[1-9])', xj):
+                            boundary = j
+                            break
+                if boundary is None:
+                    boundary = li + 1
+                if ig not in used_gates:
+                    positions.append((boundary, ig))
+                    used_gates.add(ig)
+                else:
+                    # Ver1.19.93: ウマニティのコピーで「6ネオトキオ / 79.1 8」のように
+                    # 前の馬番が次の馬名へ連結し、U指数の直後に次々馬番(8)が出ることがある。
+                    # 既に6番が登録済みなら、ネオトキオは7番の情報と判断し、7番の境界を
+                    # U指数直後へ補う。後ろに出てくる単独7番境界は重複として除去する。
+                    _found_u = None
+                    _following_gate = None
+                    for _j in range(li + 1, min(len(source_lines), li + 7)):
+                        if _found_u is None and parse_u(source_lines[_j]) is not None:
+                            _found_u = _j
+                            continue
+                        if _found_u is not None:
+                            _gm_after_u = re.fullmatch(r'(1[0-8]|[1-9])', str(source_lines[_j] or '').strip())
+                            if _gm_after_u:
+                                _following_gate = (int(_gm_after_u.group(1)), _j)
+                                break
+                    if _found_u is not None and _following_gate is not None:
+                        _next_gate_num, _next_gate_pos = _following_gate
+                        _missing_gate = ig + 1
+                        if _next_gate_num == ig + 2 and _missing_gate not in used_gates:
+                            _new_boundary = _found_u + 1
+                            positions = [(_p, _g) for (_p, _g) in positions
+                                         if not (_g == _missing_gate and _p > _new_boundary)]
+                            positions.append((_new_boundary, _missing_gate))
+                            used_gates.add(_missing_gate)
+                continue
+
+            # 通常の単独馬番は、その行自体を境界とする。
+            m = re.fullmatch(r'(1[0-8]|[1-9])', str(line or '').strip())
+            if m:
+                g = int(m.group(1))
+                if g not in used_gates:
+                    positions.append((li, g))
+                    used_gates.add(g)
+
+        # コピー文字列上の位置順に並べ、同一境界は安定して処理する。
+        return sorted(positions, key=lambda x: (x[0], x[1]))
+
+    gate_positions = build_logical_gate_positions(lines)
+
+    # Ver1.19.97: 最終安全検査。
+    # 馬名欄に騎手名・同一馬の重複・オッズ断片が残ると、誤った馬番対応のまま
+    # 予想ロジックへ進んでしまう。確信できない馬名は空欄にして誤登録を防ぐ。
+    def _final_horse_name_safety(records_to_check):
+        checked = sorted(records_to_check or [], key=lambda r: int(r.get("馬番") or 99))
+        jockey_compact_names = {
+            re.sub(r"\s+", "", str(j)) for j in JOCKEY_MASTER
+            if j and j != "その他（自由手入力）"
+        }
+        seen_names = set()
+        for _rec in checked:
+            _name = normalize_horse_name(str(_rec.get("馬名") or ""))
+            _name = re.sub(r"^(?:[-ー―]?倍)+", "", _name).strip()
+            _compact = re.sub(r"\s+", "", _name)
+            _is_jockey = bool(_compact and (
+                _compact in jockey_compact_names
+                or any(j.startswith(_compact) and len(_compact) >= 4 for j in jockey_compact_names)
+            ))
+            _is_noise = bool(
+                not _name
+                or re.fullmatch(r"(?:中)?[0-9０-９]+週", _name)
+                or re.fullmatch(r"[0-9０-９]+ヶ月", _name)
+                or "VIP" in _name.upper()
+                or "倍" in _name
+                or "人気" in _name
+            )
+            if _is_jockey or _is_noise or (_compact and _compact in seen_names):
+                _rec["馬名"] = ""
+            else:
+                _rec["馬名"] = _name
+                seen_names.add(_compact)
+        return checked
+
+
+
+    # Ver1.19.93: スマホの列単位コピーで、7番の馬名・U指数が先に出てから
+    # 「79.1 / 8 / 安藤洋一 57.0 / 7 / 牡6 ...」のように並ぶケースを補正。
+    # U指数直後の「8」は次の馬番列の値であり、ここで境界にすると
+    # 7番の馬名が8番のブロックへ分断され、7番が空欄になる。
+    # 直後数行にひとつ前の馬番(7)がある場合は、U指数直後の境界(8)を除き、
+    # 後置された7番境界を採用する。指数自体はそのまま7番の直前情報として残す。
+    _drop_boundary_positions = set()
+    for _li, _line in enumerate(lines[:-1]):
+        _u_here = parse_u(_line)
+        _next_gate_match = re.fullmatch(r'(1[0-8]|[1-9])', str(lines[_li + 1] or '').strip())
+        if _u_here is None or not _next_gate_match:
+            continue
+        _inline_next_gate = int(_next_gate_match.group(1))
+        if _inline_next_gate <= 1:
+            continue
+        _previous_gate = _inline_next_gate - 1
+        for _look_pos in range(_li + 2, min(len(lines), _li + 7)):
+            _look_text = str(lines[_look_pos] or '').strip()
+            _look_gate = re.fullmatch(r'(1[0-8]|[1-9])', _look_text)
+            if _look_gate:
+                if int(_look_gate.group(1)) == _previous_gate:
+                    _drop_boundary_positions.add((_li + 1, _inline_next_gate))
+                break
+    if _drop_boundary_positions:
+        gate_positions = [gp for gp in gate_positions if gp not in _drop_boundary_positions]
+        gate_positions = sorted(gate_positions, key=lambda x: (x[0], x[1]))
+
+    def _apply_uindex_inline_gate_boundary_repair(records_to_fix):
+        """U指数+次馬番の同一行と前馬番の後置表示を使い、U指数を正しい馬番へ補正。
+
+        例: 79.1 8 / 騎手・斤量 / 7 / 牡... のように、U指数の次馬番(8)より
+        直後に前馬番(7)が現れるスマホコピーでは、79.1は7番に属する。
+        80未満という理由で指数候補から落とさず、馬番境界だけを補正する。
+        """
+        by_gate_fix = {}
+        for _rec in records_to_fix or []:
+            try:
+                _g = int(_rec.get("馬番"))
+            except (TypeError, ValueError):
+                continue
+            by_gate_fix[_g] = _rec
+        for _ri, _raw in enumerate(_original_raw_lines):
+            _match = re.fullmatch(r"(\d{2,3}\.\d{1,3})\s+(1[0-8]|[1-9])", _raw.strip())
+            if not _match:
+                continue
+            try:
+                _u = round(float(_match.group(1)), 1)
+                _next_gate = int(_match.group(2))
+            except Exception:
+                continue
+            # U指数として妥当な範囲。79.1等80未満も明示的に許可。
+            if not (60.0 <= _u <= 110.0) or _next_gate <= 1:
+                continue
+            _previous_gate = _next_gate - 1
+            _found_previous_gate = False
+            for _look in _original_raw_lines[_ri + 1:_ri + 5]:
+                _gm = re.fullmatch(r"(1[0-8]|[1-9])", _look.strip())
+                if _gm and int(_gm.group(1)) == _previous_gate:
+                    _found_previous_gate = True
+                    break
+            if not _found_previous_gate:
+                continue
+            _target = by_gate_fix.get(_previous_gate)
+            if _target is None:
+                _target = {"馬番": _previous_gate, "馬名": "", "U指数": None,
+                           "今回騎手": "", "単勝": None, "斤量": None}
+                records_to_fix.append(_target)
+                by_gate_fix[_previous_gate] = _target
+            _target["U指数"] = _u
+            # 同じ指数が誤って次馬番へ付いていた場合だけ取り除く。
+            _next_rec = by_gate_fix.get(_next_gate)
+            if _next_rec is not None and _next_rec is not _target:
+                try:
+                    _next_u = _next_rec.get("U指数")
+                    if _next_u is not None and abs(float(_next_u) - _u) < 0.051:
+                        _next_rec["U指数"] = None
+                except Exception:
+                    pass
+        return sorted(by_gate_fix.values(), key=lambda _r: int(_r.get("馬番") or 99))
+
+    # --- Ver1.19.64 馬番ブロック単位の馬名確定 ---
+    # 以前は「性齢付き馬名」を全頭まとめて抽出し、馬番順へ再配分していました。
+    # しかしスマホコピーで1頭だけ性齢行が欠けると、その時点から全頭の馬名が
+    # 1頭ずつズレる問題が発生します。Ver1.19.64では各馬番のブロック内だけを
+    # 調べ、別の馬の名前を絶対に横流ししません。
+
     for pos, (i, gate) in enumerate(gate_positions):
         next_i = gate_positions[pos + 1][0] if pos + 1 < len(gate_positions) else len(lines)
         # 1頭分の範囲を「前半＝馬名・騎手・U指数」「後半＝斤量・オッズ」として扱う。
         before = lines[max(0, i - 5):i]
         after = lines[i + 1:next_i]
         rec = {"馬番": gate, "馬名": "", "U指数": None, "今回騎手": "", "単勝": None, "斤量": None}
+
+        # 馬名は下の「馬番ごとのブロック解析」で取得する。
+        # 旧版にあった inline_horse_names の再配分は、1頭欠けたときに
+        # 後続の馬名が全てズレるうえ、Ver1.19.64で変数未定義エラーも発生したため廃止。
 
         # 馬番直前の数行を後ろから調べ、U指数・騎手・馬名をそれぞれ独立して拾う。
         # コピー時には「騎手+斤量」「人気欄のノイズ」「U指数」が同じ並びになるため、
@@ -1684,9 +2050,6 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             u = parse_u(before[bi])
             if u is not None:
                 rec["U指数"] = u
-                _, u_rank = parse_u_details(before[bi])
-                if u_rank is not None:
-                    rec["U指数順位"] = u_rank
                 u_pos = bi
                 break
 
@@ -1716,32 +2079,94 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             horse_block_start = gate_positions[pos - 1][0] + 1
         horse_block = lines[horse_block_start:i + 1]
 
-        # 馬番直前側の候補を最優先する。スマホコピーは「前馬の馬番→
-        # 性齢/厩舎→斤量/オッズ→次馬の馬名→騎手→U指数→次馬番」と並ぶため、
-        # ブロックの先頭にある性齢行を先に採ると前馬を誤割当てする。
-        name_before = search_before[:jockey_pos] if jockey_pos is not None else search_before
-        for bi in range(len(name_before) - 1, -1, -1):
-            cand = clean_name(name_before[bi])
-            if cand and cand != rec.get("今回騎手", ""):
+        # 第1候補：性齢付き本体行だけを調べる。
+        for block_line in horse_block:
+            if not is_sex_age_line(block_line):
+                continue
+            cand = clean_name(block_line)
+            if cand:
                 rec["馬名"] = cand
                 break
 
-        # 馬番直前に馬名がない形式だけ、現在の馬番ブロックを後ろから救済する。
+        # 第2候補：本体行が特殊なコピー形式だった場合だけ従来方式で救済。
         if not rec["馬名"]:
-            for block_line in reversed(horse_block):
-                if not is_sex_age_line(block_line):
-                    continue
+            for block_line in horse_block:
                 cand = clean_name(block_line)
+                if cand and not clean_jockey(block_line):
+                    rec["馬名"] = cand
+                    break
+
+        # 本体行を拾えない場合だけ、従来の馬名探索を救済として使う。
+        if not rec["馬名"]:
+            name_before = search_before[:jockey_pos] if jockey_pos is not None else search_before
+            for bi in range(len(name_before) - 1, -1, -1):
+                cand = clean_name(name_before[bi])
                 if cand and cand != rec.get("今回騎手", ""):
                     rec["馬名"] = cand
                     break
 
-        # 性齢付き行もない特殊なコピーだけを最後に救済する。
-        if not rec["馬名"]:
-            for block_line in reversed(horse_block):
-                cand = clean_name(block_line)
-                if cand and cand != rec.get("今回騎手", "") and not clean_jockey(block_line):
-                    rec["馬名"] = cand
+        # Ver1.19.43: 馬番直前5行に騎手が収まらないコピー形式を救済する。
+        # 「前の馬番の次〜この馬番」の範囲だけを使い、馬名本体行より後、
+        # U指数より前にある騎手マスター一致行を探す。別の馬の騎手を拾わないよう、
+        # あいまい一致は使わず、騎手名そのもの（または騎手名+斤量/間隔）のみ採用。
+        if not rec["今回騎手"]:
+            jockey_master = [
+                c for c in JOCKEY_MASTER
+                if c and c != "その他（自由手入力）"
+            ]
+            compact_master = {
+                re.sub(r"\s+", "", str(c)): c for c in jockey_master
+            }
+            # 馬名本体行の位置を特定。見つからない場合も、この馬のブロック内に限定する。
+            horse_line_pos = -1
+            for hbi, block_line in enumerate(horse_block):
+                if is_sex_age_line(block_line):
+                    horse_line_pos = hbi
+                    break
+
+            # U指数より後ろは次の表示項目に入り得るため、候補範囲から外す。
+            block_end = len(horse_block)
+            for hbi, block_line in enumerate(horse_block):
+                if parse_u(block_line) is not None:
+                    block_end = hbi
+                    break
+
+            candidate_start = horse_line_pos + 1 if horse_line_pos >= 0 else 0
+            for block_line in horse_block[candidate_start:block_end]:
+                raw_candidate = str(block_line or "").strip()
+                if not raw_candidate or is_sex_age_line(raw_candidate):
+                    continue
+
+                prefix, inline_weight = split_jockey_weight(raw_candidate)
+                candidate = prefix if prefix else raw_candidate
+                compact_candidate = re.sub(r"\s+", "", candidate)
+                # まず騎手名との完全一致を優先する。
+                if compact_candidate in compact_master:
+                    rec["今回騎手"] = compact_master[compact_candidate]
+                    if inline_weight is not None and rec["斤量"] is None:
+                        rec["斤量"] = inline_weight
+                    break
+
+                # 斤量・間隔などが騎手名に連結された行のみ、末尾を除いて照合。
+                # 行の途中に騎手名が含まれるだけのケースは採用しない。
+                compact_line = re.sub(r"\s+", "", raw_candidate)
+                for compact_name, master_name in sorted(
+                    compact_master.items(), key=lambda item: len(item[0]), reverse=True
+                ):
+                    if not compact_line.startswith(compact_name):
+                        continue
+                    suffix = compact_line[len(compact_name):]
+                    if re.fullmatch(
+                        r"(?:(?:4[89]|5\d|6[0-2])(?:\.0|\.5)?(?:kg|ＫＧ)?)?"
+                        r"(?:(?:中\d+[週周])|(?:\d+ヶ月)|(?:\d+か月))?",
+                        suffix,
+                        flags=re.I,
+                    ):
+                        rec["今回騎手"] = master_name
+                        if inline_weight is not None and rec["斤量"] is None:
+                            rec["斤量"] = inline_weight
+                        break
+                if rec["今回騎手"]:
                     break
 
         # 既存データは「救済用」。
@@ -1750,8 +2175,7 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         if not rec["馬名"] and gate in known_names:
             rec["馬名"] = known_names[gate]
 
-        # 斤量・単勝・人気は当該馬番直後の短い範囲だけを検索する。
-        # 次の馬の「馬名→騎手→U指数」を越えて値を拾わない。
+        # 斤量・単勝は「この馬番から次の馬番まで」の範囲だけを検索。
         for line in after:
             if rec["斤量"] is None:
                 w = parse_weight(line)
@@ -1761,20 +2185,63 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                 o = parse_odds(line)
                 if o is not None:
                     rec["単勝"] = o
-            if rec.get("人気") is None:
-                pop = parse_popularity(line)
-                if pop is not None:
-                    rec["人気"] = pop
-            if rec["斤量"] is not None and rec["単勝"] is not None and rec.get("人気") is not None:
+            if rec["斤量"] is not None and rec["単勝"] is not None:
                 break
 
+        # Ver1.19.82: 騎手名を基準に「近接行」まで含めて斤量を再照合。
+        # スマホコピーでは、
+        #   三浦皇成
+        #   58.0 中4週
+        # のように騎手と斤量が別行になる場合がある。
+        # 従来の「騎手と同じ行」だけの判定では、この58.0を拾えず、
+        # 後続馬の56.0を14番へ誤って割り当てる危険があった。
+        # まず騎手が出現した行を特定し、その前後2行だけを同一馬の近接情報として確認する。
+        if rec.get("今回騎手"):
+            jockey_key = re.sub(r"\s+", "", str(rec["今回騎手"]))
+            local_lines = list(horse_block) + list(after) + list(before)
+
+            # 同一馬ブロック内で騎手行を探す。
+            jockey_local_indices = []
+            for li, local_line in enumerate(local_lines):
+                compact_local = re.sub(r"\s+", "", str(local_line or ""))
+                if jockey_key and jockey_key in compact_local:
+                    jockey_local_indices.append(li)
+
+            # 騎手行そのものを最優先。
+            for li in jockey_local_indices:
+                w_local = parse_weight(local_lines[li])
+                if w_local is not None:
+                    rec["斤量"] = w_local
+                    break
+
+            # 騎手と斤量が別行なら、騎手行の直前・直後2行を確認。
+            if rec.get("斤量") is None:
+                for li in jockey_local_indices:
+                    lo = max(0, li - 2)
+                    hi = min(len(local_lines), li + 3)
+                    for near_line in local_lines[lo:hi]:
+                        # 次の馬番そのものを越えて別馬の斤量を拾わない。
+                        if is_gate(near_line) is not None:
+                            continue
+                        w_local = parse_weight(near_line)
+                        if w_local is not None:
+                            rec["斤量"] = w_local
+                            break
+                    if rec.get("斤量") is not None:
+                        break
+
         # 「騎手+斤量」が馬番直前にあった場合、斤量を優先保持。
+        # これは同一行に騎手名が実在する場合だけ採用し、
+        # 別馬の単独斤量を誤って拾わない。
         if rec["斤量"] is None:
             for candidate in reversed(before):
                 prefix, inline_weight = split_jockey_weight(candidate)
                 if prefix and inline_weight is not None:
-                    if not rec["今回騎手"]:
-                        rec["今回騎手"] = clean_jockey(prefix)
+                    cj = clean_jockey(prefix)
+                    if rec["今回騎手"] and cj and cj != rec["今回騎手"]:
+                        continue
+                    if not rec["今回騎手"] and cj:
+                        rec["今回騎手"] = cj
                     rec["斤量"] = inline_weight
                     break
 
@@ -1782,18 +2249,6 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             rec["今回騎手"] = jockey_fix.get(rec["今回騎手"], rec["今回騎手"])
         if rec["馬名"]:
             rec["馬名"] = name_fix.get(rec["馬名"], normalize_horse_name(rec["馬名"]))
-
-        rec.setdefault("U指数順位", None)
-        rec.setdefault("人気", None)
-        warnings = []
-        if not rec["馬名"]:
-            warnings.append("馬名を解析できません")
-        if not rec["今回騎手"]:
-            warnings.append("今回騎手を解析できません")
-        for label in ("U指数", "斤量", "単勝"):
-            if rec.get(label) is None:
-                warnings.append(f"{label}を解析できません")
-        rec["解析警告"] = " / ".join(warnings)
 
         if rec["馬名"] or rec["今回騎手"] or rec["U指数"] is not None:
             old = results.get(gate)
@@ -1820,27 +2275,604 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             elif cj not in jockey_candidates:
                 rec["今回騎手"] = ""
 
-    # 馬番の欠落・重複は、値を別馬に補うのではなく確認表へ警告として出す。
-    # 単独数字はコピー形式により馬番以外にもなり得るため、ここでは自動修正しない。
-    gate_counts = {}
-    for _, gate in gate_positions:
-        gate_counts[gate] = gate_counts.get(gate, 0) + 1
-    duplicate_gates = sorted(gate for gate, count in gate_counts.items() if count > 1)
-    parsed_gates = sorted(results)
-    missing_gates = []
-    if parsed_gates:
-        missing_gates = [gate for gate in range(1, max(parsed_gates) + 1) if gate not in results]
-    layout_warnings = []
-    if duplicate_gates:
-        layout_warnings.append("馬番重複候補: " + ", ".join(map(str, duplicate_gates)))
-    if missing_gates:
-        layout_warnings.append("馬番欠落: " + ", ".join(map(str, missing_gates)))
-    if layout_warnings:
-        layout_warning = " / ".join(layout_warnings)
-        for rec in results.values():
-            rec["解析警告"] = " / ".join(filter(None, [rec.get("解析警告", ""), layout_warning]))
+    # Ver1.19.64: 馬名の全体順再配分は廃止。
+    # 1頭分のブロックから判定できない馬は空欄のままにし、後から既存データ/手入力で補完する。
 
-    return [results[g] for g in sorted(results) if 1 <= g <= 18]
+    # Ver1.19.99: 解析結果に馬番の欠番がある場合、既存馬の値をずらして埋めず、
+    # 欠けた馬番の空レコードを挿入する。これにより6番が抜けて7番が6番扱いになる等の
+    # 行ずれを防ぐ。名前・騎手・指数・オッズ・斤量は推測で補完しない。
+    def _ensure_gate_continuity(records_to_check):
+        _by_gate = {}
+        for _r in records_to_check or []:
+            try:
+                _g = int(_r.get("馬番"))
+            except (TypeError, ValueError):
+                continue
+            if 1 <= _g <= 18 and _g not in _by_gate:
+                _by_gate[_g] = dict(_r)
+        if not _by_gate:
+            return []
+        _max_gate = max(_by_gate)
+        for _g in range(1, _max_gate + 1):
+            if _g not in _by_gate:
+                _by_gate[_g] = {
+                    "馬番": _g, "馬名": "", "今回騎手": "", "U指数": None,
+                    "単勝": None, "斤量": None, "解析警告": "馬番欠落：文字データからこの馬番を検出できません"
+                }
+        return sorted(_by_gate.values(), key=lambda _r: int(_r.get("馬番") or 99))
+
+
+    # --- Ver1.19.69: 性齢付き「馬本体ブロック」を最優先する再構築 ---
+    # スマホの実コピーは「馬名→性齢/厩舎→騎手→U指数→馬番」の順になるため、
+    # 馬番の直前数行だけを見て騎手を探すと、直前の馬の騎手を拾うことがあります。
+    # 特に連続する13～16番でこのズレが発生しやすかったため、
+    # 「性齢行から次の性齢行まで」を1頭の完全なブロックとして再解析します。
+    # この処理では、ブロック内のU指数の後に現れる単独馬番をその馬の馬番とします。
+    # そのため、後続馬の騎手・馬名が前の馬へ横流しされません。
+    authoritative = {}
+    section_starts = []
+    for li, line in enumerate(lines):
+        if is_sex_age_line(line):
+            nm = clean_name(line)
+            name_li = li
+            # Ver1.19.98の修正: VIP表示やコピーの改行により、馬名と
+            # 性齢・厩舎が別行になる形式を扱う。
+            # 性齢行自体に馬名がなければ、直前の同一馬ブロック内から
+            # 「VIP」を除去した馬名候補を探す。騎手・U指数・馬番・厩舎は除外。
+            if not nm:
+                for back_li in range(li - 1, max(-1, li - 9), -1):
+                    raw_candidate = str(lines[back_li] or '').strip()
+                    if not raw_candidate:
+                        continue
+                    candidate = re.sub(r'^(?:VIP\s*)+', '', raw_candidate, flags=re.I).strip()
+                    if (not candidate or is_gate(candidate) is not None
+                            or is_sex_age_line(candidate)
+                            or parse_u(candidate) is not None
+                            or parse_weight(candidate) is not None
+                            or parse_odds(candidate) is not None
+                            or clean_jockey(candidate)):
+                        continue
+                    candidate_name = clean_name(candidate)
+                    if candidate_name:
+                        nm = candidate_name
+                        name_li = back_li
+                        break
+            if nm:
+                # 同じ馬名を性齢行と前方の単独馬名行の両方から登録しない。
+                if not section_starts or name_li > section_starts[-1][0]:
+                    section_starts.append((name_li, nm))
+
+    for si, (start_li, section_name) in enumerate(section_starts):
+        end_li = section_starts[si + 1][0] if si + 1 < len(section_starts) else len(lines)
+        block = lines[start_li:end_li]
+        if not block:
+            continue
+
+        # U指数をブロック内から取得。馬番より前にあるU指数を優先。
+        u_local = None
+        u_index = None
+        for bj, bl in enumerate(block):
+            uv = parse_u(bl)
+            if uv is not None:
+                u_local = uv
+                u_index = bj
+                break
+        if u_local is None:
+            continue
+
+        # U指数より後ろにある単独の1～18を馬番とする。
+        gate_local = None
+        gate_index = None
+        for bj in range(u_index + 1, len(block)):
+            gv = is_gate(block[bj])
+            if gv is not None:
+                gate_local = gv
+                gate_index = bj
+                break
+        if gate_local is None:
+            continue
+
+        # 騎手は「馬名本体行の後～U指数の前」だけから探す。
+        # これにより前馬の騎手を拾うことを防止。
+        jockey = ""
+        weight = None
+        jockey_end = u_index
+        for bj in range(1, jockey_end):
+            candidate_line = block[bj]
+            prefix, inline_weight = split_jockey_weight(candidate_line)
+            candidate = prefix if prefix else candidate_line
+            cj = clean_jockey(candidate)
+            if cj:
+                jockey = cj
+                if inline_weight is not None:
+                    weight = inline_weight
+                break
+
+        # 斤量は騎手行を含め、U指数より前～馬番までのブロックから取得。
+        if weight is None:
+            for bj in range(1, min(gate_index + 1, len(block))):
+                wv = parse_weight(block[bj])
+                if wv is not None:
+                    weight = wv
+                    break
+
+        authoritative[gate_local] = {
+            "馬番": gate_local,
+            "馬名": name_fix.get(section_name, normalize_horse_name(section_name)),
+            "U指数": u_local,
+            "今回騎手": jockey_fix.get(jockey, jockey),
+            "単勝": None,
+            "斤量": weight,
+        }
+
+    # 16頭すべてを性齢付き本体ブロックから確定できた場合は、
+    # 既存の「馬番直前5行」方式よりこちらを優先する。
+    # 1頭でも不足している場合は既存結果を壊さず、取得できた馬だけ上書き。
+    for gate, arec in authoritative.items():
+        old = results.get(gate)
+        if old is None:
+            results[gate] = arec
+        else:
+            # 馬名・騎手・U指数・斤量をブロック由来の値で確定。
+            # 単勝は後段の馬番ブロック処理で取得した値を保持。
+            old["馬名"] = arec["馬名"] or old.get("馬名", "")
+            old["今回騎手"] = arec["今回騎手"] or old.get("今回騎手", "")
+            old["U指数"] = arec["U指数"] if arec["U指数"] is not None else old.get("U指数")
+            if arec["斤量"] is not None:
+                old["斤量"] = arec["斤量"]
+
+    # --- Ver1.19.44 騎手の馬別ブロック補完 ---
+    # スマホからのコピーでは「馬番」行と「馬名・性齢」行の位置関係が
+    # 一定しないことがあるため、性齢付き馬名行を境界に各馬のブロックを作り、
+    # その馬のブロック内だけから騎手を補完する。既に取得済みの騎手は上書きしない。
+    horse_sections = []
+    for line_index, line in enumerate(lines):
+        if is_sex_age_line(line):
+            horse_name = clean_name(line)
+            if horse_name:
+                horse_sections.append((line_index, horse_name))
+
+    sorted_gates = sorted(g for g in results if 1 <= g <= 18)
+    if horse_sections and len(horse_sections) == len(sorted_gates):
+        for section_index, (line_index, section_name) in enumerate(horse_sections):
+            gate = sorted_gates[section_index]
+            rec = results.get(gate)
+            if not rec or rec.get("今回騎手"):
+                continue
+            section_end = (
+                horse_sections[section_index + 1][0]
+                if section_index + 1 < len(horse_sections)
+                else len(lines)
+            )
+            # 馬名・性齢行の後から次の馬名行までを検索。
+            for candidate_line in lines[line_index + 1:section_end]:
+                raw_candidate = str(candidate_line or "").strip()
+                if not raw_candidate:
+                    continue
+                prefix, inline_weight = split_jockey_weight(raw_candidate)
+                candidate = prefix if prefix else raw_candidate
+                candidate_compact = re.sub(r"\s+", "", candidate)
+                # 既知のOCR誤読を補正してから、騎手マスターと照合する。
+                candidate_compact = candidate_compact.replace("絞島克駿", "鮫島克駿")
+                matched = ""
+                for master_name in sorted(jockey_candidates, key=lambda name: len(re.sub(r"\s+", "", name)), reverse=True):
+                    master_compact = re.sub(r"\s+", "", master_name)
+                    if candidate_compact == master_compact:
+                        matched = master_name
+                        break
+                    # C.ルメー等、末尾1文字程度が欠けたコピーだけを補完する。
+                    if (len(candidate_compact) >= 5
+                            and master_compact.startswith(candidate_compact)
+                            and len(master_compact) - len(candidate_compact) <= 2):
+                        matched = master_name
+                        break
+                if matched:
+                    rec["今回騎手"] = matched
+                    if inline_weight is not None and rec.get("斤量") is None:
+                        rec["斤量"] = inline_weight
+                    break
+
+    # --- Ver1.19.69: U指数を中心に1頭分を確定 ---
+    # スマホ全文コピーでは、馬番が行境界へずれることがある。
+    # そのため「U指数→騎手→馬名→馬番境界」を1頭の単位として解析する。
+    def leading_boundary_gate(line):
+        x = str(line or "").strip()
+        m = re.match(r"^(1[0-8]|[1-9])(?=\s*[^0-9])", x)
+        if not m:
+            return None
+        g = int(m.group(1)); rest = x[m.end():].strip()
+        return g if is_sex_age_line(rest) and clean_name(rest) else None
+
+    u_positions = [(i, parse_u(line)) for i, line in enumerate(lines)]
+    u_positions = [(i, u) for i, u in u_positions if u is not None]
+    records = []
+    used = set()
+
+    for ui, (u_idx, u_value) in enumerate(u_positions):
+        next_u_idx = u_positions[ui + 1][0] if ui + 1 < len(u_positions) else len(lines)
+        before = lines[max(0, u_idx - 8):u_idx]
+        after = lines[u_idx + 1:next_u_idx]
+
+        # 馬名は「U指数の直前」にある最後の有効な馬名を優先。
+        # 9～12番のように「馬名→U指数→騎手」の並びでも正しく拾える。
+        name = ""
+        def plausible_horse_name(line):
+            x = str(line or "").strip()
+            if not x or is_gate(x) is not None:
+                return ""
+            compact = re.sub(r"\s+", "", x)
+            if re.fullmatch(r"(?:中\d+[週周]|\d+ヶ月|\d+か月|\d+走前|前\d+走)", compact):
+                return ""
+            # Ver1.19.95: 騎手名を馬名候補にしない。
+            # 馬名とU指数の間に騎手名があるコピー形式で、近い騎手名を馬名として
+            # 拾ってしまうと、6番以降の馬名がずれたり重複したりするため。
+            if not is_sex_age_line(x) and clean_jockey(x):
+                return ""
+            if "VIP" in compact.upper() or "倍" in compact or "人気" in compact:
+                # 性齢付き本体行はclean_nameで処理できるので例外的に許可。
+                if not is_sex_age_line(x):
+                    return ""
+            return clean_name(x)
+
+        for line in reversed(before):
+            cand = plausible_horse_name(line)
+            if cand:
+                name = cand
+                break
+
+        # 騎手は「U指数の直後→次の馬番境界」を最優先。
+        # 9～12番のように馬名→U指数→騎手の並びに対応する。
+        # そこに騎手が無ければ、従来どおりU指数直前を探す。
+        jockey = ""; weight = None
+        after_until_gate = []
+        for line in after[:6]:
+            if is_gate(line) is not None or leading_boundary_gate(line) is not None:
+                break
+            after_until_gate.append(line)
+        for line in after_until_gate:
+            prefix, inline_weight = split_jockey_weight(line)
+            cand = prefix if prefix else line
+            cj = clean_jockey(cand)
+            if cj:
+                jockey = jockey_fix.get(cj, cj)
+                if inline_weight is not None:
+                    weight = inline_weight
+                break
+        if not jockey:
+            for line in reversed(before):
+                prefix, inline_weight = split_jockey_weight(line)
+                cand = prefix if prefix else line
+                cj = clean_jockey(cand)
+                if cj:
+                    jockey = jockey_fix.get(cj, cj)
+                    if inline_weight is not None:
+                        weight = inline_weight
+                    break
+
+        # 馬番はU指数の後から次のU指数までの境界を探す。
+        gate = None
+        for line in after:
+            g = is_gate(line)
+            if g is not None:
+                gate = g; break
+            g = leading_boundary_gate(line)
+            if g is not None:
+                gate = g; break
+        if gate is None or gate in used:
+            continue
+
+        if weight is None:
+            for line in before:
+                w = parse_weight(line)
+                if w is not None:
+                    weight = w; break
+
+        records.append({
+            "馬番": gate,
+            "馬名": name,
+            "U指数": u_value,
+            "今回騎手": jockey,
+            "単勝": None,
+            "斤量": weight,
+        })
+        used.add(gate)
+
+    # --- Ver1.19.71: 「馬名本体→騎手→U指数→馬番」のゲートブロックを最終確定源にする ---
+    # 実際のウマニティのスマホ全文コピーでは、各馬が次のような順序で並ぶ。
+    #   馬名＋性齢＋厩舎＋オッズ
+    #   騎手＋斤量＋間隔
+    #   U指数
+    #   馬番
+    # したがって「U指数を起点に前後を推測」すると、14～16番で前馬の騎手が
+    # 混入したり、16番の騎手名が馬名欄へ入ることがある。ここでは馬番を
+    # 区切りとして、その直前のブロックだけを1頭として確定する。
+    gate_block_records = []
+    gate_positions2 = build_logical_gate_positions(lines)
+
+    for gi, (gate_li, gate_no) in enumerate(gate_positions2):
+        prev_gate_li = gate_positions2[gi - 1][0] if gi > 0 else -1
+        block = lines[prev_gate_li + 1:gate_li]
+        if not block:
+            continue
+
+        horse_name = ""
+        horse_line_index = None
+        # 馬名は性齢付き本体行からのみ確定する。
+        for bi, bl in enumerate(block):
+            if not is_sex_age_line(bl):
+                continue
+            cand = clean_name(bl)
+            if cand:
+                horse_name = cand
+                horse_line_index = bi
+                break
+
+        # U指数はこの馬のブロック内から取得。
+        u_value = None
+        u_line_index = None
+        for bi, bl in enumerate(block):
+            uv = parse_u(bl)
+            if uv is not None:
+                u_value = uv
+                u_line_index = bi
+                break
+
+        jockey = ""
+        weight = None
+        # 騎手は「馬名本体行～U指数」の間をまず検索する。
+        # ただし13番のように「馬名＋U指数」が同一行になり、
+        # その直後に「騎手＋斤量＋間隔」が来るコピー形式もあるため、
+        # 見つからなければU指数の後～馬番まで同じブロック内を検索する。
+        j_start = (horse_line_index + 1) if horse_line_index is not None else 0
+        j_end = u_line_index if u_line_index is not None else len(block)
+        search_ranges = [(j_start, j_end)]
+        if u_line_index is not None:
+            search_ranges.append((max(j_start, u_line_index + 1), len(block)))
+
+        for rs, re_ in search_ranges:
+            for bi in range(rs, re_):
+                raw_line = block[bi]
+                prefix, inline_weight = split_jockey_weight(raw_line)
+                candidate = prefix if prefix else raw_line
+                cj = clean_jockey(candidate)
+                if cj:
+                    jockey = jockey_fix.get(cj, cj)
+                    if inline_weight is not None:
+                        weight = inline_weight
+                    break
+            if jockey:
+                break
+
+        # 斤量が別行に分離しているコピー形式も、この馬のブロック内だけで補完。
+        if weight is None:
+            for bi in range(j_start, len(block)):
+                wv = parse_weight(block[bi])
+                if wv is not None:
+                    weight = wv
+                    break
+
+        odds = None
+        for bl in block:
+            ov = parse_odds(bl)
+            if ov is not None:
+                odds = ov
+                break
+
+        if horse_name or jockey or u_value is not None:
+            gate_block_records.append({
+                "馬番": gate_no,
+                "馬名": name_fix.get(horse_name, normalize_horse_name(horse_name)) if horse_name else "",
+                "U指数": u_value,
+                "今回騎手": jockey,
+                "単勝": odds,
+                "斤量": weight,
+            })
+
+    # Ver1.19.75: ゲートブロックを「最終結果そのもの」にしない。
+    # ゲートブロックは横流し防止には強い一方、スマホコピーの列崩れで
+    # 10～12番の馬名、14～15番の騎手、14～15番の斤量などが空欄になる場合がある。
+    # 以前はここで gate_block_records を丸ごと返していたため、
+    # その空欄によって、それまで別の解析段階で正しく取れていた値まで消えていた。
+    #
+    # そこで、最終確定は「馬番ごとのブロック」を軸にしつつ、
+    # 各項目が空欄なら同じ馬番の既存解析結果を補完に使う。
+    # 別馬のデータを横流ししないため、補完元は必ず同じ馬番だけに限定する。
+    if gate_block_records and len(gate_block_records) >= min(12, len(gate_positions2)):
+        final_records = []
+        for gbr in gate_block_records:
+            gate = gbr.get("馬番")
+            old = results.get(gate, {}) if gate is not None else {}
+            _gbr_name = gbr.get("馬名") or ""
+            if _is_suspicious_ocr_horse_name(_gbr_name):
+                _gbr_name = ""
+            merged = {
+                "馬番": gate,
+                "馬名": _gbr_name or old.get("馬名") or known_names.get(gate, ""),
+                "U指数": gbr.get("U指数") if gbr.get("U指数") is not None else old.get("U指数"),
+                "今回騎手": gbr.get("今回騎手") or old.get("今回騎手", ""),
+                "単勝": gbr.get("単勝") if gbr.get("単勝") is not None else old.get("単勝"),
+                "斤量": gbr.get("斤量") if gbr.get("斤量") is not None else old.get("斤量"),
+            }
+            # 騎手の既知表記を最後に統一。
+            if merged.get("今回騎手"):
+                merged["今回騎手"] = jockey_fix.get(merged["今回騎手"], merged["今回騎手"])
+            if merged.get("馬名"):
+                merged["馬名"] = name_fix.get(merged["馬名"], normalize_horse_name(merged["馬名"]))
+            final_records.append(merged)
+        # Ver1.19.75: ここではreturnしない。
+        # 直後のローカル窓補完で14/15番の騎手・斤量などを救済する。
+
+    # --- Ver1.19.74/75: 馬番直前ローカル窓による最終欠落補完 ---
+    # スマホの列崩れでは「馬名→U指数→騎手→馬番」など順序が少し変わる。
+    # その場合でも、各馬番の直前数行だけを対象に、
+    # 1) 馬名 2) 騎手 3) 斤量 4) 単勝 を同じ馬番へ再補完する。
+    # 別馬のデータを横流ししないため、対象範囲は必ずその馬番の直前～
+    # 直前の馬番までに限定する。
+    def _local_horse_candidate(x):
+        x = str(x or '').strip()
+        if not x or is_gate(x) is not None:
+            return ''
+        compact = re.sub(r'\s+', '', x)
+        if re.fullmatch(r'(?:中\d+[週周]|\d+ヶ月|\d+か月|\d+走前|前\d+走)', compact):
+            return ''
+        if parse_u(x) is not None or parse_weight(x) is not None or parse_odds(x) is not None:
+            return ''
+        if not re.search(r'[一-龥々ぁ-んァ-ヶーA-Za-z]', x):
+            return ''
+        # Ver1.19.95: 騎手マスター一致をclean_nameより先に除外する。
+        # 旧順序では「田山旺佑」「佐々木大」などが有効な日本語として
+        # clean_nameを通過し、馬名欄へ混入していた。
+        if not is_sex_age_line(x) and clean_jockey(x):
+            return ''
+        # 性齢付き本体行ならclean_nameが最も信頼できる。
+        c = clean_name(x)
+        if c and not _is_suspicious_ocr_horse_name(c):
+            return c
+        # 単独馬名行も許可する。
+        jc = clean_jockey(x)
+        if jc:
+            return ''
+        if len(compact) >= 2 and len(compact) <= 16:
+            return name_fix.get(compact, normalize_horse_name(compact))
+        return ''
+
+    for gi, (gate_li, gate_no) in enumerate(gate_positions2):
+        prev_gate_li = gate_positions2[gi - 1][0] if gi > 0 else -1
+        local = lines[prev_gate_li + 1:gate_li]
+        if not local:
+            continue
+        target = next((r for r in gate_block_records if r.get('馬番') == gate_no), None)
+        if target is None:
+            target = results.setdefault(gate_no, {
+                '馬番': gate_no, '馬名': '', 'U指数': None, '今回騎手': '',
+                '単勝': None, '斤量': None
+            })
+
+        # 馬名：馬番直前の候補を後ろから探す。間隔・騎手・数字行は除外。
+        if not target.get('馬名') or _is_suspicious_ocr_horse_name(target.get('馬名')):
+            for line in reversed(local[-7:]):
+                cand = _local_horse_candidate(line)
+                if cand and cand not in {target.get('今回騎手', '')}:
+                    target['馬名'] = cand
+                    break
+
+        # 騎手：同じローカル窓の中で騎手マスター完全一致を優先。
+        if not target.get('今回騎手'):
+            for line in reversed(local[-7:]):
+                prefix, inline_weight = split_jockey_weight(line)
+                candidate = prefix if prefix else line
+                cj = clean_jockey(candidate)
+                if cj:
+                    target['今回騎手'] = jockey_fix.get(cj, cj)
+                    if inline_weight is not None and target.get('斤量') is None:
+                        target['斤量'] = inline_weight
+                    break
+
+        # 斤量：同じ馬番ブロックからのみ補完。
+        if target.get('斤量') is None:
+            for line in reversed(local[-7:]):
+                w = parse_weight(line)
+                if w is not None:
+                    target['斤量'] = w
+                    break
+
+        # 単勝：同じ馬番ブロックからのみ補完。
+        if target.get('単勝') is None:
+            for line in local:
+                o = parse_odds(line)
+                if o is not None:
+                    target['単勝'] = o
+                    break
+
+    # gate_block_recordsを更新してから返す。
+    if gate_block_records:
+        by_gate = {int(r.get('馬番')): r for r in gate_block_records if r.get('馬番') is not None}
+        for gate, rec in results.items():
+            if gate in by_gate:
+                # ローカル窓で新しく補完できた値を優先し、
+                # その後で「まだ空欄の項目」だけ既存解析結果から補う。
+                cur = by_gate[gate]
+                if not cur.get('馬名') or _is_suspicious_ocr_horse_name(cur.get('馬名')):
+                    if rec.get('馬名') and not _is_suspicious_ocr_horse_name(rec.get('馬名')):
+                        cur['馬名'] = rec.get('馬名')
+                if not cur.get('今回騎手') and rec.get('今回騎手'):
+                    cur['今回騎手'] = rec.get('今回騎手')
+                if cur.get('斤量') is None and rec.get('斤量') is not None:
+                    cur['斤量'] = rec.get('斤量')
+                if cur.get('単勝') is None and rec.get('単勝') is not None:
+                    cur['単勝'] = rec.get('単勝')
+                if cur.get('U指数') is None and rec.get('U指数') is not None:
+                    cur['U指数'] = rec.get('U指数')
+        # ここでは既存の最終返却ロジックに入る前なので、更新済みデータを返す。
+        final74 = []
+        for gate in sorted(by_gate):
+            r = by_gate[gate]
+            if r.get('馬名') and _is_suspicious_ocr_horse_name(r.get('馬名')):
+                _old_name = results.get(gate, {}).get('馬名', '') if gate in results else ''
+                r['馬名'] = _old_name if _old_name and not _is_suspicious_ocr_horse_name(_old_name) else known_names.get(gate, '')
+            final74.append(r)
+        # Ver1.19.94: スマホの全文コピーで「馬名 → U指数 → 騎手/斤量 → 馬番」
+        # の順になる馬が、性齢・調教師行の位置ずれにより gate_positions2 から
+        # まるごと落ちるケースを救済する。特に「テイエムアイラン / 89.40 /
+        # 富田暁 55.0 中9週 / 2 / 宮地貴稔 / 牝3 栗 5.9倍」のような並び。
+        # 既に取得済みの馬番は絶対に上書きせず、欠けている馬番だけを追加する。
+        _final_by_gate = {int(r.get("馬番")): r for r in final74 if r.get("馬番") is not None}
+        _all_u_positions = [(ii, parse_u(ll)) for ii, ll in enumerate(lines)]
+        _all_u_positions = [(ii, uv) for ii, uv in _all_u_positions if uv is not None]
+        _max_seen_gate = max([int(g) for g in _final_by_gate] + [int(g) for _, g in gate_positions2] + [0])
+        _expected_gates = set(range(1, _max_seen_gate + 1))
+        _missing_gates = _expected_gates - set(_final_by_gate)
+        for _ui, (_u_line_idx, _u_value) in enumerate(_all_u_positions):
+            _next_u_idx = _all_u_positions[_ui + 1][0] if _ui + 1 < len(_all_u_positions) else len(lines)
+            _segment_after_u = lines[_u_line_idx + 1:_next_u_idx]
+            _recovered_gate = None
+            _gate_local_pos = None
+            for _sj, _sline in enumerate(_segment_after_u[:8]):
+                _gm = re.fullmatch(r"(1[0-8]|[1-9])", str(_sline or "").strip())
+                if _gm:
+                    _recovered_gate = int(_gm.group(1))
+                    _gate_local_pos = _sj
+                    break
+            if _recovered_gate is None or _recovered_gate not in _missing_gates:
+                continue
+            _name = ""
+            for _prior_line in reversed(lines[max(0, _u_line_idx - 8):_u_line_idx]):
+                _candidate_name = plausible_horse_name(_prior_line)
+                if _candidate_name and not clean_jockey(_prior_line):
+                    _name = _candidate_name
+                    break
+            _jockey = ""
+            _weight = None
+            for _sline in _segment_after_u[:_gate_local_pos]:
+                _prefix, _inline_weight = split_jockey_weight(_sline)
+                _candidate_jockey = _prefix if _prefix else _sline
+                _cj = clean_jockey(_candidate_jockey)
+                if _cj:
+                    _jockey = jockey_fix.get(_cj, _cj)
+                    if _inline_weight is not None:
+                        _weight = _inline_weight
+                    break
+                if _weight is None:
+                    _weight = parse_weight(_sline)
+            if not _name and _recovered_gate in known_names:
+                _name = known_names[_recovered_gate]
+            if _name or _u_value is not None or _jockey:
+                final74.append({
+                    "馬番": _recovered_gate, "馬名": _name, "U指数": _u_value,
+                    "今回騎手": _jockey, "単勝": None, "斤量": _weight,
+                })
+                _final_by_gate[_recovered_gate] = final74[-1]
+                _missing_gates.discard(_recovered_gate)
+        if len(final74) >= min(12, len(gate_positions2)):
+            return _final_horse_name_safety(_ensure_gate_continuity(_apply_uindex_inline_gate_boundary_repair(final74)))
+
+
+    # 13番のようにU指数自体がコピーから欠落した馬は推測で作らない。
+    if len(records) >= 2:
+        _safe_records = _apply_uindex_inline_gate_boundary_repair(sorted(records, key=lambda r: r["馬番"]))
+        return _final_horse_name_safety(_ensure_gate_continuity(_safe_records))
+
+
 
 def safe_int_convert(value, default=0):
     """馬番等の安全な数値変換関数"""
@@ -1962,6 +2994,12 @@ COURSE_LINEAGE_RULES = {'東京芝1600m': [{'sire': 'ロードカナロア', 'sc
                 {'sire': 'シニスターミニスター', 'score': 5.0, 'styles': ['逃げ', '先行']},
                 {'sire': 'キズナ', 'score': 5.0, 'sex': ['牡']},
                 {'sire': 'リアルスティール', 'score': 5.0, 'sex': ['牡']}],
+ '京都芝1400m(外)': [{'sire': 'ロードカナロア', 'score': 5.0},
+                    {'sire': 'モーリス', 'score': 5.0},
+                    {'sire': 'ドゥラメンテ', 'score': 5.0},
+                    {'sire': 'ミッキーアイル', 'score': 5.0, 'sex': ['牝']},
+                    {'sire': 'ビッグアーサー', 'score': 5.0},
+                    {'sire': 'キタサンブラック', 'score': 5.0, 'sex': ['牝']}],
  '京都芝1600m(外)': [{'sire': 'イスラボニータ', 'score': 5.0},
                  {'sire': 'ルーラーシップ', 'score': 5.0},
                  {'sire': 'リオンディーズ', 'score': 5.0},
@@ -2410,6 +3448,435 @@ def _infer_umanity_start_gate_from_raw_text(raw_text):
 
 
 
+def parse_umanity_desktop_table_image(uploaded_file, forced_start_gate=1):
+    """横長のPC出走表を行単位でOCRする補助パーサー。
+
+    スマホ縦長カード用の固定座標OCRとは分離し、OCR単語の位置から表の行を組み立てる。
+    馬番・馬名・性齢・斤量・騎手・単勝・人気を取得し、読み切れない項目は空欄にする。
+    """
+    if not OCR_AVAILABLE:
+        return []
+    try:
+        image = Image.open(io.BytesIO(uploaded_file.getvalue()))
+        image = ImageOps.exif_transpose(image).convert("RGB")
+        image.load()
+        w, h = image.size
+        # PCの横長表だけを対象にする。スマホ画像には既存の固定座標OCRを使う。
+        if w < 1200 or w / max(h, 1) < 0.85:
+            return []
+        prepared = _prepare_ocr_image(image)
+        data = pytesseract.image_to_data(
+            prepared, lang="jpn+eng", config="--oem 3 --psm 6",
+            output_type=pytesseract.Output.DICT,
+        )
+    except Exception:
+        return []
+
+    # _prepare_ocr_image は幅を1800px以上に拡大するため、位置比率で処理する。
+    pw, ph = prepared.size
+    tokens = []
+    for i, raw in enumerate(data.get("text", [])):
+        text = _ocr_clean_line(raw)
+        if not text:
+            continue
+        try:
+            conf = float(data.get("conf", [])[i])
+            left = int(data["left"][i]); top = int(data["top"][i])
+            width = int(data["width"][i]); height = int(data["height"][i])
+        except Exception:
+            continue
+        if conf < 5 or height <= 0:
+            continue
+        tokens.append({
+            "text": text, "x": (left + width / 2) / pw,
+            "y": (top + height / 2) / ph, "h": height / ph,
+            "conf": conf,
+        })
+    if not tokens:
+        return []
+
+    # 同じ横行の単語をまとめる。表の罫線・ヘッダーは馬番の条件で除外する。
+    tokens.sort(key=lambda t: (t["y"], t["x"]))
+    median_h = sorted(t["h"] for t in tokens)[len(tokens) // 2]
+    tolerance = max(0.006, median_h * 0.85)
+    lines = []
+    for token in tokens:
+        best = None
+        best_delta = None
+        for line in lines[-3:]:
+            delta = abs(token["y"] - line["y"])
+            if delta <= tolerance and (best_delta is None or delta < best_delta):
+                best, best_delta = line, delta
+        if best is None:
+            lines.append({"y": token["y"], "tokens": [token]})
+        else:
+            best["tokens"].append(token)
+            best["y"] = sum(t["y"] for t in best["tokens"]) / len(best["tokens"])
+    lines.sort(key=lambda line: line["y"])
+
+    try:
+        start_gate = max(1, min(18, int(forced_start_gate or 1)))
+    except Exception:
+        start_gate = 1
+    rows = []
+    seen_gates = set()
+    for line in lines:
+        ts = sorted(line["tokens"], key=lambda t: t["x"])
+        # 表の左側にある馬番だけを採用。ヘッダー中の「馬番」等は除外。
+        gate_token = next((t for t in ts if 0.09 <= t["x"] <= 0.19 and re.fullmatch(r"\d{1,2}", t["text"])), None)
+        if not gate_token:
+            continue
+        gate = int(gate_token["text"])
+        if gate < start_gate or gate > 18 or gate in seen_gates:
+            continue
+
+        def column_text(x0, x1):
+            vals = [t["text"] for t in ts if x0 <= t["x"] < x1]
+            return "".join(vals).strip()
+
+        name = column_text(0.19, 0.355)
+        name = re.sub(r"^[^ァ-ヶ一-龥々A-Za-z]+", "", name)
+        name = re.sub(r"[^ァ-ヶーヴ一-龥々A-Za-z・ー]", "", name)
+        sex_age = column_text(0.355, 0.395)
+        sex_match = re.search(r"([牡牝セ騸])\s*(\d{1,2})", sex_age)
+        sex_age = ("セ" if sex_match and sex_match.group(1) == "騸" else sex_match.group(1)) + sex_match.group(2) if sex_match else ""
+
+        weight_text = column_text(0.395, 0.435).replace(" ", "")
+        weight_match = re.search(r"(?:4[8-9]|5\d|6[0-2])(?:\.\d)?", weight_text)
+        weight = float(weight_match.group(0)) if weight_match else None
+
+        jockey = column_text(0.435, 0.505)
+        jockey = re.sub(r"[0-9.]+", "", jockey).strip()
+        odds_text = column_text(0.605, 0.665).replace("．", ".").replace(",", ".")
+        odds_match = re.search(r"\d{1,3}(?:\.\d{1,2})?", odds_text)
+        odds = float(odds_match.group(0)) if odds_match else None
+        popularity_text = column_text(0.665, 0.72)
+        popularity_match = re.search(r"\d{1,2}", popularity_text)
+        popularity = int(popularity_match.group(0)) if popularity_match else None
+
+        # 馬名と馬番が取れた行だけ登録し、誤読した空行の混入を防ぐ。
+        if len(name) < 2:
+            continue
+        rows.append({
+            "_row_idx": len(rows), "_gate_raw": gate, "馬番": gate,
+            "馬名": normalize_horse_name(name), "性齢": sex_age,
+            "今回騎手": _best_master_match(jockey, JOCKEY_MASTER) if jockey else "(未選択)",
+            "斤量": weight, "厩舎": "(未選択)", "単勝": odds,
+            "人気": popularity, "U指数": None,
+            "取得元": "ウマニティPC出走表画像(OCR行・列位置解析)",
+        })
+        seen_gates.add(gate)
+    return sorted(rows, key=lambda r: int(r.get("馬番", 99)))
+
+
+
+def _is_suspicious_ocr_horse_name(name):
+    """OCRが競走間隔・表示補助情報を馬名として拾ったかを判定する。"""
+    s = normalize_horse_name(name or "")
+    if not s:
+        return True
+    pats = (
+        r"^中[0-9０-９]+週$", r"^[0-9０-９]+週$", r"^前[0-9０-９]+走$",
+        r"^[0-9０-９]+走前$", r"^休み明け$", r"^休養$", r"^取消$", r"^除外$",
+    )
+    return any(re.fullmatch(p, s) for p in pats)
+
+
+def parse_umanity_screenshot_image_adaptive(uploaded_file, raw_text="", forced_start_gate=1):
+    """Ver1.19.58: ウマニティ画像の行位置を固定値ではなくOCR実測から自動検出する。
+
+    改善点:
+    - 1枚の画像に16～18頭が縦に写っているケースを自動検出。
+    - 画面サイズやスクロール位置が変わっても、U指数のOCR位置から各行中心を推定。
+    - 馬番が写っている場合は馬番を最優先キーにする。
+    - 馬番が写っていない横スクロール画像では指定した先頭馬番から連番化。
+    - 列位置はU指数列を基準に相対配置するため、横スクロールに強い。
+    """
+    if not OCR_AVAILABLE:
+        return []
+    try:
+        raw_bytes = uploaded_file.getvalue()
+        image = Image.open(io.BytesIO(raw_bytes))
+        image = ImageOps.exif_transpose(image).convert("RGB")
+        image.load()
+    except Exception:
+        return []
+
+    w, h = image.size
+    try:
+        start_gate = max(1, min(18, int(forced_start_gate or 1)))
+    except Exception:
+        start_gate = 1
+
+    def prep(crop, scale=3):
+        gray = ImageOps.autocontrast(ImageOps.grayscale(crop))
+        if scale > 1:
+            gray = gray.resize((gray.width * scale, gray.height * scale), resample=Image.Resampling.LANCZOS)
+        return gray.filter(ImageFilter.UnsharpMask(radius=1, percent=150, threshold=2))
+
+    def ocr_data():
+        try:
+            df = pytesseract.image_to_data(
+                prep(image, 2), lang="jpn+eng", config="--oem 3 --psm 6",
+                output_type=pytesseract.Output.DATAFRAME, timeout=30,
+            )
+            df = df.dropna(subset=["text"])
+            df = df[df["conf"] >= 20]
+            # prep(scale=2)なので座標を元画像へ戻す
+            for c in ("left", "top", "width", "height"):
+                df[c] = df[c].astype(float) / 2.0
+            return df
+        except Exception:
+            return None
+
+    df = ocr_data()
+    if df is None or df.empty:
+        return []
+
+    def txt(v):
+        return str(v or "").strip()
+
+    def parse_num(s):
+        s = txt(s).replace(",", ".").replace("．", ".")
+        m = re.search(r"(?<!\d)(\d{2,3})\s*[.]\s*(\d)(?!\d)", s)
+        if m:
+            v = float(m.group(1) + "." + m.group(2))
+            return v
+        m = re.search(r"(?<!\d)(\d{3})(?!\d)", s)
+        if m:
+            raw = m.group(1)
+            # 「102」はU指数102.0として扱う。
+            if 100 <= int(raw) <= 110:
+                return float(raw)
+            return float(raw[:2] + "." + raw[2:])
+        m = re.fullmatch(r"\d{1,3}", s)
+        return float(m.group(0)) if m else None
+
+    def u_value(s):
+        v = parse_num(s)
+        if v is not None and 80 <= v <= 110:
+            return round(v, 1)
+        return None
+
+    def row_text_crop(y, x1, x2, pad=22):
+        yy1 = max(0, int(y - pad))
+        yy2 = min(h, int(y + pad))
+        xx1 = max(0, int(x1))
+        xx2 = min(w, int(x2))
+        if xx2 <= xx1 or yy2 <= yy1:
+            return ""
+        try:
+            crop = image.crop((xx1, yy1, xx2, yy2))
+            return pytesseract.image_to_string(prep(crop, 4), lang="jpn+eng", config="--oem 3 --psm 7", timeout=8).strip()
+        except Exception:
+            return ""
+
+    def clean_name(s):
+        s = re.sub(r"\s+", "", txt(s))
+        ng = {"ウマニティ", "ニュース", "レース", "新出馬表", "プロ予想", "コロシアム", "プレミアム", "みんなの人気", "ブリンカー", "予想印", "性齢", "調教師", "斤量", "オッズ"}
+        # 「中4週」「中2週」などの競走間隔や表示補助語を馬名として採用しない。
+        # ここを通さず採用すると、画像下端の補助情報が馬名欄へずれるケースで
+        # 馬名が壊れたまま出馬表へ保存されてしまう。
+        invalid_patterns = (
+            r"^中[0-9０-９]+週$", r"^[0-9０-９]+週$", r"^前[0-9０-９]+走$",
+            r"^[0-9０-９]+走前$", r"^休み明け$", r"^休養$", r"^取消$", r"^除外$"
+        )
+        cands = re.findall(r"[ァ-ヶーヴ]{2,20}", s)
+        out = []
+        for x in cands:
+            nx = normalize_horse_name(x)
+            if not nx or nx in ng:
+                continue
+            if any(re.fullmatch(pat, nx) for pat in invalid_patterns):
+                continue
+            out.append(nx)
+        return max(out, key=len) if out else ""
+
+    def jockey_from_text(s):
+        s = re.sub(r"[0-9０-９]+(?:[.,．]\d+)?", " ", txt(s))
+        cands = re.findall(r"[一-龥々ぁ-んァ-ヶー]{2,8}", s)
+        for cand in cands:
+            for master in JOCKEY_MASTER:
+                if master != "その他（自由手入力）" and cand == master:
+                    return master
+        best, score = None, 0.0
+        for cand in cands:
+            for master in JOCKEY_MASTER:
+                if master == "その他（自由手入力）":
+                    continue
+                cc = re.sub(r"\s+", "", str(master))
+                r = difflib.SequenceMatcher(None, cand, cc).ratio()
+                if len(cand) >= 2 and len(cc) >= 2 and cand[:2] == cc[:2]:
+                    r += 0.15
+                if r > score:
+                    score, best = r, master
+        return best if score >= 0.62 else (max(cands, key=len) if cands else "(未選択)")
+
+    # U指数トークンを探して行中心を作る。
+    u_tokens = []
+    for _, r in df.iterrows():
+        u = u_value(r["text"])
+        if u is None:
+            continue
+        x = float(r["left"] + r["width"] / 2)
+        y = float(r["top"] + r["height"] / 2)
+        # ステータスバーや下部メニューを除外
+        if 90 < y < h - 120:
+            u_tokens.append((x, y, u, float(r["conf"])))
+
+    if not u_tokens:
+        return []
+
+    # 同じ行にU指数が複数候補ある場合はy近傍で統合。
+    u_tokens.sort(key=lambda z: z[1])
+    row_groups = []
+    for item in u_tokens:
+        if not row_groups or abs(item[1] - row_groups[-1]["y"]) > max(10.0, h * 0.012):
+            row_groups.append({"y": item[1], "items": [item]})
+        else:
+            row_groups[-1]["items"].append(item)
+            row_groups[-1]["y"] = sum(x[1] for x in row_groups[-1]["items"]) / len(row_groups[-1]["items"])
+
+    # 行数は最大18。実際の出馬表だけを採用する。
+    row_groups = [g for g in row_groups if g["y"] > 100 and g["y"] < h - 100]
+    if len(row_groups) < 3:
+        return []
+    if len(row_groups) > 18:
+        # 近い行を落として、通常の表の等間隔性を優先
+        row_groups = sorted(row_groups, key=lambda g: g["y"])[:18]
+
+    # 馬番OCR。馬番が画面に写っている場合は、U指数より優先して行中心を決める。
+    gate_tokens = []
+    for _, r in df.iterrows():
+        cx = float(r["left"] + r["width"] / 2)
+        cy = float(r["top"] + r["height"] / 2)
+        if not (90 < cy < h - 100) or cx > w * 0.18:
+            continue
+        m = re.fullmatch(r"(?:0?([1-9]|1[0-8]))", re.sub(r"\s+", "", txt(r["text"])))
+        if m:
+            gate = int(m.group(1))
+            gate_tokens.append((gate, cy, float(r["conf"])))
+
+    unique_gate_tokens = {}
+    for gate, cy, conf in gate_tokens:
+        if gate not in unique_gate_tokens or conf > unique_gate_tokens[gate][1]:
+            unique_gate_tokens[gate] = (cy, conf)
+
+    if len(unique_gate_tokens) >= 3:
+        # 馬番列が見えている場合は、OCRの数字そのものではなく上から下の行順を主キーにする。
+        ordered_gate_y = sorted(unique_gate_tokens.values(), key=lambda v: v[0])
+        cleaned_y = []
+        for cy, conf in ordered_gate_y:
+            if not cleaned_y or abs(cy - cleaned_y[-1]) > max(12.0, h * 0.012):
+                cleaned_y.append(cy)
+        cleaned_y = cleaned_y[:18]
+        # 1頭分の行がOCRで欠けても、等間隔から欠落行を補う。
+        if len(cleaned_y) >= 8:
+            diffs = [cleaned_y[i+1] - cleaned_y[i] for i in range(len(cleaned_y)-1) if cleaned_y[i+1] > cleaned_y[i]]
+            if diffs:
+                diffs_sorted = sorted(diffs)
+                step = diffs_sorted[len(diffs_sorted)//2]
+                estimated_count = int(round((cleaned_y[-1] - cleaned_y[0]) / max(step, 1.0))) + 1
+                estimated_count = max(len(cleaned_y), min(18, estimated_count))
+                cleaned_y = [cleaned_y[0] + i * step for i in range(estimated_count)]
+        row_defs = [(start_gate + i, cy) for i, cy in enumerate(cleaned_y)]
+    else:
+        row_defs = [(start_gate + i, g["y"]) for i, g in enumerate(row_groups)]
+
+    # 列の基準は各行のU指数x。横スクロールしても相対位置はほぼ一定。
+    rows = []
+    for gi, (gate, y) in enumerate(row_defs):
+        # 同じ行のU指数候補を検索。見つからない行は直近行のU列xを使って再OCRする。
+        same_u = [item for item in u_tokens if abs(item[1] - y) <= max(14.0, h * 0.012)]
+        if same_u:
+            u_x = max(same_u, key=lambda z: z[3])[0]
+            u_index_detected = max(same_u, key=lambda z: z[3])[2]
+        else:
+            u_x = sum(g["items"][0][0] for g in row_groups) / max(1, len(row_groups))
+            u_index_detected = None
+            try:
+                u_crop_probe = image.crop((max(0,int(u_x-80)), max(0,int(y-22)), min(w,int(u_x+80)), min(h,int(y+22))))
+                probe = pytesseract.image_to_string(prep(u_crop_probe, 4), lang="eng", config="--oem 3 --psm 7", timeout=8)
+                pv = u_value(probe)
+                if pv is not None:
+                    u_index_detected = pv
+            except Exception:
+                pass
+        if gate > 18:
+            continue
+
+        # U列から見た相対位置。今回の実画像（716px）では
+        # 馬名≈U-525、騎手≈U-315、単勝≈U+165、斤量≈U+325。
+        name_text = row_text_crop(y, u_x - 610, u_x - 430, 18)
+        jockey_text = row_text_crop(y, u_x - 355, u_x - 235, 18)
+        odds_text = row_text_crop(y, u_x + 105, u_x + 225, 18)
+        weight_text = row_text_crop(y, u_x + 285, u_x + 360, 18)
+
+        name = clean_name(name_text)
+        # 行中心がわずかにずれた場合、上下3候補を再OCRして「馬名らしい」候補を探す。
+        if _is_suspicious_ocr_horse_name(name) or not name:
+            name_candidates = []
+            for dy in (-28, -14, 14, 28):
+                alt = row_text_crop(y + dy, u_x - 610, u_x - 430, 18)
+                alt_name = clean_name(alt)
+                if alt_name and not _is_suspicious_ocr_horse_name(alt_name):
+                    name_candidates.append(alt_name)
+            if name_candidates:
+                name = max(name_candidates, key=len)
+            else:
+                # 誤読を無理に馬名へ保存しない。後続の別画像/文字入力で補完できるよう空欄にする。
+                name = ""
+        jockey = jockey_from_text(jockey_text)
+        u_index = u_index_detected
+
+        def odds_from_text(s):
+            s = txt(s).replace(",", ".").replace("．", ".")
+            m = re.search(r"(?<!\d)(\d{1,3})\s*[.]\s*(\d{1,2})(?!\d)", s)
+            if not m:
+                m = re.search(r"(?<!\d)(\d{1,3})(?:\s+)(\d{1,2})(?!\d)", s)
+            if not m:
+                return None
+            v = float(m.group(1) + "." + m.group(2))
+            return v if 1 <= v <= 999 else None
+
+        def weight_from_text(s):
+            s = txt(s).replace(",", ".").replace("．", ".")
+            m = re.search(r"(?<!\d)(4[8-9]|5\d|6[0-2])(?:\s*[.]\s*(0|5))?(?!\d)", s)
+            if m:
+                return float(m.group(1) + ("." + m.group(2) if m.group(2) else ".0"))
+            return None
+
+        odds = odds_from_text(odds_text)
+        weight = weight_from_text(weight_text)
+        rows.append({
+            "_row_idx": gi,
+            "_gate_raw": gate,
+            "馬番": gate,
+            "馬名": name,
+            "性齢": "",
+            "今回騎手": jockey,
+            "斤量": weight,
+            "厩舎": "(未選択)",
+            "単勝": odds,
+            "人気": None,
+            "U指数": u_index,
+            "取得元": "ウマニティ画像(Ver1.19.58-行自動検出+U指数基準相対列OCR)",
+        })
+
+    # 馬番重複を排除し、情報量の多い行を残す。
+    out = {}
+    for r in rows:
+        g = int(r["馬番"])
+        old = out.get(g)
+        if old is None:
+            out[g] = r
+        else:
+            old_score = sum(bool(old.get(k)) for k in ("馬名", "今回騎手", "U指数", "単勝", "斤量"))
+            new_score = sum(bool(r.get(k)) for k in ("馬名", "今回騎手", "U指数", "単勝", "斤量"))
+            if new_score > old_score:
+                out[g] = r
+    return [out[k] for k in sorted(out)]
+
 def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start_gate=1):
     """Ver1.18.33 ウマニティ実画面レイアウト固定OCR。
 
@@ -2422,6 +3889,29 @@ def parse_umanity_screenshot_image_fast(uploaded_file, raw_text="", forced_start
     """
     if not OCR_AVAILABLE:
         return parse_umanity_screenshot_text(raw_text) if raw_text else []
+
+    # Ver1.19.58: まず画面全体から行を自動検出する。固定座標方式は予備に残す。
+    try:
+        _adaptive_rows = parse_umanity_screenshot_image_adaptive(
+            uploaded_file, raw_text=raw_text, forced_start_gate=forced_start_gate
+        )
+        if len(_adaptive_rows) >= 3:
+            return _adaptive_rows
+    except Exception:
+        pass
+
+    # Ver1.19.42: 横長のPC出走表は専用OCRを先に試し、縦長スマホ画像は従来処理を維持。
+    try:
+        _probe = Image.open(io.BytesIO(uploaded_file.getvalue()))
+        _probe = ImageOps.exif_transpose(_probe)
+        if _probe.width >= 1200 and _probe.width / max(_probe.height, 1) >= 0.85:
+            _desktop_rows = parse_umanity_desktop_table_image(
+                uploaded_file, forced_start_gate=forced_start_gate
+            )
+            if len(_desktop_rows) >= 3:
+                return _desktop_rows
+    except Exception:
+        pass
 
     try:
         raw_bytes = uploaded_file.getvalue()
@@ -3785,29 +5275,104 @@ def _find_known_horse_in_text(text, horse_gate_map):
     return None, None
 
 
+def _horse_header_match(line, horse_gate_map):
+    """コピー文字の1行が「対象馬の見出し」かを判定する。
+
+    レース結果の末尾には相手馬名が出るため、馬名だけの部分一致は使わない。
+    牡3/牝3などの性齢が同じ行にあるプロフィール見出しを優先し、OCRで
+    長音「ー」が「一」になる程度の1文字違いも許容する。
+    """
+    line_n = normalize_horse_name(line)
+    if not line_n:
+        return None
+    horses = sorted(horse_gate_map, key=len, reverse=True)
+
+    # 完全一致は許容。行頭一致は性齢付きの場合だけ許容し、
+    # 「コンジェスタス」だけの相手馬名行を見出し扱いしない。
+    for horse in horses:
+        if horse and line_n == horse:
+            return horse
+
+    if not re.search(SEX_AGE_PATTERN, line_n):
+        return None
+    for horse in horses:
+        if horse and line_n.startswith(horse):
+            return horse
+
+    # 「馬名 + 牡3/牝3/セ3...」の見出しを抽出。
+    m = re.search(SEX_AGE_PATTERN, line_n)
+    if not m:
+        return None
+    prefix = line_n[:m.start()]
+    # 行頭の番号・記号・UI文字を軽く除去。
+    prefix = re.sub(r'^[^ァ-ヶー一-龠々A-Za-z0-9]+', '', prefix)
+    if not prefix:
+        return None
+
+    # 直接一致。
+    for horse in horses:
+        if horse and prefix.startswith(horse):
+            return horse
+
+    # OCRの1文字誤りを許容。馬名全体に対して比較し、短すぎる候補は除外。
+    best_horse = None
+    best_ratio = 0.0
+    for horse in horses:
+        if not horse or len(horse) < 4:
+            continue
+        # 性齢直前の文字列は馬名以外を含むことがあるため、先頭から馬名長±2文字を比較。
+        for extra in range(0, 3):
+            cand = prefix[:max(1, len(horse) + extra)]
+            ratio = difflib.SequenceMatcher(None, cand, horse).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_horse = horse
+    return best_horse if best_ratio >= 0.82 else None
+
+
 def _split_copied_text_by_known_horses(raw_text, horse_gate_map):
-    """コピー文字列を既知の馬名ごとの区間に分割する。重複コピーにも対応。"""
+    """競馬ラボのコピー文字を馬ごとの区間候補に分割する。
+
+    馬名見出しは「馬名 + 性齢」を優先して検出する。これにより、
+    レース結果末尾の「57.0 コンジェスタス」のような相手馬名を
+    馬の区切りとして誤認しない。
+    """
     text = normalize_copied_text(raw_text)
     lines = [x.strip() for x in text.splitlines() if x.strip()]
     if not lines or not horse_gate_map:
         return []
-    # 馬名の出現位置をすべて拾い、同じ馬名の重複区間も別候補として保持。
+
     positions = []
     for i, line in enumerate(lines):
-        normalized = normalize_horse_name(line)
-        for horse in sorted(horse_gate_map, key=len, reverse=True):
-            if normalized == horse or horse in normalized:
-                positions.append((i, horse))
-                break
+        horse = _horse_header_match(line, horse_gate_map)
+        if horse:
+            positions.append((i, horse))
+
+    # 同一行・同一馬の重複検出を除去。
+    dedup_positions = []
+    seen_pos = set()
+    for pos, horse in positions:
+        if pos in seen_pos:
+            continue
+        seen_pos.add(pos)
+        dedup_positions.append((pos, horse))
+    positions = dedup_positions
     if not positions:
         return []
+
     segments = []
-    for p, (start, horse) in enumerate(positions):
-        end = positions[p + 1][0] if p + 1 < len(positions) else len(lines)
-        # 次の馬名が同じ場合も、各区間を独立して解析する。
-        seg = "\n".join(lines[start:end])
-        if seg.strip():
-            segments.append((horse, seg))
+    for p, (pos, horse) in enumerate(positions):
+        next_pos = positions[p + 1][0] if p + 1 < len(positions) else len(lines)
+        after = "\n".join(lines[pos:next_pos]).strip()
+        if after:
+            segments.append((horse, after, "after"))
+
+        # 逆順候補も残すが、複数頭の通常コピーでは history 側で after を優先する。
+        before_start = positions[p - 1][0] + 1 if p > 0 else 0
+        before = "\n".join(lines[before_start:pos + 1]).strip()
+        if before and before != after:
+            segments.append((horse, before, "before"))
+
     return segments
 
 
@@ -3823,7 +5388,13 @@ def parse_keibalab_profile_copied_text(raw_text, horse_gate_map, fallback_horse=
         if horse in horse_gate_map:
             segments = [(horse, normalize_copied_text(raw_text))]
 
-    for horse, segment in segments:
+    for item in segments:
+        # 3要素(horse, segment, direction)の新形式と、
+        # 2要素(horse, segment)の旧形式の両方を受け付ける。
+        if len(item) == 3:
+            horse, segment, _direction = item
+        else:
+            horse, segment = item
         recs = parse_keibalab_profile_screenshot_text(
             segment, horse_gate_map, fallback_horse=horse
         )
@@ -3845,114 +5416,120 @@ def parse_keibalab_history_copied_text(raw_text, horse_gate_map, fallback_horse=
     """競馬ラボの過去走コピーから前走騎手・上がり3Fを抽出。
 
     馬名が含まれる複数頭コピーと、馬名が含まれない1頭分コピーの両方に対応。
-    同じ馬の重複セクションは、馬番・日付単位で統合して新しい5走を返す。
+    上がり3Fは30.0～45.9の小数1桁を上から最大5個取得する。
     """
-    grouped_records = {}
+    results = {}
     segments = _split_copied_text_by_known_horses(raw_text, horse_gate_map)
     if not segments and fallback_horse:
         horse = normalize_horse_name(fallback_horse)
         if horse in horse_gate_map:
             segments = [(horse, normalize_copied_text(raw_text))]
 
-    for segment_index, (horse, segment) in enumerate(segments):
-        recs = parse_keibalab_history_screenshot_text(segment, horse_gate_map, fallback_horse=horse)
+    # 同じ馬について「馬名の後ろ」「馬名の前」の両候補を解析する。
+    # そのうえで、コピー全体でどちら向きの候補が自然かを判定する。
+    # 競馬ラボの複数馬コピーでは、馬名が過去走ブロックの末尾に来る
+    # ケースがあるため、馬ごとに独立して決めると隣馬へずれることがある。
+    candidates = {}
+    direction_totals = {"after": 0, "before": 0}
+    for item in segments:
+        if len(item) == 3:
+            horse, segment, direction = item
+        else:
+            horse, segment = item
+            direction = "after"
+        recs = parse_keibalab_history_screenshot_text(
+            segment, horse_gate_map, fallback_horse=horse
+        )
         if not recs:
             continue
         rec = recs[0]
-        gate = int(horse_gate_map[horse])
-        group = grouped_records.setdefault(gate, {
-            "horse_name": horse,
-            "race_records": [],
-            "undated_values": [],
-            "previous_jockey": "(未選択)",
-        })
-        if group["previous_jockey"] == "(未選択)" and rec.get("前走騎手") not in {None, "", "(未選択)"}:
-            group["previous_jockey"] = rec["前走騎手"]
+        rec['馬番'] = int(horse_gate_map[horse])
+        rec['馬名'] = horse
+        rec['取得元'] = '競馬ラボ・過去5走文字貼り付け'
+        gate = int(rec['馬番'])
+        score = int(rec.get('上がり取得数', 0) or 0)
+        direction_totals[direction] += score
+        candidates.setdefault(gate, []).append((score, direction, rec))
 
-        # 各セクションの値列を丸ごと採用せず、馬番・日付で後段統合できる
-        # レースレコードとして保持する。これにより重複コピーの古い混入値が
-        # 正しい別日付レースを上書きしない。
-        race_records = rec.get("_history_race_records", [])
-        if race_records:
-            for source_order, race in enumerate(race_records):
-                date_key = race.get("date")
-                value = race.get("l3f")
-                if date_key is None:
-                    continue
-                try:
-                    value = round(float(value), 1)
-                except Exception:
-                    continue
-                if 30.0 <= value <= 42.9:
-                    group["race_records"].append({
-                        "horse_name": horse,
-                        "gate": gate,
-                        "date": str(date_key),
-                        "l3f": value,
-                        "pace_marker": race.get("pace_marker", ""),
-                        "segment_index": segment_index,
-                        "source_order": source_order,
-                    })
-        else:
-            # 日付が完全に欠落した従来形式は、別日付と誤って重複除去しない。
-            # 日付付きレースが5走未満のときだけ、従来順で補助利用する。
-            for token in str(rec.get("上がり3F内訳", "") or "").split("/"):
-                try:
-                    value = round(float(token.strip()), 1)
-                except Exception:
-                    continue
-                if 30.0 <= value <= 42.9:
-                    group["undated_values"].append(value)
-
-    def date_sort_key(date_key):
-        """YY/M/D・YYYY/M/Dを新しい順に並べるための安全なキー。"""
-        m = re.fullmatch(r"(?:(\d{4})|(\d{2}))/(\d{1,2})/(\d{1,2})", str(date_key or ""))
-        if not m:
+    # 複数頭の通常コピーでは「馬名→過去走」の区間を正とする。
+    # 同じ馬の区間が複数ある場合は、取得数で一つだけ選ばず日付単位で統合する。
+    # before候補は、after候補が存在しない場合の救済に限定する。
+    def _date_sort_key(date_key):
+        if not date_key:
             return (0, 0, 0)
-        year = int(m.group(1)) if m.group(1) else 2000 + int(m.group(2))
-        return (year, int(m.group(3)), int(m.group(4)))
+        parts = [int(x) for x in date_key.split('/')]
+        if len(parts) == 3 and parts[0] < 100:
+            parts[0] += 2000 if parts[0] < 70 else 1900
+        return tuple(parts)
 
-    results = []
-    for gate in sorted(grouped_records):
-        group = grouped_records[gate]
-        # 同じ馬・同じ日付だけを重複として扱い、最初に見つかった完全な
-        # 「日付→時計→3F→S/M/H」レコードを残す。別日付は必ず残す。
-        by_horse_date = {}
-        for race in group["race_records"]:
-            race_key = (race["horse_name"], race["date"])
-            by_horse_date.setdefault(race_key, race)
+    # コピー全体で「馬名の後ろ」と「馬名の前」のどちらに
+    # 過去走が多く含まれるかを判定する。従来は after を常に優先していたため、
+    # 馬名が過去走ブロックの末尾に来る形式では、正しい before 候補を捨てることがあった。
+    preferred_direction = max(direction_totals, key=direction_totals.get)
 
-        selected_records = sorted(
-            by_horse_date.values(),
-            key=lambda race: date_sort_key(race["date"]),
-            reverse=True,
-        )[:5]
-        finish_times = [race["l3f"] for race in selected_records]
+    for gate, items in candidates.items():
+        preferred_items = [x for x in items if x[1] == preferred_direction]
+        # 全体で選んだ方向に有効な3Fがない馬だけ、反対方向の候補で補う。
+        if preferred_items and max(x[0] for x in preferred_items) > 0:
+            pool = preferred_items
+        else:
+            pool = items
+        best = max(pool, key=lambda x: x[0])
+        best_rec = best[2]
 
-        # 日付なしの従来入力は、日付付きレースを優先したうえでのみ補助利用する。
-        for value in group["undated_values"]:
+        by_date = {}
+        for _score, _direction, rec in pool:
+            values = [float(x.strip()) for x in str(rec.get('上がり3F内訳', '')).split('/') if x.strip()]
+            dates = list(rec.get('_上がり3F日付', []) or [])
+            for idx, value in enumerate(values):
+                date_key = dates[idx] if idx < len(dates) else None
+                if date_key:
+                    # 同じ日付の重複は最初に見つかった値を採用。
+                    by_date.setdefault(date_key, value)
+
+        # 日付が取れなかった走は、区間統合で重複しやすいため、
+        # 最も情報量の多い候補からだけ採用する。
+        best_values = [float(x.strip()) for x in str(best_rec.get('上がり3F内訳', '')).split('/') if x.strip()]
+        best_dates = list(best_rec.get('_上がり3F日付', []) or [])
+        undated = [value for idx, value in enumerate(best_values)
+                   if idx >= len(best_dates) or not best_dates[idx]]
+
+        dated_rows = sorted(by_date.items(), key=lambda item: _date_sort_key(item[0]), reverse=True)
+        finish_dates = [date_key for date_key, _value in dated_rows]
+        finish_times = [value for _date_key, value in dated_rows]
+        # 日付付きの履歴が5走未満の場合だけ、日付不明の値で補う。
+        for value in undated:
             if len(finish_times) >= 5:
                 break
-            if not finish_times or abs(value - finish_times[-1]) > 0.001:
-                finish_times.append(value)
+            finish_dates.append(None)
+            finish_times.append(value)
+        finish_times = finish_times[:5]
+        finish_dates = finish_dates[:5]
 
-        results.append({
-            "馬番": gate,
-            "馬名": group["horse_name"],
-            "前走騎手": group["previous_jockey"],
-            "上がり3F内訳": " / ".join(f"{v:.1f}" for v in finish_times),
-            "上がり3F平均": round(sum(finish_times) / len(finish_times), 2) if finish_times else None,
-            "上がり取得数": len(finish_times),
-            "取得元": "競馬ラボ・過去5走文字貼り付け",
-        })
-    return results
+        merged_rec = dict(best_rec)
+        merged_rec['上がり3F内訳'] = ' / '.join(f'{v:.1f}' for v in finish_times)
+        merged_rec['上がり3F平均'] = round(sum(finish_times) / len(finish_times), 2) if finish_times else None
+        merged_rec['上がり取得数'] = len(finish_times)
+        merged_rec['_上がり3F日付'] = finish_dates
+        results[gate] = merged_rec
+
+    output = [results[g] for g in sorted(results)]
+    for rec in output:
+        rec.pop('_上がり3F日付', None)
+    return output
 
 
 def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=None):
-    """競馬ラボプロフィールから父馬・厩舎・馬主を抽出。
-    ラベルと値が同じ行でも、別行でも取得できるようにする。
+    """競馬ラボプロフィールのコピー文字を1頭分として安全に構造化する。
+
+    Ver1.19.64:
+    - ラベル単位（父/母/母父/調教師/馬主/生産者）で取得
+    - 馬主・調教師は完全一致を優先し、曖昧なマスター補正で別名へ変換しない
+    - 母は「母父：」直前の文字列から取得
+    - 馬体重・人気・単勝オッズは取得しない（後入力を正本）
     """
-    lines = [_ocr_clean_line(x) for x in str(text).splitlines()]
+    raw = normalize_copied_text(text)
+    lines = [_ocr_clean_line(x) for x in raw.splitlines()]
     lines = [x for x in lines if x]
     joined = " ".join(lines)
 
@@ -3964,77 +5541,128 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
     if not horse_name or not gate:
         return []
 
-    def next_value_after_label(labels, idx, max_len=40):
-        """ラベル行/同一行/直後行の順で値を取得。"""
-        line = lines[idx].strip()
-        # 同一行: 「父 クロフネ」「馬主：塚田義広」など
-        for label in labels:
-            m = re.match(rf'^{re.escape(label)}(?:[：:\\s]+)(.+)$', line)
-            if m:
+    def label_value(label, max_len=80):
+        """プロフィールの項目ラベルを誤って部分一致させずに値を取る。"""
+        for i, line in enumerate(lines):
+            compact = re.sub(r"\s+", "", line)
+            target = re.sub(r"\s+", "", label)
+            if compact == target:
+                if i + 1 < len(lines):
+                    return lines[i + 1].strip()[:max_len]
+            # ラベル単独の直後に値が続く形式を優先。
+            # 例: 父\nドゥラメンテ / 調教師\n○○(美)
+            # 「父馬」を「父」の値と誤認しないよう境界を必須にする。
+            m = re.match(rf"^{re.escape(label)}(?:\s*[：:]\s*|\s+)(.+)$", line)
+            if m and m.group(1).strip():
                 return m.group(1).strip()[:max_len]
-            m = re.match(rf'^{re.escape(label)}(.+)$', line)
-            if m:
-                tail = m.group(1).lstrip('：: \t').strip()
-                if tail:
-                    return tail[:max_len]
-        # ラベルだけの行なら次の行
-        if any(line == label or line.startswith(label + '：') or line.startswith(label + ':') for label in labels):
-            if idx + 1 < len(lines):
-                nxt = lines[idx + 1].strip()
-                if nxt and not any(nxt.startswith(x) for x in ('母', '母父', '調教師', '厩舎', '馬主', '生産者', '生産')):
-                    return nxt[:max_len]
-        return ''
+        return ""
 
-    # 父は「母父」を絶対に拾わない
-    sire = ''
-    for i, line in enumerate(lines):
-        if '母父' in line:
-            continue
-        val = next_value_after_label(['父馬', '父'], i, 40)
-        if val:
-            sire = val
-            break
-    sire = re.split(r'(?:母父|母|調教師|厩舎|馬主|生産者|生産|距離別|コース別)', sire)[0].strip()
-    sire = re.sub(r'^[：:\\s]+|[：:\\s]+$', '', sire)
-    if len(sire) < 2 or sire in {'データ', '過去走', '過去走+'}:
-        sire = ''
+    def clean_label_value(v):
+        v = re.sub(r"^[：:]\s*", "", str(v or "")).strip()
+        v = re.split(r"(?:距離別成績|コース別成績|馬場状態別成績|脚質別成績|時期別成績|斤量別成績|枠番別成績|レース間隔別成績)", v)[0]
+        return v.strip(" ・")
 
-    # 調教師は「調教師」または「厩舎」の同一行/次行に対応。
-    trainer_raw = ''
-    for i, line in enumerate(lines):
-        if line.startswith('調教師') or line.startswith('厩舎'):
-            trainer_raw = next_value_after_label(['調教師', '厩舎'], i, 40)
-            break
-        m = re.search(r'([一-龥ぁ-んァ-ヶー・]{2,16})\s*[（(](?:美|栗|美浦|栗東)[）)]', line)
+    sex_age = ""
+    m = re.search(r"([牡牝騸セ騙])\s*(\d{1,2})", joined)
+    if m:
+        sex_age = f"{m.group(1)}{m.group(2)}"
+
+    # 斤量はプロフィール見出しの「騎手名58.0」からのみ取得。
+    weight_carried = None
+    for jockey_name in sorted((x for x in JOCKEY_MASTER if x != "その他（自由手入力）"), key=len, reverse=True):
+        m = re.search(re.escape(jockey_name) + r"\s*(\d{2}(?:\.\d)?)", joined)
         if m:
-            trainer_raw = m.group(1).strip()
-            break
-    trainer_raw = re.sub(r'[（(](?:美|栗|美浦|栗東)[）)]', '', trainer_raw).strip()
-    trainer = '(未選択)'
-    if trainer_raw:
-        # マスターに存在する場合は正式名称へ寄せる。
-        # 未登録の調教師でも、コピー文字列を捨てずそのまま保持する。
-        candidates = [x for x in TRAINER_OPTIONS if x not in {'(未選択)', 'その他'}]
-        matched = _best_master_match(trainer_raw, candidates, 0.62) if candidates else '(未選択)'
-        trainer = matched if matched != '(未選択)' else trainer_raw
+            try:
+                val = float(m.group(1))
+                if 40.0 <= val <= 65.0:
+                    weight_carried = val
+                    break
+            except Exception:
+                pass
 
-    # 馬主は同一行/次行に対応。マスターに無ければ文字列をそのまま保持。
-    owner_raw = ''
+    # 前走/2走前はラベル直後から次の主要ラベルまで。
+    compact = re.sub(r"\s+", " ", joined).strip()
+    def extract_segment(label, stops):
+        stop = "|".join(re.escape(x) for x in stops)
+        m = re.search(re.escape(label) + r"\s*(.+?)(?=(?:" + stop + r")|$)", compact)
+        return m.group(1).strip(" ：:・")[:120] if m else ""
+
+    previous_race = extract_segment("前走", ["2走前", "データ", "過去走", "父", "母", "調教師", "馬主", "生産者", "距離別成績", "コース別成績"])
+    second_previous_race = extract_segment("2走前", ["3走前", "データ", "過去走", "父", "母", "調教師", "馬主", "生産者", "距離別成績", "コース別成績"])
+
+    # 父：ラベル行の次を優先。
+    sire = label_value("父", 60)
+    if sire in {"", "5代血統表を見る"}:
+        sire = label_value("父馬", 60)
+    sire = clean_label_value(sire)
+
+    # 母：コピーでは「ラストグルーヴ 母父：ディープインパクト」の形になるため、
+    # 母父ラベルの直前トークンを母として採用する。
+    dam = ""
+    damsire = ""
     for i, line in enumerate(lines):
-        if line.startswith('馬主'):
-            owner_raw = next_value_after_label(['馬主'], i, 60)
+        if re.search(r"母父\s*[：:]", line):
+            left, right = re.split(r"母父\s*[：:]", line, maxsplit=1)
+            left = left.strip(" ：:")
+            right = right.strip(" ：:")
+            if left and left not in {"母", "父"}:
+                dam = left[-40:]
+            damsire = right[:60]
             break
-    owner_raw = re.split(r'(?:生産者|生産|調教師|厩舎|距離別|コース別)', owner_raw)[0].strip()
-    owner = '(未選択)'
-    if owner_raw:
-        candidates = [x for x in OWNER_OPTIONS if x not in {'(未選択)', 'その他'}]
-        matched = _best_master_match(owner_raw, candidates, 0.42)
-        owner = matched if matched != '(未選択)' else owner_raw
+    if not damsire:
+        damsire = label_value("母父", 60)
+    if not dam:
+        # 「母」ラベルの次行が実馬名のコピー形式にも対応。
+        for i, line in enumerate(lines):
+            if re.fullmatch(r"母", re.sub(r"\s+", "", line)) and i + 1 < len(lines):
+                cand = lines[i + 1].strip()
+                if cand != "5代血統表を見る":
+                    dam = cand[:60]
+                    break
+
+    trainer_raw = clean_label_value(label_value("調教師", 60) or label_value("厩舎", 60))
+    trainer_raw = re.sub(r"\s*[（(](?:美|栗|美浦|栗東)[）)]", "", trainer_raw).strip()
+    trainer = trainer_raw or "(未選択)"
+    # 完全一致を最優先。未登録ならコピー文字列をそのまま保持。
+    trainer_compact = re.sub(r"\s+", "", trainer)
+    for cand in TRAINER_OPTIONS:
+        if cand in {"(未選択)", "その他"}:
+            continue
+        if re.sub(r"\s+", "", str(cand)) == trainer_compact:
+            trainer = cand
+            break
+
+    owner_raw = clean_label_value(label_value("馬主", 80))
+    owner = owner_raw or "(未選択)"
+    owner_compact = re.sub(r"\s+", "", owner)
+    for cand in OWNER_OPTIONS:
+        if cand in {"(未選択)", "その他"}:
+            continue
+        if re.sub(r"\s+", "", str(cand)) == owner_compact:
+            owner = cand
+            break
+
+    breeder = clean_label_value(label_value("生産者", 80) or label_value("生産", 80))
+
+    distance_stats = ""
+    course_stats = ""
+    dpos = next((i for i,x in enumerate(lines) if re.sub(r"\s+", "", x) == "距離別成績"), None)
+    cpos = next((i for i,x in enumerate(lines) if re.sub(r"\s+", "", x) == "コース別成績"), None)
+    if dpos is not None:
+        end = cpos if cpos is not None and cpos > dpos else len(lines)
+        distance_stats = " / ".join(lines[dpos+1:end][:12])
+    if cpos is not None:
+        end = next((i for i in range(cpos+1,len(lines)) if re.sub(r"\s+", "", lines[i]) in {"馬場状態別成績","脚質別成績","時期別成績","斤量別成績","枠番別成績","レース間隔別成績"}), len(lines))
+        course_stats = " / ".join(lines[cpos+1:end][:12])
 
     return [{
-        '馬番': int(gate), '馬名': horse_name,
-        '父馬': sire, '厩舎': trainer, '馬主': owner,
-        '取得元': '競馬ラボ・プロフィール文字貼り付け',
+        '馬番': int(gate), '馬名': horse_name, '性齢': sex_age,
+        '馬体重': None, '馬体重増減': None, '斤量': weight_carried,
+        '人気': None, '単勝': None, '前走': previous_race,
+        '2走前': second_previous_race, '父馬': sire, '母馬': dam,
+        '母父': damsire, '厩舎': trainer, '馬主': owner, '生産者': breeder,
+        '距離別成績': distance_stats, 'コース別成績': course_stats,
+        '取得元': '競馬ラボ・プロフィール文字貼り付け(Ver1.19.64)',
     }]
 
 def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=None):
@@ -4075,7 +5703,6 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
     # 日付ごとに最初の「タイム→3F→S/M/H」を1走として取得。
     # 同じ日付がコピー重複した場合は後から重複除去する。
     race_values = []
-    history_race_records = []
     if date_matches:
         for i, dm in enumerate(date_matches):
             block_start = dm.start()
@@ -4093,11 +5720,6 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
                     continue
                 if 30.0 <= val <= 42.9:
                     race_values.append((date_key, val))
-                    history_race_records.append({
-                        "date": date_key,
-                        "l3f": val,
-                        "pace_marker": m.group(2).upper(),
-                    })
     else:
         # 日付がOCR/コピーで欠落した場合のみ、行単位で補助取得。
         for line in lines:
@@ -4113,6 +5735,7 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
     # 同じ日付の重複を除去。最初に見つかった値を採用する。
     # 画面を上下に分けてコピーした場合でも、5走が二重にならない。
     finish_times = []
+    finish_dates = []
     seen_dates = set()
     for date_key, val in race_values:
         if date_key is not None:
@@ -4121,6 +5744,7 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
             seen_dates.add(date_key)
         if not finish_times or abs(val - finish_times[-1]) > 0.001 or date_key is not None:
             finish_times.append(val)
+            finish_dates.append(date_key)
         if len(finish_times) >= 5:
             break
 
@@ -4167,12 +5791,10 @@ def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=
         "馬番": int(gate), "馬名": horse_name,
         "前走騎手": previous_jockey,
         "上がり3F内訳": " / ".join(f"{v:.1f}" for v in finish_times),
-        "上がり3F平均": avg_l3f,
-        "上がり取得数": len(finish_times),
-        "取得元": "競馬ラボ・過去5走文字貼り付け",
-        # 複数セクションを処理する文字貼り付け側だけが利用する内部情報。
-        # 既存UI・画像OCR経路の表示形式はこのキーを参照しない。
-        "_history_race_records": history_race_records,
+        '上がり3F平均': avg_l3f,
+        '上がり取得数': len(finish_times),
+        '_上がり3F日付': finish_dates,
+        '取得元': '競馬ラボ・過去5走文字貼り付け',
     }]
 
 
@@ -4513,6 +6135,8 @@ def merge_source_records(umanity_records, profile_records, history_records):
             for key, value in rec.items():
                 if value in (None, "", "(未選択)", "選択なし"):
                     continue
+                if key == "馬名" and _is_suspicious_ocr_horse_name(value):
+                    continue
                 if key == "脚質":
                     incoming_source = rec.get("脚質取得元", "")
                     existing_source = base.get("脚質取得元", "")
@@ -4543,117 +6167,62 @@ def apply_specialized_image_records(records, auto_track_value):
         st.session_state["loaded_data"]["rows"][key] = {
             **prev,
             "num": str(gate),
-            "name": rec.get("馬名") or prev.get("name", ""),
+            "name": (
+                prev.get("name", "")
+                if _is_suspicious_ocr_horse_name(rec.get("馬名", ""))
+                else (rec.get("馬名") or prev.get("name", ""))
+            ),
             "idx": float(rec.get("U指数") if rec.get("U指数") is not None else prev.get("idx", 0.0)),
             "wgt": float(rec.get("斤量") if rec.get("斤量") is not None else prev.get("wgt", 56.0)),
             "jock": rec.get("今回騎手") if rec.get("今回騎手") in JOCKEY_MASTER else prev.get("jock", "(未選択)"),
             "sire": rec.get("父馬") or prev.get("sire", ""),
-            "trainer": trainer if trainer in TRAINER_OPTIONS else prev.get("trainer", "(未選択)"),
-            "owner": owner if owner in OWNER_OPTIONS else prev.get("owner", "(未選択)"),
+            "trainer": trainer if trainer not in {"", "(未選択)"} and trainer in TRAINER_OPTIONS else prev.get("trainer", "(未選択)"),
+            "owner": owner if owner not in {"", "(未選択)"} and owner in OWNER_OPTIONS else prev.get("owner", "(未選択)"),
             "l3f": float(rec.get("上がり3F平均") if rec.get("上がり3F平均") is not None else prev.get("l3f", 35.0)),
             "sel_style": rec.get("脚質") if rec.get("脚質") in {"逃げ", "先行", "差し", "追い込み"} else prev.get("sel_style", "選択なし"),
-            "wgh": int(prev.get("wgh", 480)),
-            "pop": int(prev.get("pop", 10)),
-            "win_odds": float(rec.get("単勝") if rec.get("単勝") is not None else prev.get("win_odds", 0.0)),
+            # 馬体重・人気・単勝オッズは後入力を正本にする。
+            # プロフィール/OCRの値では上書きしない。新規馬は未入力(0)で開始。
+            "wgh": int(prev.get("wgh", 0) or 0),
+            "pop": int(prev.get("pop", 0) or 0),
+            "win_odds": float(prev.get("win_odds", 0.0) or 0.0),
             "heavy_record": prev.get("heavy_record", False),
             "previous_jockey": rec.get("前走騎手") if rec.get("前走騎手") in JOCKEY_MASTER else prev.get("previous_jockey", "(未選択)"),
+            "profile_sex_age": rec.get("性齢") or prev.get("profile_sex_age", ""),
+            "profile_body_weight": rec.get("馬体重", prev.get("profile_body_weight")),
+            "profile_body_change": rec.get("馬体重増減", prev.get("profile_body_change")),
+            "profile_popularity": rec.get("人気", prev.get("profile_popularity")),
+            "profile_previous_race": rec.get("前走") or prev.get("profile_previous_race", ""),
+            "profile_second_previous_race": rec.get("2走前") or prev.get("profile_second_previous_race", ""),
+            "profile_dam": rec.get("母馬") or prev.get("profile_dam", ""),
+            "profile_damsire": rec.get("母父") or prev.get("profile_damsire", ""),
+            "profile_breeder": rec.get("生産者") or prev.get("profile_breeder", ""),
+            "profile_distance_stats": rec.get("距離別成績") or prev.get("profile_distance_stats", ""),
+            "profile_course_stats": rec.get("コース別成績") or prev.get("profile_course_stats", ""),
+            "l3f_history_values": rec.get("過去5走3F入力値", prev.get("l3f_history_values", [None, None, None, None, None])),
             "custom_note": prev.get("custom_note", ""),
             "sel_track": prev.get("sel_track", auto_track_value if auto_track_value in ["芝", "ダート"] else "選択なし"),
             "sel_frame": prev.get("sel_frame", calculate_frame_position(gate)),
             "sel_dist_change": prev.get("sel_dist_change", "同距離"),
         }
 
-
-def apply_umanity_text_records(records, overwrite_existing=False, replace_existing_race=False):
-    """確認済みのウマニティ文字解析結果を馬番キーで反映する。
-
-    既存値は既定で保持する。馬名が同じ馬番で不一致の場合は、どの項目も
-    反映せず確認を促す。これにより別馬への混入を防ぐ。
-    """
-    st.session_state["loaded_data"].setdefault("rows", {})
-    # レース変更は馬番だけでは識別できない。利用者が確認表を見て
-    # 「新しいレース」と明示した場合だけ、旧レースの行を退避せず置換する。
-    # これにより同じ馬番の別馬へ旧値が残ることを防ぐ。
-    if replace_existing_race:
-        st.session_state["loaded_data"]["rows"] = {}
-    updated, created, warnings = 0, 0, []
-    empty_values = (None, "", "(未選択)", "その他（自由手入力）")
-
-    for rec in records:
-        try:
-            gate = int(rec.get("馬番"))
-        except (TypeError, ValueError):
-            warnings.append("馬番不明の解析結果を反映しませんでした")
-            continue
-        if not 1 <= gate <= 18:
-            warnings.append(f"{gate}番: 範囲外のため反映しませんでした")
-            continue
-
-        key = str(gate)
-        previous = dict(st.session_state["loaded_data"]["rows"].get(key, {}))
-        parsed_name = normalize_horse_name(rec.get("馬名", ""))
-        existing_name = normalize_horse_name(previous.get("name", ""))
-        if existing_name and parsed_name and existing_name != parsed_name:
-            warnings.append(f"{gate}番: 馬名不一致（既存「{existing_name}」／解析「{parsed_name}」）のため反映しませんでした")
-            continue
-
-        row = {**previous, "num": str(gate)}
-        mapping = {
-            "name": parsed_name,
-            "idx": rec.get("U指数"),
-            "u_index_rank": rec.get("U指数順位"),
-            "wgt": rec.get("斤量"),
-            "win_odds": rec.get("単勝"),
-            "pop": rec.get("人気"),
-        }
-        jockey = rec.get("今回騎手", "")
-        if jockey:
-            if jockey in JOCKEY_MASTER:
-                mapping["jock"] = jockey
-            else:
-                warnings.append(f"{gate}番: 騎手「{jockey}」は騎手マスター未登録のため反映しませんでした")
-
-        changed = False
-        for field, value in mapping.items():
-            if value in (None, ""):
-                continue
-            existing = row.get(field)
-            if not overwrite_existing and existing not in empty_values:
-                continue
-            if row.get(field) != value:
-                row[field] = value
-                changed = True
-
-        if not previous:
-            # 新規行でも、解析できなかった数値は既存UIの初期値で補うだけで、
-            # 解析値として推測・記録しない。
-            row.setdefault("name", "")
-            row.setdefault("idx", 0.0)
-            row.setdefault("wgt", 56.0)
-            row.setdefault("win_odds", 0.0)
-            row.setdefault("pop", 10)
-            row.setdefault("jock", "(未選択)")
-            row.setdefault("wgh", 480)
-            row.setdefault("l3f", 35.0)
-            row.setdefault("sire", "")
-            row.setdefault("heavy_record", False)
-            row.setdefault("custom_note", "ウマニティ文字貼り付け取込")
-            row.setdefault("sel_track", "選択なし")
-            row.setdefault("sel_style", "選択なし")
-            row.setdefault("sel_frame", calculate_frame_position(gate))
-            row.setdefault("sel_dist_change", "同距離")
-            row.setdefault("previous_jockey", "(未選択)")
-            row.setdefault("trainer", "(未選択)")
-            row.setdefault("owner", "(未選択)")
-            created += 1
-        elif changed:
-            updated += 1
-
-        st.session_state["loaded_data"]["rows"][key] = row
-
-    return {"updated": updated, "created": created, "warnings": warnings}
-
-
+        # 既に生成済みのStreamlitウィジェットキーが残っていても、
+        # 新しいレースのOCR結果を次回描画へ確実に同期する。
+        row = st.session_state["loaded_data"]["rows"][key]
+        # Streamlitのselectboxはキーが既に存在すると、data/valueよりも
+        # 古いsession_stateを優先する。インポート後に特に1番の騎手が
+        # 「未選択」のまま残ることがあるため、関連キーも一括同期する。
+        for _field, _widget_key in (("num", f"num_{gate}"), ("name", f"name_{gate}"),
+                                    ("idx", f"idx_{gate}"), ("wgt", f"wgt_{gate}"),
+                                    ("wgh", f"wgh_{gate}"), ("pop", f"pop_{gate}"),
+                                    ("win_odds", f"win_odds_{gate}"), ("l3f", f"l3f_{gate}"),
+                                    ("sire", f"sire_{gate}"), ("jock", f"jock_{gate}"),
+                                    ("previous_jockey", f"previous_jockey_{gate}"),
+                                    ("trainer", f"trainer_{gate}"), ("owner", f"owner_{gate}"),
+                                    ("custom_note", f"custom_note_{gate}"),
+                                    ("sel_track", f"track_{gate}"), ("sel_style", f"style_{gate}"),
+                                    ("sel_frame", f"frame_{gate}"), ("sel_dist_change", f"dist_change_{gate}")):
+            if _field in row:
+                st.session_state[_widget_key] = row[_field]
 
 
 # --- 🛰️ 当日環境設定エリア ---
@@ -4756,7 +6325,8 @@ if bulk_input_tab == "📋 Netkeiba一括入力":
                         "num": str(gate),
                         "name": horse.get("name", ""),
                         "wgt": float(horse.get("jockey_weight", 56.0)),
-                        "wgh": int(horse.get("weight", 480)),
+                        # 馬体重は後入力。Netkeibaコピー値では自動確定しない。
+                        "wgh": int(prev_row.get("wgh", 0) or 0),
                         "jock": jockey_name if jockey_registered else "その他（自由手入力）",
                         "sel_frame": horse.get("frame", calculate_frame_position(gate)),
                         "pop": prev_row.get("pop", 10),
@@ -4786,9 +6356,66 @@ if bulk_input_tab == "📋 Netkeiba一括入力":
                             st.write(message)
                 st.rerun()
 
+def validate_umanity_full_records(records, expected_count=None):
+    """ウマニティ全文解析結果の完全性を確認する。
+
+    馬番の欠落・重複はAI計算へ進める前に検知する。
+    個別項目の欠落は、VIP表示やコピー形式によって起こり得るため警告扱い。
+    """
+    recs = records or []
+    gates = []
+    duplicates = []
+    for item in recs:
+        try:
+            g = int(item.get("馬番"))
+        except (TypeError, ValueError):
+            continue
+        if g in gates:
+            duplicates.append(g)
+        gates.append(g)
+
+    if expected_count is None:
+        # 通常のJRA出馬表は最大18頭。今回のような16頭立ても含め、
+        # 解析結果の最大馬番を基準に欠落を判定する。
+        expected_count = max(gates) if gates else 0
+
+    expected = set(range(1, int(expected_count) + 1)) if expected_count else set()
+    actual = set(gates)
+    missing = sorted(expected - actual)
+    extra = sorted(actual - expected)
+
+    incomplete_fields = []
+    for item in recs:
+        try:
+            g = int(item.get("馬番"))
+        except (TypeError, ValueError):
+            continue
+        missing_fields = []
+        if not str(item.get("馬名") or "").strip():
+            missing_fields.append("馬名")
+        if not str(item.get("今回騎手") or "").strip():
+            missing_fields.append("騎手")
+        if item.get("U指数") is None:
+            missing_fields.append("U指数")
+        if item.get("斤量") is None:
+            missing_fields.append("斤量")
+        if missing_fields:
+            incomplete_fields.append((g, missing_fields))
+
+    return {
+        "ok": bool(recs) and not missing and not duplicates and not extra,
+        "count": len(actual),
+        "expected_count": int(expected_count),
+        "missing": missing,
+        "duplicates": sorted(set(duplicates)),
+        "extra": extra,
+        "incomplete_fields": incomplete_fields,
+    }
+
+
 if bulk_input_tab == "🐎 ウマニティ文字入力":
     st.markdown("### 📋 ウマニティ文字貼り付け（おすすめ）")
-    st.caption("ウマニティの出馬表をコピー → 下欄へCtrl+V → 解析。画像OCRより文字の誤読が少なく、馬名・騎手・U指数・単勝・斤量を一括取得します。")
+    st.caption("ウマニティの出馬表をコピー → 下欄へCtrl+V → 解析。画像OCRより文字の誤読が少なく、馬名・騎手・U指数・斤量を取得します。馬体重・人気・単勝オッズはプロフィールから取り込まず、レース直前の後入力欄で確定します。")
 
     copied_text_um = st.text_area(
         "ウマニティの出馬表をそのまま貼り付けてください",
@@ -4802,18 +6429,6 @@ if bulk_input_tab == "🐎 ウマニティ文字入力":
         analyze_full = st.button("🚀 ウマニティ全文を解析", use_container_width=True, type="primary")
     with c_um2:
         clear_full = st.button("🧹 入力をクリア", use_container_width=True)
-    overwrite_umanity_values = st.checkbox(
-        "確認後、既存の入力値をウマニティ解析値で上書きする",
-        value=False,
-        key="um_overwrite_existing_v1928",
-        help="オフでは、既に手入力・既存取込済みの値を保持し、空欄の項目だけを反映します。",
-    )
-    replace_umanity_race = st.checkbox(
-        "新しいレースとして、現在の出馬表をこの解析結果で置き換える",
-        value=False,
-        key="um_replace_existing_race_v1932",
-        help="スワンSから秋華賞のようにレースを切り替える場合だけ選択します。確認済みの解析結果以外は反映しません。",
-    )
 
     if clear_full:
         st.session_state["um_text_v1913"] = ""
@@ -4823,46 +6438,120 @@ if bulk_input_tab == "🐎 ウマニティ文字入力":
         if not copied_text_um.strip():
             st.warning("まずウマニティの文字を貼り付けてください。")
         else:
-            # レースが変わると同じ馬番に別の馬が入るため、既存の出馬表を
-            # 馬名の補完元に使わない。不明値は空欄と警告にして確認表で止める。
-            parsed_um_full = parse_umanity_full_copied_text(copied_text_um)
+            known_names_by_gate = {
+                int(k): v.get("name", "")
+                for k, v in st.session_state.get("loaded_data", {}).get("rows", {}).items()
+                if str(v.get("name", "")).strip()
+            }
+            parsed_um_full = parse_umanity_full_copied_text(
+                copied_text_um, known_names_by_gate=known_names_by_gate
+            )
             if not parsed_um_full:
                 st.error("馬データを解析できませんでした。ウマニティの出馬表部分をまとめてコピーしてください。")
             else:
-                # 解析直後には出馬表へ反映しない。馬番ごとの確認表で内容を確定する。
+                # Ver1.19.86: 出走頭数を16頭に固定しない。
+                # 18番まで解析できたレースでは1～18番を検証し、
+                # 17番までなら1～17番を検証する。欠番を見落として計算へ流さない。
+                _max_gate = max(
+                    [int(r.get("馬番")) for r in parsed_um_full
+                     if str(r.get("馬番", "")).isdigit()],
+                    default=0,
+                )
+                _expected_gate_count = _max_gate
+                validation = validate_umanity_full_records(parsed_um_full, expected_count=_expected_gate_count)
+                if not validation["ok"]:
+                    st.error(
+                        f"⚠️ 出走馬データが完全ではありません（{validation['count']}/{validation['expected_count']}頭）。"
+                    )
+                    if validation["missing"]:
+                        st.warning(f"不足している馬番：{', '.join(map(str, validation['missing']))}番")
+                    if validation["duplicates"]:
+                        st.warning(f"重複している馬番：{', '.join(map(str, validation['duplicates']))}番")
+                    st.info("入力データを修正せず、同じ出馬表をもう一度まとめてコピーして解析してください。\n\n※出走頭数は馬番から自動判定します。18番まであるレースでは1～18番が必要です。\n※馬番が馬名に連結した『6ペアポルックス』形式に加え、『79.1 8』のようなU指数＋馬番の同一行にも対応しました。\n※欠番が残る場合は、誤った馬へ指数・騎手を割り当てないため予想計算を停止します。")
+                    st.stop()
+
+                st.session_state["loaded_data"].setdefault("rows", {})
+                updated_count = 0
+                created_count = 0
+                warnings = []
+
+                for item in parsed_um_full:
+                    gate = int(item["馬番"])
+                    row_key = str(gate)
+                    existing = st.session_state["loaded_data"]["rows"].get(row_key, {})
+                    old_name = normalize_horse_name(existing.get("name", ""))
+                    new_name = normalize_horse_name(item.get("馬名", ""))
+
+                    # スマホコピー由来の明らかなノイズ名は絶対に採用しない。
+                    junk_name = str(new_name or "").strip().upper() in {
+                        "NO", "PHOTO", "NO PHOTO", "PH0TO", "N0", "DNEWL", "NEWS", "IPAT"
+                    } or bool(re.fullmatch(r"[0-9,./<>＜＞]+", str(new_name or "").strip()))
+                    if junk_name:
+                        new_name = ""
+
+                    if old_name and new_name and old_name != new_name:
+                        # 既存データがある場合は、名前の不一致でも文字貼り付け側を優先せず警告。
+                        # Netkeiba側とウマニティ側の確認をしやすくする。
+                        warnings.append(f"{gate}番：既存『{old_name}』 / ウマニティ『{new_name}』")
+                        continue
+
+                    jockey = item.get("今回騎手", "") or existing.get("jock", "(未選択)")
+                    jockey_registered = jockey in JOCKEY_MASTER
+                    note_parts = ["ウマニティ文字貼り付け取込"]
+                    if jockey and not jockey_registered and jockey != "(未選択)":
+                        note_parts.append(f"騎手:{jockey}")
+
+                    row = {
+                        "num": str(gate),
+                        "name": new_name or existing.get("name", ""),
+                        "wgt": float(item["斤量"]) if item.get("斤量") is not None else float(existing.get("wgt", 56.0)),
+                        "wgh": existing.get("wgh", 480),
+                        "jock": jockey if jockey_registered else "その他（自由手入力）",
+                        "sel_frame": existing.get("sel_frame", calculate_frame_position(gate)),
+                        # 人気・単勝オッズ・馬体重は後入力。コピペ値では確定しない。
+                        "pop": int(existing.get("pop", 0) or 0),
+                        "idx": float(item["U指数"]) if item.get("U指数") is not None else float(existing.get("idx", 0.0)),
+                        "win_odds": float(existing.get("win_odds", 0.0) or 0.0),
+                        "l3f": existing.get("l3f", 35.0),
+                        "sire": existing.get("sire", ""),
+                        "heavy_record": existing.get("heavy_record", False),
+                        "custom_note": " / ".join(note_parts),
+                        "sel_track": existing.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし"),
+                        "sel_style": existing.get("sel_style", "選択なし"),
+                        "sel_dist_change": existing.get("sel_dist_change", "同距離"),
+                        "previous_jockey": existing.get("previous_jockey", "(未選択)"),
+                        "trainer": existing.get("trainer", "(未選択)"),
+                        "owner": existing.get("owner", "(未選択)"),
+                    }
+                    st.session_state["loaded_data"]["rows"][row_key] = row
+                    if existing:
+                        updated_count += 1
+                    else:
+                        created_count += 1
+
+                # 解析結果の確認表も表示
                 st.session_state["v190_umanity_full_records"] = parsed_um_full
-                st.success(f"🎯 ウマニティ文字解析：{len(parsed_um_full)}頭を確認表へ追加しました。反映前に内容を確認してください。")
+                st.success(f"🎯 ウマニティ文字解析：{validation['count']}/{validation['expected_count']}頭を確認 / 更新 {updated_count}頭 / 新規 {created_count}頭")
+                if validation["incomplete_fields"]:
+                    _field_msgs = [f"{g}番：{', '.join(fs)}" for g, fs in validation["incomplete_fields"]]
+                    st.warning("一部項目が空欄です（馬番自体は16頭確認済み）：" + " / ".join(_field_msgs))
+                if warnings:
+                    st.warning(f"馬名不一致のため {len(warnings)}頭は既存データを維持しました。")
+                    with st.expander("⚠️ 不一致の詳細"):
+                        for w in warnings:
+                            st.write(w)
+                st.rerun()
 
     full_records = st.session_state.get("v190_umanity_full_records", [])
     if full_records:
-        display_cols = ["馬番", "馬名", "今回騎手", "U指数", "U指数順位", "単勝", "人気", "斤量", "解析警告"]
-        st.markdown("#### 📊 文字から解析した結果（未反映）")
+        display_cols = ["馬番", "馬名", "今回騎手", "U指数", "単勝", "斤量"]
+        st.markdown("#### 📊 文字から解析した結果")
         st.dataframe(
             pd.DataFrame(full_records)[display_cols],
             use_container_width=True,
             hide_index=True,
         )
-        parse_warnings = [
-            f"{r.get('馬番')}番: {r.get('解析警告')}"
-            for r in full_records if r.get("解析警告")
-        ]
-        if parse_warnings:
-            with st.expander(f"⚠️ 解析警告：{len(parse_warnings)}件", expanded=False):
-                for warning in parse_warnings:
-                    st.write(warning)
-        if st.button("✅ 確認したウマニティ文字結果を出馬表へ反映", type="primary", use_container_width=True):
-            outcome = apply_umanity_text_records(
-                full_records,
-                overwrite_existing=overwrite_umanity_values,
-                replace_existing_race=replace_umanity_race,
-            )
-            if outcome["warnings"]:
-                with st.expander(f"⚠️ 反映時の警告：{len(outcome['warnings'])}件", expanded=True):
-                    for warning in outcome["warnings"]:
-                        st.write(warning)
-            st.success(f"出馬表へ反映しました。更新 {outcome['updated']}頭 / 新規 {outcome['created']}頭")
-            st.rerun()
-        st.caption("※取得できないU指数順位・人気・単勝は空欄のままです。既存値は、上書き指定がない限り保持します。")
+        st.caption("※『--- 倍』の馬は単勝オッズを空欄のままにしています。VIP表示などでU指数がコピーされない馬も空欄のまま保持します。")
 
     st.divider()
     st.markdown("#### 旧方式：U指数だけ貼り付け")
@@ -4948,7 +6637,7 @@ if bulk_input_tab == "🔬 競馬ラボ文字入力":
         st.warning("先に「🐎 ウマニティ文字入力」で出馬表を解析してください。")
 
     st.markdown("## ② 競馬ラボプロフィール文字貼り付け")
-    st.caption("取得する項目：**父・調教師・馬主**")
+    st.caption("取得する項目：**性齢・前走/2走前・父母血統・調教師・馬主・生産者・距離/コース別成績**。距離・コース別成績は予想ロジックへ自動反映します。馬体重・人気・単勝オッズはプロフィールから取り込まず、レース直前の後入力欄で確定します。判定できない値は無理に補完しません。")
     profile_target = st.selectbox(
         "プロフィールの対象馬（コピー文字に馬名が含まれない場合に使用）",
         kl_gate_choices,
@@ -4985,7 +6674,7 @@ if bulk_input_tab == "🔬 競馬ラボ文字入力":
 
                 st.success(f"② プロフィール取り込み成功：{len(parsed_profile_text)}頭")
                 st.dataframe(
-                    pd.DataFrame(parsed_profile_text)[["馬番", "馬名", "父馬", "厩舎", "馬主"]],
+                    pd.DataFrame(parsed_profile_text)[[c for c in ["馬番", "馬名", "性齢", "斤量", "前走", "2走前", "父馬", "母馬", "母父", "厩舎", "馬主", "生産者", "距離別成績", "コース別成績"] if c in pd.DataFrame(parsed_profile_text).columns]],
                     use_container_width=True, hide_index=True,
                 )
 
@@ -5035,6 +6724,89 @@ if bulk_input_tab == "🔬 競馬ラボ文字入力":
                     history_df[["馬番", "馬名", "前走騎手", "上がり3F内訳", "上がり3F平均"]],
                     use_container_width=True, hide_index=True,
                 )
+
+    st.divider()
+    st.markdown("## ④ 過去5走の3Fを数値入力して平均を反映")
+    st.caption("対象馬を選び、前走から5走前までの上がり3Fを入力してください。空欄は計算対象外です。入力値は保存データにも保持されます。")
+    manual_3f_target = st.selectbox(
+        "数値入力する馬番",
+        kl_gate_choices,
+        format_func=lambda g: f"{g}番 {kl_gate_horse_map.get(g, '')}".strip(),
+        key="kl_manual_3f_target_v1947",
+    )
+    _manual_existing = next(
+        (r for r in st.session_state.get("v187_history_records", []) if int(r.get("馬番", 0) or 0) == int(manual_3f_target)),
+        {},
+    )
+    _manual_saved_row = st.session_state.get("loaded_data", {}).get("rows", {}).get(str(manual_3f_target), {})
+    _manual_saved_values = _manual_saved_row.get("l3f_history_values", [])
+    if not isinstance(_manual_saved_values, (list, tuple)) or len(_manual_saved_values) != 5:
+        _manual_saved_values = []
+    if not _manual_saved_values:
+        _manual_saved_values = []
+        for _token in str(_manual_existing.get("上がり3F内訳", "") or "").split("/"):
+            try:
+                _manual_saved_values.append(float(_token.strip()))
+            except Exception:
+                pass
+        _manual_saved_values = (_manual_saved_values + [None] * 5)[:5]
+
+    _manual_cols = st.columns(5)
+    _manual_values = []
+    for _idx, _label in enumerate(["前走", "2走前", "3走前", "4走前", "5走前"]):
+        _saved_val = _manual_saved_values[_idx] if _idx < len(_manual_saved_values) else None
+        _default_text = "" if _saved_val in (None, "") else str(_saved_val)
+        _raw_val = _manual_cols[_idx].text_input(
+            _label, value=_default_text, placeholder="例 33.8",
+            key=f"kl_manual_3f_{int(manual_3f_target)}_{_idx}_v1947",
+        )
+        _parsed_val = None
+        if str(_raw_val).strip():
+            try:
+                _candidate = float(str(_raw_val).strip().replace(",", "."))
+                if 30.0 <= _candidate <= 45.9:
+                    _parsed_val = round(_candidate, 1)
+            except Exception:
+                pass
+        _manual_values.append(_parsed_val)
+
+    _manual_valid_values = [v for v in _manual_values if v is not None]
+    _manual_avg = round(sum(_manual_valid_values) / len(_manual_valid_values), 2) if _manual_valid_values else None
+    if _manual_avg is not None:
+        st.metric("入力済みの平均上がり3F", f"{_manual_avg:.2f}秒", help=f"{len(_manual_valid_values)}走分で計算")
+    else:
+        st.info("30.0〜45.9の範囲で、少なくとも1走分入力してください。")
+
+    if st.button("📥 平均を計算して出馬表へ反映", type="primary", use_container_width=True, key="kl_manual_3f_apply_v1947"):
+        if not _manual_valid_values:
+            st.error("上がり3Fを少なくとも1走分入力してください（30.0〜45.9）。")
+        else:
+            _manual_record = {
+                "馬番": int(manual_3f_target),
+                "馬名": kl_gate_horse_map.get(manual_3f_target, _manual_existing.get("馬名", "")),
+                "前走騎手": _manual_existing.get("前走騎手", "(未選択)"),
+                "上がり3F内訳": " / ".join(f"{v:.1f}" for v in _manual_valid_values),
+                "上がり3F平均": _manual_avg,
+                "上がり取得数": len(_manual_valid_values),
+                "過去5走3F入力値": _manual_values,
+                "取得元": "競馬ラボ・過去5走3F手入力",
+            }
+            _manual_records_by_gate = {
+                int(r["馬番"]): r for r in st.session_state.get("v187_history_records", [])
+                if r.get("馬番")
+            }
+            _manual_records_by_gate[int(manual_3f_target)] = _manual_record
+            st.session_state["v187_history_records"] = [
+                _manual_records_by_gate[k] for k in sorted(_manual_records_by_gate)
+            ]
+            st.session_state["v187_history_text_records"] = [_manual_record]
+            apply_specialized_image_records([_manual_record], auto_track)
+            # number_input は key の session_state を優先するため、
+            # loaded_data だけ更新しても画面上の値が古いまま残ることがある。
+            # 出馬表側のウィジェット状態も同時に更新してから再描画する。
+            st.session_state[f"l3f_{int(manual_3f_target)}"] = float(_manual_avg)
+            st.success(f"{manual_3f_target}番の上がり3F平均 {_manual_avg:.2f}秒を出馬表へ反映しました。")
+            st.rerun()
 
     st.divider()
     st.markdown("### 📊 文字取り込み結果")
@@ -5140,7 +6912,7 @@ if bulk_input_tab == "📷 画像OCR（予備）":
                         sg = int(u_start_map[f.name])
                         status_box.write(f"🔎 ウマニティ解析 {idx + 1}/{len(u_files)}：先頭 {sg}番")
                         recs = parse_umanity_screenshot_image(f, "", forced_start_gate=sg)
-                        expected = min(7, 19 - sg)
+                        expected = max(1, min(18 - sg + 1, 18))
                         raw = ""
                         if len(recs) < expected:
                             try:
@@ -5156,7 +6928,7 @@ if bulk_input_tab == "📷 画像OCR（予備）":
                         diagnostics.append({
                             "画像": f.name, "種類": "ウマニティ",
                             "指定": f"先頭 {sg}番", "抽出頭数": len(recs),
-                            "期待頭数": expected,
+                            "期待頭数": "自動検出",
                             "抽出馬": " / ".join(f"{r.get('馬番')} {r.get('馬名')}" for r in recs),
                         })
                     except Exception as exc:
@@ -5166,10 +6938,10 @@ if bulk_input_tab == "📷 画像OCR（予備）":
             status_box.empty()
             # 今回指定された馬番範囲は新結果で置換
             old = {int(r["馬番"]): r for r in st.session_state["v187_umanity_records"] if r.get("馬番")}
-            for f in u_files:
-                sg = int(u_start_map[f.name])
-                for g in range(sg, min(19, sg + 7)):
-                    old.pop(g, None)
+            # 固定7頭ではなく、実際に検出した馬番だけを置換する。
+            for r in new_records:
+                if r.get("馬番"):
+                    old.pop(int(r["馬番"]), None)
             for r in new_records:
                 if r.get("馬番"):
                     old[int(r["馬番"])] = r
@@ -5180,9 +6952,16 @@ if bulk_input_tab == "📷 画像OCR（予備）":
                 st.warning("一部の画像でエラーがありました。")
                 for e in errors:
                     st.code(e)
-            st.success(f"① ウマニティ：{len(new_records)}頭を解析しました。")
+            _detected_gates = sorted({int(r.get("馬番")) for r in new_records if r.get("馬番")})
+            st.success(f"① ウマニティ：{len(_detected_gates)}頭を解析しました。馬番 {min(_detected_gates) if _detected_gates else "-"}～{max(_detected_gates) if _detected_gates else "-"} を確認")
 
     u_records = st.session_state["v187_umanity_records"]
+    _u_gate_set = {int(r.get("馬番")) for r in u_records if r.get("馬番") not in (None, "")}
+    if _u_gate_set:
+        _missing_u_gates = [g for g in range(1, max(_u_gate_set) + 1) if g not in _u_gate_set]
+        if _missing_u_gates:
+            st.warning(f"⚠️ ウマニティ読み込み：欠落馬番があります → {", ".join(map(str, _missing_u_gates))}。予想前に確認してください。")
+
     gate_horse_map = {
         int(r["馬番"]): normalize_horse_name(r.get("馬名", ""))
         for r in u_records if r.get("馬番") and r.get("馬名")
@@ -5213,16 +6992,32 @@ if bulk_input_tab == "📷 画像OCR（予備）":
 
     p_gate_map = {}
     gate_choices = sorted(gate_horse_map.keys()) if gate_horse_map else list(range(1,19))
-    for idx, f in enumerate(p_files):
-        c1, c2 = st.columns([2.6, 1])
-        c1.write(f"📷 {f.name}")
-        default_index = min(idx, len(gate_choices)-1) if gate_choices else 0
-        p_gate_map[f.name] = c2.selectbox(
-            "対象馬番", gate_choices,
-            index=default_index,
-            key=f"p_gate_v187_{idx}_{f.name}",
-            label_visibility="collapsed",
+    if upload_mode == "📱 スマホ：1枚ずつ":
+        # スマホでは画像を差し替えるたびにファイル名ベースの選択欄が作り直され、
+        # 対象馬番が毎回1番へ戻りやすいため、独立した固定キーの選択欄を使う。
+        if "mobile_profile_gate" not in st.session_state:
+            st.session_state["mobile_profile_gate"] = gate_choices[0] if gate_choices else 1
+        if st.session_state["mobile_profile_gate"] not in gate_choices and gate_choices:
+            st.session_state["mobile_profile_gate"] = gate_choices[0]
+        mobile_profile_gate = st.selectbox(
+            "このプロフィール画像の対象馬番（必ず確認）",
+            gate_choices,
+            key="mobile_profile_gate",
+            help="画像に写っている馬の馬番を選んでから「プロフィールだけ解析」を押してください。選択した馬番は次の画像でも保持されます。",
         )
+        for f in p_files:
+            p_gate_map[f.name] = int(mobile_profile_gate)
+    else:
+        for idx, f in enumerate(p_files):
+            c1, c2 = st.columns([2.6, 1])
+            c1.write(f"📷 {f.name}")
+            default_index = min(idx, len(gate_choices)-1) if gate_choices else 0
+            p_gate_map[f.name] = c2.selectbox(
+                "対象馬番", gate_choices,
+                index=default_index,
+                key=f"p_gate_v187_{idx}_{f.name}",
+                label_visibility="collapsed",
+            )
 
     if st.button("② プロフィールだけ解析", use_container_width=True, disabled=not p_files):
         if not u_records:
@@ -5240,13 +7035,24 @@ if bulk_input_tab == "📷 画像OCR（予備）":
                             errors.append(f"{f.name}: {gate}番の馬名がウマニティ側にありません")
                             continue
                         raw = extract_text_from_screenshot(f)
-                        recs = parse_keibalab_profile_screenshot_image(
-                            f, horse_gate_map, fallback_horse=target_horse
+                        # プロフィール画像は、画像専用の未定義関数に依存せず、
+                        # 取得したOCR文字列を既存のプロフィール文字パーサーへ渡す。
+                        recs = parse_keibalab_profile_screenshot_text(
+                            raw, horse_gate_map, fallback_horse=target_horse
                         )
-                        # 指定馬番を最終的に強制
+                        # 指定馬番・馬名を最終的に強制。OCRで項目が取れない場合も
+                        # 対象馬そのものは結果から消さない。
+                        if not recs:
+                            recs = [{
+                                "馬番": gate, "馬名": target_horse, "父馬": "",
+                                "厩舎": "(未選択)", "馬主": "(未選択)",
+                                "取得元": "競馬ラボ・プロフィール画像（対象馬保持）",
+                            }]
                         for r in recs:
                             r["馬番"] = gate
                             r["馬名"] = target_horse
+                        # 同じ画像から複数候補が返った場合は指定馬番の1頭だけ採用
+                        recs = [recs[0]]
                         new_records.extend(recs)
                         new_raw.append((f"競馬ラボ・プロフィール:{f.name}", raw))
                         diagnostics.append({
@@ -5260,7 +7066,17 @@ if bulk_input_tab == "📷 画像OCR（予備）":
 
             old = {int(r["馬番"]): r for r in st.session_state["v187_profile_records"] if r.get("馬番")}
             for r in new_records:
-                old[int(r["馬番"])] = r
+                gate = int(r["馬番"])
+                # 同じ馬を複数回読み込む場合、今回OCRで取れなかった空欄で
+                # 以前に取得済みのプロフィール項目を消さない。
+                previous = old.get(gate, {})
+                merged_profile = dict(previous)
+                for key, value in r.items():
+                    if value not in (None, "", "(未選択)", "選択なし"):
+                        merged_profile[key] = value
+                    elif key not in merged_profile:
+                        merged_profile[key] = value
+                old[gate] = merged_profile
             st.session_state["v187_profile_records"] = [old[k] for k in sorted(old)]
             st.session_state["v187_raw_texts"].extend(new_raw)
             st.session_state["v187_diagnostics"].extend(diagnostics)
@@ -5268,7 +7084,9 @@ if bulk_input_tab == "📷 画像OCR（予備）":
                 st.warning("一部のプロフィール画像で取得できませんでした。")
                 for e in errors:
                     st.code(e)
-            st.success(f"② プロフィール：{len(new_records)}頭分を解析しました。")
+            st.success(f"② プロフィール：{len(new_records)}頭分を解析しました。対象馬番：" +
+                       "、".join(f"{r.get('馬番')}番 {r.get('馬名')}" for r in new_records))
+
 
     # ③ 競馬ラボ・過去5走（画像OCR）
     if upload_mode == "📱 スマホ：1枚ずつ":
@@ -5555,59 +7373,97 @@ def _safe_select_index(options, value, fallback=0):
     except ValueError:
         return fallback
 
+# 馬名が入っている頭数を枠番判定に使用（PC・スマホ共通）
+_loaded_rows_for_frame = st.session_state["loaded_data"].get("rows", {})
+_entered_gates = []
+for _gate in range(1, 19):
+    _loaded_name = _loaded_rows_for_frame.get(str(_gate), {}).get("name", "")
+    _current_name = st.session_state.get(f"name_{_gate}", _loaded_name)
+    if str(_current_name or "").strip():
+        _entered_gates.append(_gate)
+_frame_field_size = len(_entered_gates) if _entered_gates else 16
+_frame_field_size = max(1, min(18, _frame_field_size))
+
+# 出走頭数が変わった場合は、枠有利の初期値を自動で再計算する。
+# 同じ頭数のままなら、ユーザーが手動変更した値を尊重する。
+_frame_sync_signature = (_frame_field_size, tuple(_entered_gates))
+if st.session_state.get("_frame_sync_signature") != _frame_sync_signature:
+    for _gate in range(1, 19):
+        _auto_frame = calculate_frame_position(_gate, _frame_field_size)
+        st.session_state[f"frame_{_gate}"] = _auto_frame
+        if str(_gate) in _loaded_rows_for_frame:
+            _loaded_rows_for_frame[str(_gate)]["sel_frame"] = _auto_frame
+    st.session_state["_frame_sync_signature"] = _frame_sync_signature
+
+# ボタンを押した場合は、手動変更済みの値も含めて全馬を再判定する。
+if st.button("🎯 馬番・出走頭数から枠有利を自動判定", key="recalc_frame_advantage", use_container_width=True):
+    for _gate in range(1, 19):
+        _auto_frame = calculate_frame_position(_gate, _frame_field_size)
+        st.session_state[f"frame_{_gate}"] = _auto_frame
+        if str(_gate) in _loaded_rows_for_frame:
+            _loaded_rows_for_frame[str(_gate)]["sel_frame"] = _auto_frame
+    st.rerun()
+
 if not mobile_mode:
-    c_widths = [0.55, 1.20, 0.52, 0.65, 0.60, 0.58, 0.63, 0.58, 1.10, 0.52, 1.00, 1.00, 0.95, 0.95, 1.05, 0.68, 0.72, 0.72, 0.78, 0.72]
-    cols = st.columns(c_widths)
-    headers = ["馬番", "馬名", "人気", "単勝", "指数", "斤量", "馬体重", "前3F", "父馬", "道悪", "今回騎手", "前走騎手", "厩舎", "馬主", "手入力メモ", "馬場", "脚質", "枠有利", "前走距離", "能力値"]
-    for col, h in zip(cols, headers):
-        col.write(f"**{h}**")
-
+    st.caption("馬ごとに入力欄をまとめ、入力欄を広めに配置しています。**馬体重・人気・単勝オッズはレース直前に後入力**できます（0＝未入力）。枠有利は出走頭数に応じて初期判定され、必要なら上のボタンで再判定できます。")
     for i in range(1, 19):
-        c = st.columns(c_widths)
         s_row = st.session_state["loaded_data"].get("rows", {}).get(str(i), {})
+        if f"frame_{i}" not in st.session_state:
+            st.session_state[f"frame_{i}"] = s_row.get("sel_frame", calculate_frame_position(i, _frame_field_size))
+        with st.container(border=True):
+            st.markdown(f"### 🐎 {i}番　{s_row.get('name', '') or '馬名未入力'}")
 
-        num = c[0].text_input(f"num_{i}", value=s_row.get("num", str(i)), label_visibility="collapsed")
-        name = c[1].text_input(f"name_{i}", value=s_row.get("name", ""), label_visibility="collapsed")
-        pop = c[2].number_input(f"pop_{i}", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), label_visibility="collapsed")
-        win_odds = c[3].number_input(f"win_odds_{i}", min_value=0.0, max_value=999.9, value=float(s_row.get("win_odds", 0.0) or 0.0), step=0.1, label_visibility="collapsed", help="未入力は0.0")
-        idx = c[4].number_input(f"idx_{i}", value=float(s_row.get("idx", 0.0)), step=0.1, label_visibility="collapsed")
-        wgt = c[5].number_input(f"wgt_{i}", min_value=48.0, max_value=62.0, value=float(s_row.get("wgt", 56.0)), step=0.5, label_visibility="collapsed")
-        wgh = c[6].number_input(f"wgh_{i}", min_value=350, max_value=600, value=int(s_row.get("wgh", 480)), step=2, label_visibility="collapsed")
-        l3f = c[7].number_input(f"l3f_{i}", value=float(s_row.get("l3f", 35.0)), step=0.1, label_visibility="collapsed")
-        sire = c[8].text_input(f"sire_{i}", value=s_row.get("sire", ""), label_visibility="collapsed", placeholder="父馬")
-        has_heavy_record = c[9].checkbox(f"rec_{i}", value=s_row.get("heavy_record", False), label_visibility="collapsed")
+            c = st.columns([1, 2.5, 1])
+            num = c[0].text_input("馬番", value=s_row.get("num", str(i)), key=f"num_{i}")
+            name = c[1].text_input("馬名", value=s_row.get("name", ""), key=f"name_{i}", placeholder="馬名を入力")
+            pop = c[2].number_input("人気（後入力）", min_value=0, max_value=18, value=int(s_row.get("pop", 0) or 0), key=f"pop_{i}", help="0＝未入力。レース直前の人気を後から入力します。")
 
-        saved_jockey = normalize_jockey_name(s_row.get("jock", "(未選択)"))
-        jock = c[10].selectbox(f"jock_{i}", jockey_options, index=_safe_select_index(jockey_options, saved_jockey), label_visibility="collapsed")
-        saved_previous = normalize_jockey_name(s_row.get("previous_jockey", "(未選択)"))
-        previous_jockey = c[11].selectbox(f"previous_jockey_{i}", jockey_options, index=_safe_select_index(jockey_options, saved_previous), label_visibility="collapsed")
-        trainer = c[12].selectbox(f"trainer_{i}", TRAINER_OPTIONS, index=_safe_select_index(TRAINER_OPTIONS, s_row.get("trainer", "(未選択)")), label_visibility="collapsed")
-        owner = c[13].selectbox(f"owner_{i}", OWNER_OPTIONS, index=_safe_select_index(OWNER_OPTIONS, s_row.get("owner", "(未選択)")), label_visibility="collapsed")
-        custom_note = c[14].text_input(f"custom_note_{i}", value=s_row.get("custom_note", ""), label_visibility="collapsed", placeholder="性齢・特徴メモ")
+            c = st.columns(3)
+            win_odds = c[0].number_input("単勝オッズ（後入力）", min_value=0.0, max_value=999.9, value=float(s_row.get("win_odds", 0.0) or 0.0), step=0.1, key=f"win_odds_{i}", help="0＝未入力。レース直前の単勝オッズを後から入力します。")
+            idx = c[1].number_input("U指数", value=float(s_row.get("idx", 0.0)), step=0.1, key=f"idx_{i}")
+            wgt = c[2].number_input("斤量", min_value=48.0, max_value=62.0, value=float(s_row.get("wgt", 56.0)), step=0.5, key=f"wgt_{i}")
 
-        default_track = s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")
-        sel_track = c[15].selectbox(f"track_{i}", track_options, index=_safe_select_index(track_options, default_track), label_visibility="collapsed")
-        sel_style = c[16].selectbox(f"style_{i}", style_options, index=_safe_select_index(style_options, s_row.get("sel_style", "選択なし")), label_visibility="collapsed")
+            c = st.columns(3)
+            wgh = c[0].number_input("馬体重（後入力）", min_value=0, max_value=600, value=int(s_row.get("wgh", 0) or 0), step=2, key=f"wgh_{i}", help="0＝未入力。レース直前の馬体重を後から入力します。")
+            l3f = c[1].number_input("上がり3F平均", value=float(s_row.get("l3f", 35.0)), step=0.1, key=f"l3f_{i}")
+            sire = c[2].text_input("父馬", value=s_row.get("sire", ""), key=f"sire_{i}", placeholder="父馬")
+            has_heavy_record = st.checkbox("道悪実績あり", value=s_row.get("heavy_record", False), key=f"rec_{i}")
 
-        num_int = safe_int_convert(num, i)
-        f_def_idx = 1 if num_int <= 8 else (2 if num_int >= 13 else 0)
-        sel_frame = c[17].selectbox(f"frame_{i}", frame_options, index=_safe_select_index(frame_options, s_row.get("sel_frame", frame_options[f_def_idx])), label_visibility="collapsed")
-        sel_dist_change = c[18].selectbox(f"dist_change_{i}", distance_options, index=_safe_select_index(distance_options, s_row.get("sel_dist_change", "同距離")), label_visibility="collapsed")
-        score_cell = c[19]
+            c = st.columns(2)
+            saved_jockey = normalize_jockey_name(s_row.get("jock", "(未選択)"))
+            jock = c[0].selectbox("今回騎手", jockey_options, index=_safe_select_index(jockey_options, saved_jockey), key=f"jock_{i}")
+            saved_previous = normalize_jockey_name(s_row.get("previous_jockey", "(未選択)"))
+            previous_jockey = c[1].selectbox("前走騎手", jockey_options, index=_safe_select_index(jockey_options, saved_previous), key=f"previous_jockey_{i}")
+
+            c = st.columns(2)
+            trainer = c[0].selectbox("厩舎", TRAINER_OPTIONS, index=_safe_select_index(TRAINER_OPTIONS, s_row.get("trainer", "(未選択)")), key=f"trainer_{i}")
+            owner = c[1].selectbox("馬主", OWNER_OPTIONS, index=_safe_select_index(OWNER_OPTIONS, s_row.get("owner", "(未選択)")), key=f"owner_{i}")
+
+            c = st.columns([2, 1, 1])
+            custom_note = c[0].text_input("手入力メモ", value=s_row.get("custom_note", ""), key=f"custom_note_{i}")
+            default_track = s_row.get("sel_track", auto_track if auto_track in ["芝", "ダート"] else "選択なし")
+            sel_track = c[1].selectbox("馬場", track_options, index=_safe_select_index(track_options, default_track), key=f"track_{i}")
+            sel_style = c[2].selectbox("脚質", style_options, index=_safe_select_index(style_options, s_row.get("sel_style", "選択なし")), key=f"style_{i}")
+
+            c = st.columns(2)
+            _auto_frame = calculate_frame_position(safe_int_convert(num, i), _frame_field_size)
+            sel_frame = c[0].selectbox("枠有利（自動判定）", frame_options, index=_safe_select_index(frame_options, st.session_state.get(f"frame_{i}", _auto_frame)), key=f"frame_{i}")
+            sel_dist_change = c[1].selectbox("前走距離", distance_options, index=_safe_select_index(distance_options, s_row.get("sel_dist_change", "同距離")), key=f"dist_change_{i}")
+            score_cell = st.empty()
 
         if name and sel_style in style_counts:
             style_counts[sel_style] += 1
-
         current_inputs["rows"][str(i)] = {
             "num": num, "name": name, "pop": pop, "win_odds": win_odds, "idx": idx, "wgt": wgt, "wgh": wgh, "l3f": l3f, "sire": sire, "heavy_record": has_heavy_record,
             "jock": jock, "previous_jockey": previous_jockey, "trainer": trainer, "owner": owner,
+            "l3f_history_values": s_row.get("l3f_history_values", [None, None, None, None, None]),
             "custom_note": custom_note, "sel_track": sel_track, "sel_style": sel_style,
             "sel_frame": sel_frame, "sel_dist_change": sel_dist_change
         }
         row_tmp_data.append((num, name, pop, win_odds, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, previous_jockey, trainer, owner, custom_note, sel_track, sel_style, sel_frame, sel_dist_change, score_cell))
 
 else:
-    st.success("📱 スマホ入力：1頭ずつ編集します。入力値はその場で保持されます。")
+    st.success("📱 スマホ入力：1頭ずつ編集します。馬体重・人気・単勝オッズは後から入力できます。入力値はその場で保持されます。")
 
     # Which horse to edit
     if "mobile_horse_no" not in st.session_state:
@@ -5644,6 +7500,7 @@ else:
                 "heavy_record": st.session_state.get(f"rec_{i}", s_row.get("heavy_record", False)),
                 "jock": st.session_state.get(f"jock_{i}", normalize_jockey_name(s_row.get("jock", "(未選択)"))),
                 "previous_jockey": st.session_state.get(f"previous_jockey_{i}", normalize_jockey_name(s_row.get("previous_jockey", "(未選択)"))),
+                "l3f_history_values": s_row.get("l3f_history_values", [None, None, None, None, None]),
                 "trainer": st.session_state.get(f"trainer_{i}", s_row.get("trainer", "(未選択)")),
                 "owner": st.session_state.get(f"owner_{i}", s_row.get("owner", "(未選択)")),
                 "custom_note": st.session_state.get(f"custom_note_{i}", s_row.get("custom_note", "")),
@@ -5670,15 +7527,15 @@ else:
         name = st.text_input("馬名", value=s_row.get("name", ""), key=f"name_{i}", placeholder="馬名")
 
         c1, c2 = st.columns(2)
-        pop = c1.number_input("人気", min_value=1, max_value=18, value=int(s_row.get("pop", 10)), key=f"pop_{i}")
-        win_odds = c2.number_input("単勝", min_value=0.0, max_value=999.9, value=float(s_row.get("win_odds", 0.0) or 0.0), step=0.1, key=f"win_odds_{i}")
+        pop = c1.number_input("人気（後入力）", min_value=0, max_value=18, value=int(s_row.get("pop", 0) or 0), key=f"pop_{i}", help="0＝未入力。レース直前の人気を後から入力します。")
+        win_odds = c2.number_input("単勝（後入力）", min_value=0.0, max_value=999.9, value=float(s_row.get("win_odds", 0.0) or 0.0), step=0.1, key=f"win_odds_{i}", help="0＝未入力。レース直前の単勝オッズを後から入力します。")
 
         c1, c2 = st.columns(2)
         idx = c1.number_input("U指数", value=float(s_row.get("idx", 0.0)), step=0.1, key=f"idx_{i}")
         wgt = c2.number_input("斤量", min_value=48.0, max_value=62.0, value=float(s_row.get("wgt", 56.0)), step=0.5, key=f"wgt_{i}")
 
         c1, c2 = st.columns(2)
-        wgh = c1.number_input("馬体重", min_value=350, max_value=600, value=int(s_row.get("wgh", 480)), step=2, key=f"wgh_{i}")
+        wgh = c1.number_input("馬体重（後入力）", min_value=0, max_value=600, value=int(s_row.get("wgh", 0) or 0), step=2, key=f"wgh_{i}", help="0＝未入力。レース直前の馬体重を後から入力します。")
         l3f = c2.number_input("上がり3F平均", value=float(s_row.get("l3f", 35.0)), step=0.1, key=f"l3f_{i}")
 
         sire = st.text_input("父馬", value=s_row.get("sire", ""), key=f"sire_{i}")
@@ -5702,8 +7559,8 @@ else:
 
         c1, c2 = st.columns(2)
         num_int = safe_int_convert(num, i)
-        f_def_idx = 1 if num_int <= 8 else (2 if num_int >= 13 else 0)
-        sel_frame = c1.selectbox("枠有利", frame_options, index=_safe_select_index(frame_options, s_row.get("sel_frame", frame_options[f_def_idx])), key=f"frame_{i}")
+        _auto_frame = calculate_frame_position(num_int, _frame_field_size)
+        sel_frame = c1.selectbox("枠有利（自動判定）", frame_options, index=_safe_select_index(frame_options, st.session_state.get(f"frame_{i}", s_row.get("sel_frame", _auto_frame))), key=f"frame_{i}")
         sel_dist_change = c2.selectbox("前走距離", distance_options, index=_safe_select_index(distance_options, s_row.get("sel_dist_change", "同距離")), key=f"dist_change_{i}")
 
         has_heavy_record = st.checkbox("道悪実績あり", value=s_row.get("heavy_record", False), key=f"rec_{i}")
@@ -5712,6 +7569,7 @@ else:
         row = {
             "num": num, "name": name, "pop": pop, "win_odds": win_odds, "idx": idx, "wgt": wgt, "wgh": wgh, "l3f": l3f,
             "sire": sire, "heavy_record": has_heavy_record, "jock": jock, "previous_jockey": previous_jockey,
+            "l3f_history_values": s_row.get("l3f_history_values", [None, None, None, None, None]),
             "trainer": trainer, "owner": owner, "custom_note": custom_note, "sel_track": sel_track,
             "sel_style": sel_style, "sel_frame": sel_frame, "sel_dist_change": sel_dist_change
         }
@@ -5777,7 +7635,7 @@ st.info(f"**現在の登録馬から算出された展開:** {pace_status} (逃�
 LEARNING_DB_PATH = Path(__file__).with_name("keiba_learning.db")
 LEARNING_FACTORS = [
     "指数", "斤量", "馬体重", "格・斤量価値", "馬番・枠",
-    "血統・コース", "脚質・距離", "騎手補正", "騎手条件", "人気補正",
+    "血統・コース", "脚質・距離", "距離適性", "コース実績", "騎手補正", "騎手条件", "人気補正",
     "展開補正", "道悪補正"
 ]
 MIN_LEARNING_SAMPLES = 10
@@ -5967,6 +7825,227 @@ AUTO_ADJUST_ENABLED = is_auto_adjust_enabled()
 ACTIVE_LEARNING_WEIGHTS = load_learning_weights()
 
 # ==========================================
+# 📊 プロフィール実績解析（Ver1.19.68）
+# ==========================================
+def _parse_record_stats_text(raw_text):
+    """「1000 0-0-0-0 / 1400 2-0-0-2」のような成績文字列を構造化する。"""
+    out = []
+    text = str(raw_text or "")
+    for label, w, p, t, o in re.findall(
+        r"([^/\n]*?)\s*(\d{1,4})-(\d{1,4})-(\d{1,4})-(\d{1,4})", text
+    ):
+        label = re.sub(r"\s+", " ", label).strip(" /:")
+        if not label:
+            continue
+        try:
+            wins, places, thirds, others = map(int, (w, p, t, o))
+            starts = wins + places + thirds + others
+            if starts > 0:
+                out.append({"label": label, "wins": wins, "places": places,
+                            "thirds": thirds, "others": others, "starts": starts})
+        except ValueError:
+            continue
+    return out
+
+
+def _record_top3_rate(record):
+    return ((record["wins"] + record["places"] + record["thirds"]) /
+            record["starts"]) if record and record.get("starts") else 0.0
+
+
+def _shrink_rate(rate, starts, prior=0.30, prior_strength=8.0):
+    """少頭数の成績をそのまま信用しないベイズ風の縮小。"""
+    n = max(0, int(starts or 0))
+    return (rate * n + prior * prior_strength) / (n + prior_strength)
+
+
+def _extract_target_distance(course_name):
+    m = re.search(r"(\d{3,4})m", str(course_name or ""))
+    return int(m.group(1)) if m else None
+
+
+def _distance_aptitude_adjustment(distance_stats, course_name):
+    """距離別成績から今回距離の適性を±3点で算出する。
+
+    完全一致を最優先。完全一致がない場合は前後距離を補間し、
+    少頭数の実績は縮小して過大評価を防ぐ。
+    """
+    target = _extract_target_distance(course_name)
+    if target is None or not distance_stats:
+        return 0.0, ""
+    records = []
+    for r in _parse_record_stats_text(distance_stats):
+        m = re.search(r"(\d{3,4})", r["label"])
+        if not m:
+            continue
+        r = dict(r)
+        r["distance"] = int(m.group(1))
+        records.append(r)
+    if not records:
+        return 0.0, ""
+
+    exact = [r for r in records if r["distance"] == target]
+    if exact:
+        r = exact[0]
+        shrunk = _shrink_rate(_record_top3_rate(r), r["starts"])
+        score = max(-3.0, min(3.0, (shrunk - 0.30) * 12.0))
+        return round(score, 2), f"{target}m実績 {r['wins']}-{r['places']}-{r['thirds']}-{r['others']}"
+
+    # 前後距離を最大400mまで利用。近いほど重くする。
+    candidates = [r for r in records if abs(r["distance"] - target) <= 400]
+    if not candidates:
+        return 0.0, ""
+    weighted = []
+    for r in candidates:
+        dist_gap = abs(r["distance"] - target)
+        weight = 1.0 / max(100.0, float(dist_gap))
+        weighted.append((_shrink_rate(_record_top3_rate(r), r["starts"]), weight, r))
+    rate = sum(x * w for x, w, _ in weighted) / sum(w for _, w, _ in weighted)
+    # 補間は完全一致より少し弱くする。
+    score = max(-2.0, min(2.0, (rate - 0.30) * 9.0))
+    labels = ", ".join(f"{r['distance']}m {r['wins']}-{r['places']}-{r['thirds']}-{r['others']}" for _, _, r in weighted[:3])
+    return round(score, 2), f"{target}m近似実績（{labels}）"
+
+
+def _course_aptitude_adjustment(course_stats, course_name):
+    """コース別成績から今回コースの適性を±3点で算出する。"""
+    if not course_stats or not course_name or course_name == "(未選択)":
+        return 0.0, ""
+    records = _parse_record_stats_text(course_stats)
+    if not records:
+        return 0.0, ""
+    course = str(course_name)
+    venue_m = re.search(r"^(.*?)(?:芝|ダート)", course)
+    venue = venue_m.group(1) if venue_m else ""
+    surface = "芝" if "芝" in course else ("ダート" if "ダート" in course else "")
+
+    # コース名がそのまま含まれる記録を最優先。
+    def norm(x):
+        return re.sub(r"[\s　]", "", str(x))
+    exact = [r for r in records if venue and venue in norm(r["label"]) and (not surface or surface in norm(r["label"]))]
+    if exact:
+        r = exact[0]
+    else:
+        # 「全右」「全左」「東芝」などの集約成績を補助利用。
+        directional = []
+        for rr in records:
+            label = norm(rr["label"])
+            if surface and surface not in label and label not in {"全", "全右", "全左"}:
+                continue
+            if venue and venue[:1] in label and label not in {"全", "全右", "全左"}:
+                directional.append(rr)
+        if directional:
+            r = directional[0]
+        else:
+            generic = [rr for rr in records if norm(rr["label"]) in {"全", "全芝", "全ダート"}]
+            if not generic:
+                return 0.0, ""
+            r = generic[0]
+
+    shrunk = _shrink_rate(_record_top3_rate(r), r["starts"])
+    score = max(-3.0, min(3.0, (shrunk - 0.30) * 12.0))
+    return round(score, 2), f"{r['label']}実績 {r['wins']}-{r['places']}-{r['thirds']}-{r['others']}"
+
+
+def calculate_profile_aptitude_adjustment(profile_distance_stats, profile_course_stats, course_name):
+    """距離・コース実績を既存スコアへ安全に統合する。"""
+    dist_score, dist_note = _distance_aptitude_adjustment(profile_distance_stats, course_name)
+    course_score, course_note = _course_aptitude_adjustment(profile_course_stats, course_name)
+    # 2項目を別々に評価し、合計は±5点に制限。
+    total = max(-5.0, min(5.0, dist_score + course_score))
+    notes = []
+    if dist_note:
+        notes.append(f"距離適性 {dist_score:+.2f}: {dist_note}")
+    if course_note:
+        notes.append(f"コース実績 {course_score:+.2f}: {course_note}")
+    return round(total, 2), notes
+
+
+
+def _parse_recent_race_result(text):
+    """プロフィールの「前走/2走前」から着順と人気を安全に抽出する。"""
+    if not text:
+        return None
+    compact = re.sub(r"\s+", " ", str(text)).strip()
+    # 例: ヴィクトリア 13人13着 / 愛知杯 12人1着
+    m = re.search(r"(?:(\d{1,2})\s*人)?\s*(\d{1,2})\s*着", compact)
+    if not m:
+        return None
+    finish = safe_int_convert(m.group(2), 0)
+    popularity = safe_int_convert(m.group(1), 0) if m.group(1) else None
+    if finish < 1 or finish > 30:
+        return None
+    return {"finish": finish, "popularity": popularity}
+
+
+def _recent_result_score(result, base_weight):
+    """着順だけから直近走の結果を小さく評価。人気は評価に使わない。"""
+    if not result:
+        return 0.0
+    finish = result["finish"]
+    table = {
+        1: 2.0, 2: 1.5, 3: 1.0,
+        4: 0.6, 5: 0.4,
+        6: 0.2, 7: 0.1, 8: 0.0, 9: 0.0,
+    }
+    raw = table.get(finish, -0.4)
+    return round(raw * base_weight, 2)
+
+
+def calculate_recent_race_result_adjustment(previous_race, second_previous_race):
+    """前走・2走前の着順を能力スコアへ安全に反映する。
+
+    前走を強め、2走前を弱めに評価。人気順位は参照せず、着順だけを使う。
+    合計は±3.0点以内に制限する。
+    """
+    r1 = _parse_recent_race_result(previous_race)
+    r2 = _parse_recent_race_result(second_previous_race)
+    s1 = _recent_result_score(r1, 1.0)
+    s2 = _recent_result_score(r2, 0.65)
+    total = max(-3.0, min(3.0, s1 + s2))
+    notes = []
+    if r1:
+        notes.append(f"前走{r1['finish']}着 {s1:+.2f}")
+    if r2:
+        notes.append(f"2走前{r2['finish']}着 {s2:+.2f}")
+    return round(total, 2), notes
+
+
+def calculate_damsire_course_adjustment(course, damsire, sex, body_weight, horse_number, style, track_condition):
+    """母父を既存のコース事典2の血統ルールへ補助的に統合する。
+
+    父と同じ強さでは扱わず、該当ルールの40%・最大+2.0点まで。
+    これにより母父だけで能力評価が大きく動くのを防ぐ。
+    """
+    if not damsire:
+        return 0.0, []
+    raw_score, raw_reasons = calculate_detailed_lineage_adjustment(
+        course, damsire, sex, body_weight, horse_number, style, track_condition
+    )
+    if raw_score <= 0:
+        return 0.0, []
+    score = min(2.0, round(raw_score * 0.40, 2))
+    reasons = [f"母父 {damsire} がコース事典2条件に該当（父より弱めに評価） +{score:.2f}"]
+    return score, reasons
+
+profile_rows_by_gate = {}
+for _r in st.session_state.get("v187_profile_records", []):
+    try:
+        _g = int(_r.get("馬番", 0) or 0)
+    except (TypeError, ValueError):
+        _g = 0
+    if 1 <= _g <= 18:
+        profile_rows_by_gate[_g] = _r
+# 出馬表側に統合済みのプロフィール情報も優先して参照。
+for _k, _r in st.session_state.get("loaded_data", {}).get("rows", {}).items():
+    try:
+        _g = int(_k)
+    except (TypeError, ValueError):
+        continue
+    if 1 <= _g <= 18 and (_r.get("profile_distance_stats") or _r.get("profile_course_stats")):
+        profile_rows_by_gate[_g] = {**profile_rows_by_gate.get(_g, {}), **_r}
+
+# ==========================================
 # 📊 スコア計算ロジック
 # ==========================================
 calculated_results = []
@@ -5978,11 +8057,42 @@ for item in row_tmp_data:
     final_apt = "C"
     score_breakdown = {
         "指数": 0.0, "斤量": 0.0, "馬体重": 0.0, "格・斤量価値": 0.0,
-        "馬番・枠": 0.0, "血統・コース": 0.0, "脚質・距離": 0.0,
-        "騎手補正": 0.0, "騎手条件": 0.0, "人気補正": 0.0, "展開補正": 0.0, "道悪補正": 0.0, "馬場バイアス": 0.0, "性齢・馬体増減": 0.0
+        "馬番・枠": 0.0, "血統・コース": 0.0, "脚質・距離": 0.0, "距離適性": 0.0, "コース実績": 0.0, "前走結果": 0.0, "母父・血統": 0.0,
+        "騎手補正": 0.0, "騎手条件": 0.0, "騎手力指数": 0.0, "人気補正": 0.0, "展開補正": 0.0, "道悪補正": 0.0, "馬場バイアス": 0.0, "性齢・馬体増減": 0.0
     }
     evaluation_reasons = []
     learning_adjustment = 0.0
+
+    # プロフィール画面から取得した距離別・コース別成績を、
+    # 現在のレース条件に照合して能力スコアへ反映。
+    try:
+        _gate_int = int(num)
+    except (TypeError, ValueError):
+        _gate_int = 0
+    _profile = profile_rows_by_gate.get(_gate_int, {})
+    _dist_stats = _profile.get("profile_distance_stats", _profile.get("距離別成績", ""))
+    _course_stats = _profile.get("profile_course_stats", _profile.get("コース別成績", ""))
+    _damsire = _profile.get("profile_damsire", _profile.get("母父", ""))
+    _profile_apt_total, _profile_apt_notes = calculate_profile_aptitude_adjustment(
+        _dist_stats, _course_stats, sel_course
+    )
+    if _profile_apt_total:
+        score += _profile_apt_total
+        # 個別内訳は各計算値を再算出して記録。合計は±5点以内。
+        _d_score, _ = _distance_aptitude_adjustment(_dist_stats, sel_course)
+        _c_score, _ = _course_aptitude_adjustment(_course_stats, sel_course)
+        score_breakdown["距離適性"] = _d_score
+        score_breakdown["コース実績"] = _c_score
+        evaluation_reasons.extend(_profile_apt_notes)
+    # プロフィールの前走・2走前着順を小さく能力スコアへ反映。
+    _prev_race = _profile.get("profile_previous_race", _profile.get("前走", ""))
+    _second_race = _profile.get("profile_second_previous_race", _profile.get("2走前", ""))
+    _recent_score, _recent_notes = calculate_recent_race_result_adjustment(_prev_race, _second_race)
+    if _recent_score:
+        score += _recent_score
+        score_breakdown["前走結果"] = _recent_score
+        evaluation_reasons.extend([f"前走/2走前実績 {n}" for n in _recent_notes])
+
     applied_weights = {}
     j_data = JOCKEY_MASTER.get(jock, JOCKEY_MASTER["その他（自由手入力）"])
     jockey_auto = {"ability": 0.0, "value": 0.0, "ride_status": "不明", "reasons": []}
@@ -6006,19 +8116,24 @@ for item in row_tmp_data:
             sex=sex, body_weight=wgh
         )
 
-        if jockey_modifier < 0 and l3f <= 33.9: jockey_modifier = 0.0  
-        final_jockey_rate = j_data["base"] + max(min(jockey_modifier, 0.20), -0.20)
+        if jockey_modifier < 0 and l3f <= 33.9: jockey_modifier = 0.0
+
+        # 騎手評価を一本化：基礎騎手力＋条件適性＋リーディング補助。
+        # リーディングは独立加点せず、小さな倍率補助として統合する。
+        leading_rate_adjustment = calculate_jockey_leading_rate_adjustment(jock)
+        combined_jockey_modifier = jockey_modifier + leading_rate_adjustment
+        final_jockey_rate = j_data["base"] + max(min(combined_jockey_modifier, 0.20), -0.20)
         
         # 🌟 指数ベース補正 (ウマニティ Ｕ指数 基準化スケーリング)
-        # Ｕ指数(80〜100等)が入力された場合の倍率調整
-        if idx > 70.0:
-            scaled_index_score = (idx - 50.0) * 0.8
-        else:
-            scaled_index_score = idx
+        # 旧仕様の70.0/70.1付近の不連続を解消し、同じ変換式を一貫適用。
+        scaled_index_score = scale_u_index(idx)
 
+        base_jockey_rate = j_data["base"] + max(min(jockey_modifier, 0.20), -0.20)
         if idx < 45.0:
+            mitigated_jockey_rate_without_leading = 1.0 + (base_jockey_rate - 1.0) * 0.40
             mitigated_jockey_rate = 1.0 + (final_jockey_rate - 1.0) * 0.40
         else:
+            mitigated_jockey_rate_without_leading = 1.0 + (base_jockey_rate - 1.0) * 0.70
             mitigated_jockey_rate = 1.0 + (final_jockey_rate - 1.0) * 0.70
         
         horse_base_score = scaled_index_score
@@ -6069,20 +8184,22 @@ for item in row_tmp_data:
             score_breakdown["格・斤量価値"] += 1.0
             evaluation_reasons.append("下級条件の軽斤量で +1.0")
         
-        # 特注ラッキーゲート馬番
-        if str(num).strip() == "7":
-            horse_base_score += 2.0
-            score_breakdown["馬番・枠"] += 2.0
-            evaluation_reasons.append("特注馬番7で +2.0")
-        elif str(num).strip() in ["9", "13"]:
-            horse_base_score += 1.0
-            score_breakdown["馬番・枠"] += 1.0
-            evaluation_reasons.append(f"特注馬番{num}で +1.0")
-            
+        # G1結果データ由来の馬番事前分布。
+        # G1結果ファイルで得た経験則なので、G1以外へ無条件適用しない。
         horse_num_int = safe_int_convert(num, 0)
-        if horse_num_int % 2 != 0 and str(num).strip() not in ["7", "9", "13"]:
-            horse_base_score += 0.5
-            score_breakdown["馬番・枠"] += 0.5
+        if race_class == "G1":
+            if str(num).strip() == "7":
+                horse_base_score += 2.0
+                score_breakdown["馬番・枠"] += 2.0
+                evaluation_reasons.append("G1実績ベース特注馬番7で +2.0")
+            elif str(num).strip() in ["9", "13"]:
+                horse_base_score += 1.0
+                score_breakdown["馬番・枠"] += 1.0
+                evaluation_reasons.append(f"G1実績ベース特注馬番{num}で +1.0")
+
+            if horse_num_int % 2 != 0 and str(num).strip() not in ["7", "9", "13"]:
+                horse_base_score += 0.5
+                score_breakdown["馬番・枠"] += 0.5
         if horse_num_int >= 15:
             horse_base_score -= 1.5
             score_breakdown["馬番・枠"] -= 1.5
@@ -6195,6 +8312,14 @@ for item in row_tmp_data:
         score_breakdown["血統・コース"] += detailed_lineage_adjustment
         evaluation_reasons.extend(detailed_lineage_reasons)
 
+        # 母父は父より弱い補助情報としてコース事典2へ統合。
+        damsire_adjustment, damsire_reasons = calculate_damsire_course_adjustment(
+            sel_course, _damsire, sex, wgh, num, sel_style, track_condition
+        )
+        horse_base_score += damsire_adjustment
+        score_breakdown["母父・血統"] += damsire_adjustment
+        evaluation_reasons.extend(damsire_reasons)
+
         # 当日のリアルタイム馬場バイアス
         bias_adjustment, bias_reasons = calculate_track_bias_adjustment(
             track_bias, sel_frame, sel_style
@@ -6215,9 +8340,28 @@ for item in row_tmp_data:
         score = horse_base_score * mitigated_jockey_rate
 
         # 前走騎手・厩舎・馬主など、ジョッキー事典の特記事項を自動反映。
-        score += jockey_auto["ability"]
-        score_breakdown["騎手条件"] = jockey_auto["ability"]
+        # 騎手基礎力・条件適性・リーディングとの重複を抑えるため、
+        # 自動条件の加減点は最終的に±4点へキャップする。
+        raw_jockey_condition_effect = float(jockey_auto.get("ability", 0.0) or 0.0)
+        jockey_condition_effect = max(min(raw_jockey_condition_effect, 4.0), -4.0)
+        score += jockey_condition_effect
+        score_breakdown["騎手条件"] = jockey_condition_effect
         evaluation_reasons.extend(jockey_auto["reasons"])
+        if abs(raw_jockey_condition_effect - jockey_condition_effect) >= 0.01:
+            evaluation_reasons.append(
+                f"騎手条件の重複抑制キャップ {raw_jockey_condition_effect:+.1f}→{jockey_condition_effect:+.1f}"
+            )
+
+        # 全国リーディングは騎手倍率へ統合済み。独立加点による二重評価を防ぐ。
+        leading_effect = round(
+            horse_base_score * (mitigated_jockey_rate - mitigated_jockey_rate_without_leading), 2
+        )
+        score_breakdown["騎手力指数"] = leading_effect
+        if leading_effect != 0:
+            leading_record = JOCKEY_LEADING_TOP10.get(normalize_jockey_name(jock), {})
+            evaluation_reasons.append(
+                f"騎手力指数（リーディング{leading_record.get('rank')}位）を倍率へ統合 {leading_effect:+.2f}点"
+            )
         
         if sel_style in pace_bonus:
             score += pace_bonus[sel_style]
@@ -6267,7 +8411,10 @@ for item in row_tmp_data:
         calculated_results.append({
             "馬番": num, "馬名": name, "能力スコア": score, "妙味スコア": value_score, "最終スコア": score, "人気": pop, "単勝オッズ": win_odds, "斤量": wgt, "馬体重": wgh,
             "父馬": sire,
+            "母父": _damsire,
             "父系統": " / ".join([x for x in auto_detect_lineage(sire) if x != normalize_sire_name(sire)]) or "個別判定",
+            "前走": _prev_race,
+            "2走前": _second_race,
             "性齢": sex_age, "馬体重増減": body_change, "重道悪適性": final_apt, "騎手": jock,
             "前走騎手": previous_jockey, "継続・乗替": jockey_auto["ride_status"] if jock != "(未選択)" else "不明",
             "厩舎": trainer, "馬主": owner,
@@ -6364,7 +8511,10 @@ def _format_factor_comment(factor, value):
         "馬番・枠": "馬番・枠順",
         "血統・コース": "血統とコース適性",
         "脚質・距離": "脚質と距離条件",
+        "距離適性": "実走の距離別成績",
+        "コース実績": "実走のコース別成績",
         "騎手補正": "騎手適性",
+        "騎手力指数": "リーディング・勝利数・騎乗数・勝率",
         "人気補正": "人気とのバランス",
         "展開補正": "想定展開",
         "道悪補正": "道悪適性",
