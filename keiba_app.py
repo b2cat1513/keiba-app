@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.01"
+APP_PATCH_VERSION = "Ver1.20.02"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -2084,7 +2084,10 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         horse_block = lines[horse_block_start:i + 1]
 
         # 第1候補：性齢付き本体行だけを調べる。
-        for block_line in horse_block:
+        # 重要: コピー文字列では前馬の「性齢・厩舎」行が次馬番のブロック境界を
+        # またいで見える場合がある。先頭から探すと前馬名を次の馬へ誤割当するため、
+        # 現在の馬番に最も近い行（末尾）から逆向きに探す。
+        for block_line in reversed(horse_block):
             if not is_sex_age_line(block_line):
                 continue
             cand = clean_name(block_line)
@@ -2094,7 +2097,7 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
 
         # 第2候補：本体行が特殊なコピー形式だった場合だけ従来方式で救済。
         if not rec["馬名"]:
-            for block_line in horse_block:
+            for block_line in reversed(horse_block):
                 cand = clean_name(block_line)
                 if cand and not clean_jockey(block_line):
                     rec["馬名"] = cand
