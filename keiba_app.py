@@ -2880,6 +2880,30 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                     final74.append(_new_recovered)
                     _final_by_gate[_recovered_gate] = _new_recovered
                 _missing_gates.discard(_recovered_gate)
+        # Ver1.20.06: 「U指数 → 馬名行 → 騎手・斤量行 → 馬番」の順序を救済する。
+        # 例: 90.304 / ショウナンガルフ 牡3 ... / 田山旺佑 57.0 中3週 / 4
+        # U指数を起点にした補完だけでは既存レコードの騎手空欄が残ることがあるため、
+        # 馬番マーカーの直前だけを見て、斤量付き騎手が明確な場合に限り空欄を埋める。
+        _final_by_gate = {int(r.get("馬番")): r for r in final74 if r.get("馬番") is not None}
+        for _marker_idx, _marker_line in enumerate(lines):
+            _marker_match = re.fullmatch(r"(1[0-8]|[1-9])", str(_marker_line or "").strip())
+            if not _marker_match:
+                continue
+            _marker_gate = int(_marker_match.group(1))
+            _target_record = _final_by_gate.get(_marker_gate)
+            if not _target_record or _target_record.get("今回騎手"):
+                continue
+            # 直前2行までにある斤量付きの行だけを候補にする。別馬へ飛び越えて探索しない。
+            for _candidate_line in reversed(lines[max(0, _marker_idx - 2):_marker_idx]):
+                _jockey_prefix, _weight_value = split_jockey_weight(_candidate_line)
+                if not _jockey_prefix or _weight_value is None:
+                    continue
+                _cleaned_jockey = clean_jockey(_jockey_prefix)
+                if _cleaned_jockey:
+                    _target_record["今回騎手"] = jockey_fix.get(_cleaned_jockey, _cleaned_jockey)
+                    if _target_record.get("斤量") is None:
+                        _target_record["斤量"] = _weight_value
+                    break
         if len(final74) >= min(12, len(gate_positions2)):
             return _final_horse_name_safety(_ensure_gate_continuity(_apply_uindex_inline_gate_boundary_repair(final74)))
 
