@@ -6830,8 +6830,9 @@ if bulk_input_tab == "🔬 競馬ラボ文字入力":
                         for k in ("父馬", "厩舎", "馬主")
                     )
                     _current_score = sum(
-                        bool(r.get(k)) and r.get(k) != "(未選択)"
-                        for r in (parsed_profile_text[0] if parsed_profile_text else {}).values()
+                        bool(parsed_profile_text[0].get(k))
+                        and parsed_profile_text[0].get(k) != "(未選択)"
+                        for k in ("父馬", "厩舎", "馬主")
                     ) if parsed_profile_text else -1
                     if not parsed_profile_text or _target_score >= _current_score:
                         parsed_profile_text = [_target_record]
