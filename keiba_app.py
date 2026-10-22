@@ -6586,13 +6586,90 @@ if bulk_input_tab == "🐎 ウマニティ文字入力":
     full_records = st.session_state.get("v190_umanity_full_records", [])
     if full_records:
         display_cols = ["馬番", "馬名", "今回騎手", "U指数", "単勝", "斤量"]
-        st.markdown("#### 📊 文字から解析した結果")
-        st.dataframe(
-            pd.DataFrame(full_records)[display_cols],
-            use_container_width=True,
+        st.markdown("#### 📊 解析結果の確認・手修正")
+        st.caption("馬名・騎手・U指数・単勝オッズ・斤量は一覧表で直接編集できます。空欄は空欄のままにできます。編集後は下の「手修正を出馬表に反映」を押してください。")
+        _um_edit_df = pd.DataFrame(full_records)
+        for _col in display_cols:
+            if _col not in _um_edit_df.columns:
+                _um_edit_df[_col] = None
+        _um_edit_df = _um_edit_df[display_cols].copy()
+        _um_edit_df = st.data_editor(
+            _um_edit_df,
             hide_index=True,
+            use_container_width=True,
+            num_rows="fixed",
+            column_config={
+                "馬番": st.column_config.NumberColumn("馬番", min_value=1, max_value=18, step=1, required=True),
+                "馬名": st.column_config.TextColumn("馬名"),
+                "今回騎手": st.column_config.TextColumn("今回騎手"),
+                "U指数": st.column_config.NumberColumn("U指数", min_value=0.0, max_value=200.0, step=0.1, format="%.2f"),
+                "単勝": st.column_config.NumberColumn("単勝オッズ", min_value=0.0, max_value=9999.0, step=0.1, format="%.1f"),
+                "斤量": st.column_config.NumberColumn("斤量", min_value=0.0, max_value=100.0, step=0.5, format="%.1f"),
+            },
+            key="um_full_records_direct_editor_v1207",
         )
-        st.caption("※『--- 倍』の馬は単勝オッズを空欄のままにしています。VIP表示などでU指数がコピーされない馬も空欄のまま保持します。")
+        if st.button("✍️ 手修正を出馬表に反映", use_container_width=True, type="primary", key="um_full_records_apply_manual_v1207"):
+            _manual_records = _um_edit_df.to_dict("records")
+            _manual_gates = []
+            _manual_error = ""
+            for _mr in _manual_records:
+                try:
+                    _g = int(_mr.get("馬番"))
+                except (TypeError, ValueError):
+                    _manual_error = "馬番は1〜18の整数で入力してください。"
+                    break
+                if not 1 <= _g <= 18:
+                    _manual_error = "馬番は1〜18の範囲で入力してください。"
+                    break
+                _manual_gates.append(_g)
+            if not _manual_error and len(set(_manual_gates)) != len(_manual_gates):
+                _manual_error = "馬番が重複しています。馬番を修正してから反映してください。"
+            if _manual_error:
+                st.error(_manual_error)
+            else:
+                st.session_state["loaded_data"].setdefault("rows", {})
+                _cleaned_records = []
+                _changed_count = 0
+                for _mr in _manual_records:
+                    _gate = int(_mr["馬番"])
+                    _row_key = str(_gate)
+                    _row = st.session_state["loaded_data"]["rows"].get(_row_key, {})
+                    _name = str(_mr.get("馬名") or "").strip()
+                    _jockey = str(_mr.get("今回騎手") or "").strip()
+                    def _num_or_none(_value):
+                        try:
+                            if _value is None or pd.isna(_value) or str(_value).strip() == "":
+                                return None
+                            return float(_value)
+                        except (TypeError, ValueError):
+                            return None
+                    _u_index = _num_or_none(_mr.get("U指数"))
+                    _win_odds = _num_or_none(_mr.get("単勝"))
+                    _weight = _num_or_none(_mr.get("斤量"))
+                    _jockey_registered = _jockey in JOCKEY_MASTER
+                    _row.update({
+                        "num": str(_gate),
+                        "name": _name,
+                        "wgt": _weight if _weight is not None else float(_row.get("wgt", 56.0)),
+                        "idx": _u_index if _u_index is not None else 0.0,
+                        "win_odds": _win_odds if _win_odds is not None else 0.0,
+                        "jock": _jockey if _jockey_registered else ("その他（自由手入力）" if _jockey else _row.get("jock", "その他（自由手入力）")),
+                    })
+                    _note = str(_row.get("custom_note", "") or "")
+                    _note = re.sub(r"(?:\s*/\s*)?騎手:[^/]*", "", _note).strip(" /")
+                    if _jockey and not _jockey_registered:
+                        _note = " / ".join(x for x in [_note, f"騎手:{_jockey}"] if x)
+                    _row["custom_note"] = _note
+                    st.session_state["loaded_data"]["rows"][_row_key] = _row
+                    _cleaned_records.append({
+                        "馬番": _gate, "馬名": _name, "今回騎手": _jockey,
+                        "U指数": _u_index, "単勝": _win_odds, "斤量": _weight,
+                    })
+                    _changed_count += 1
+                st.session_state["v190_umanity_full_records"] = _cleaned_records
+                st.success(f"手修正を出馬表へ反映しました（{_changed_count}頭）。")
+                st.rerun()
+        st.caption("※『--- 倍』や取得できなかった項目は空欄のままです。修正値は出馬表に反映され、騎手マスター未登録の名前は自由入力メモに保持します。")
 
     st.divider()
     st.markdown("#### 旧方式：U指数だけ貼り付け")
