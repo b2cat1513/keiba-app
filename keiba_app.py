@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.00"
+APP_PATCH_VERSION = "Ver1.20.01"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -1720,6 +1720,10 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
 
     def clean_name(line):
         x = str(line).strip()
+        # Ver1.20.01: VIPラベルや単勝表示の断片が馬名先頭へ混ざるケースを除去。
+        # 欠落データを別の馬から補完することはせず、名前候補だけを整える。
+        x = re.sub(r"^(?:VIP\s*)+", "", x, flags=re.I).strip()
+        x = re.sub(r"^(?:(?:---|--|-|—)\s*倍\s*)+", "", x).strip()
         if x in ignored or is_gate(x) is not None:
             return ""
         # Ver1.19.75: レース間隔などを馬名として保存しない。
