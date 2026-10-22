@@ -2816,7 +2816,18 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
                     _recovered_gate, _gate_local_pos = _previous_gate_entry
                 else:
                     _recovered_gate, _gate_local_pos = _first_gate, _first_gate_pos
-            if _recovered_gate is None or _recovered_gate not in _missing_gates:
+            if _recovered_gate is None:
+                continue
+            # Ver1.20.05: 馬番レコード自体が存在していても、馬名・騎手が空欄なら
+            # U指数周辺の同一ブロックから補完を試みる。従来は「馬番が存在する」
+            # という理由だけで救済対象外になり、7番ネオトキオ等の空欄が残っていた。
+            _existing_recovered = _final_by_gate.get(_recovered_gate)
+            if _existing_recovered is not None:
+                _name_missing = not _existing_recovered.get("馬名") or _is_suspicious_ocr_horse_name(_existing_recovered.get("馬名"))
+                _jockey_missing = not _existing_recovered.get("今回騎手")
+                if not (_name_missing or _jockey_missing):
+                    continue
+            elif _recovered_gate not in _missing_gates:
                 continue
             _name = ""
             # 馬名→騎手→U指数→馬番 の並びでは、U指数直前の行が騎手になりやすい。
@@ -2852,11 +2863,22 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             if not _name and _recovered_gate in known_names:
                 _name = known_names[_recovered_gate]
             if _name or _u_value is not None or _jockey:
-                final74.append({
-                    "馬番": _recovered_gate, "馬名": _name, "U指数": _u_value,
-                    "今回騎手": _jockey, "単勝": None, "斤量": _weight,
-                })
-                _final_by_gate[_recovered_gate] = final74[-1]
+                if _existing_recovered is not None:
+                    # 既存値を壊さず、空欄だけを救済する。U指数は同一値のときだけ保持し、
+                    # 既存の斤量・単勝も上書きしない。
+                    if _name and (not _existing_recovered.get("馬名") or _is_suspicious_ocr_horse_name(_existing_recovered.get("馬名"))):
+                        _existing_recovered["馬名"] = _name
+                    if _jockey and not _existing_recovered.get("今回騎手"):
+                        _existing_recovered["今回騎手"] = _jockey
+                    if _existing_recovered.get("斤量") is None and _weight is not None:
+                        _existing_recovered["斤量"] = _weight
+                else:
+                    _new_recovered = {
+                        "馬番": _recovered_gate, "馬名": _name, "U指数": _u_value,
+                        "今回騎手": _jockey, "単勝": None, "斤量": _weight,
+                    }
+                    final74.append(_new_recovered)
+                    _final_by_gate[_recovered_gate] = _new_recovered
                 _missing_gates.discard(_recovered_gate)
         if len(final74) >= min(12, len(gate_positions2)):
             return _final_horse_name_safety(_ensure_gate_continuity(_apply_uindex_inline_gate_boundary_repair(final74)))
