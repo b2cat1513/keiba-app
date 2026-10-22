@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.02"
+APP_PATCH_VERSION = "Ver1.20.04"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -1557,15 +1557,26 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
         _normalized_lines.append(_line)
     _raw_lines = _normalized_lines
     lines = []
-    for _line in _raw_lines:
+    for _line_idx, _line in enumerate(_raw_lines):
         _m_inline_gate = re.match(
             r'^(1[0-8]|[1-9])(?=[一-龥々ぁ-んァ-ヶA-Za-z])(.+)$',
             _line,
         )
-        if _m_inline_gate and re.search(r'[牡牝セ騙]\s*(?:[一-龥ぁ-んァ-ヶA-Za-z]{0,2}\s*)?\d{1,2}', _m_inline_gate.group(2)):
-            # 例: 「6ペアポルックス 牡5 ...」
+        _inline_suffix = _m_inline_gate.group(2).strip() if _m_inline_gate else ""
+        _inline_gate_num = int(_m_inline_gate.group(1)) if _m_inline_gate else None
+        # 馬番だけが次の馬名へ連結した形（例:「6ネオトキオ」）も分離する。
+        # 先に同じ馬番の独立行が既に存在する場合、その数字は直前馬の境界であり、
+        # 後ろの文字列は次馬の馬名候補として残す。
+        _duplicate_gate_prefix = bool(
+            _m_inline_gate
+            and any(re.fullmatch(str(_inline_gate_num), _prior.strip()) for _prior in _raw_lines[:_line_idx])
+        )
+        if _m_inline_gate and (
+            re.search(r'[牡牝セ騙]\s*(?:[一-龥ぁ-んァ-ヶA-Za-z]{0,2}\s*)?\d{1,2}', _inline_suffix)
+            or (_duplicate_gate_prefix and len(_inline_suffix) >= 2 and re.search(r'[一-龥々ぁ-んァ-ヶーA-Za-z]', _inline_suffix))
+        ):
             lines.append(_m_inline_gate.group(1))
-            lines.append(_m_inline_gate.group(2).strip())
+            lines.append(_inline_suffix)
         else:
             lines.append(_line)
     results = {}
@@ -2788,12 +2799,23 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             _segment_after_u = lines[_u_line_idx + 1:_next_u_idx]
             _recovered_gate = None
             _gate_local_pos = None
+            _segment_gates = []
             for _sj, _sline in enumerate(_segment_after_u[:8]):
                 _gm = re.fullmatch(r"(1[0-8]|[1-9])", str(_sline or "").strip())
                 if _gm:
-                    _recovered_gate = int(_gm.group(1))
-                    _gate_local_pos = _sj
-                    break
+                    _segment_gates.append((int(_gm.group(1)), _sj))
+            if _segment_gates:
+                # U指数の直後が「8」で、その後に「7」が現れる列崩れでは、
+                # 直後の8を7番の境界と誤認しない。後置された7を優先する。
+                _first_gate, _first_gate_pos = _segment_gates[0]
+                _previous_gate_entry = next(
+                    ((g, p) for g, p in _segment_gates[1:] if g == _first_gate - 1),
+                    None,
+                )
+                if _previous_gate_entry is not None:
+                    _recovered_gate, _gate_local_pos = _previous_gate_entry
+                else:
+                    _recovered_gate, _gate_local_pos = _first_gate, _first_gate_pos
             if _recovered_gate is None or _recovered_gate not in _missing_gates:
                 continue
             _name = ""
