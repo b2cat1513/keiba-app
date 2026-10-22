@@ -5389,6 +5389,26 @@ def _split_copied_text_by_known_horses(raw_text, horse_gate_map):
         if horse:
             positions.append((i, horse))
 
+    # Ver1.20.09: コピー元によっては、プロフィールの終端と次の馬名が
+    # 改行なしで連結される（例:「芝不良 0-0-0-0コンジェスタス牡3」）。
+    # 行単位の検出だけでなく、全文中の「出走馬名 + 性齢」も境界として検出する。
+    # 性齢の直後に続く見出しだけを境界にするため、過去走中の馬名単独には反応しにくい。
+    _flat_text = normalize_copied_text(raw_text)
+    _known_names = sorted(
+        (normalize_horse_name(name) for name in horse_gate_map if name),
+        key=len, reverse=True
+    )
+    for _name in _known_names:
+        if not _name:
+            continue
+        _pat = re.compile(
+            re.escape(_name) + r"\\s*(?:牡|牝|セ|騸|騙)\\s*\\d{1,2}"
+        )
+        for _m in _pat.finditer(_flat_text):
+            _prefix = _flat_text[:_m.start()]
+            _line_index = _prefix.count("\\n")
+            positions.append((_line_index, _name))
+
     # 同一行・同一馬の重複検出を除去。
     dedup_positions = []
     seen_pos = set()
@@ -6778,6 +6798,43 @@ if bulk_input_tab == "🔬 競馬ラボ文字入力":
             parsed_profile_text = parse_keibalab_profile_copied_text(
                 copied_profile, kl_horse_gate_map, fallback_horse=target_name
             )
+            # Ver1.20.08: プロフィールを1頭ずつ貼り付ける場合、本文中に別馬名
+            # （過去走・血統欄など）が含まれると自動検出が別の馬を返すことがある。
+            # 1頭分の貼り付けでは、画面で選択した対象馬番を優先して解析し直す。
+            # 複数頭が明確に検出された場合は従来どおり全頭分を保持する。
+            _detected_gates = {
+                int(r.get("馬番")) for r in parsed_profile_text
+                if r.get("馬番") is not None
+            }
+            _known_profile_headers = {
+                normalize_horse_name(_name)
+                for _name in kl_horse_gate_map
+                if _name and re.search(
+                    re.escape(normalize_horse_name(_name)) + r"\\s*(?:牡|牝|セ|騸|騙)\\s*\\d{1,2}",
+                    normalize_copied_text(copied_profile)
+                )
+            }
+            if target_name and len(_detected_gates) <= 1 and len(_known_profile_headers) <= 1:
+                _target_gate = int(profile_target)
+                _target_map = {target_name: _target_gate}
+                _target_records = parse_keibalab_profile_screenshot_text(
+                    copied_profile, _target_map, fallback_horse=target_name
+                )
+                if _target_records:
+                    _target_record = _target_records[0]
+                    _target_record["馬番"] = _target_gate
+                    _target_record["馬名"] = target_name
+                    _target_record["取得元"] = "競馬ラボ・プロフィール文字貼り付け（対象馬番指定）"
+                    _target_score = sum(
+                        bool(_target_record.get(k)) and _target_record.get(k) != "(未選択)"
+                        for k in ("父馬", "厩舎", "馬主")
+                    )
+                    _current_score = sum(
+                        bool(r.get(k)) and r.get(k) != "(未選択)"
+                        for r in (parsed_profile_text[0] if parsed_profile_text else {}).values()
+                    ) if parsed_profile_text else -1
+                    if not parsed_profile_text or _target_score >= _current_score:
+                        parsed_profile_text = [_target_record]
             if not parsed_profile_text:
                 st.error("父・調教師・馬主を取り込めませんでした。対象馬を選んで、プロフィールの文字を貼り付けてください。")
             else:
