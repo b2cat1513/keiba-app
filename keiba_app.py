@@ -2797,11 +2797,23 @@ def parse_umanity_full_copied_text(raw_text, known_names_by_gate=None):
             if _recovered_gate is None or _recovered_gate not in _missing_gates:
                 continue
             _name = ""
-            for _prior_line in reversed(lines[max(0, _u_line_idx - 8):_u_line_idx]):
+            # 馬名→騎手→U指数→馬番 の並びでは、U指数直前の行が騎手になりやすい。
+            # まず性齢付きの馬本体行を優先し、騎手名を馬名として拾う事故を防ぐ。
+            _prior_window = lines[max(0, _u_line_idx - 8):_u_line_idx]
+            for _prior_line in reversed(_prior_window):
+                if not is_sex_age_line(_prior_line):
+                    continue
                 _candidate_name = plausible_horse_name(_prior_line)
                 if _candidate_name and not clean_jockey(_prior_line):
                     _name = _candidate_name
                     break
+            # 性齢付き本体行がないコピー形式だけ、従来の候補探索にフォールバック。
+            if not _name:
+                for _prior_line in reversed(_prior_window):
+                    _candidate_name = plausible_horse_name(_prior_line)
+                    if _candidate_name and not clean_jockey(_prior_line):
+                        _name = _candidate_name
+                        break
             _jockey = ""
             _weight = None
             for _sline in _segment_after_u[:_gate_local_pos]:
