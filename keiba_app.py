@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.04"
+APP_PATCH_VERSION = "Ver1.20.12"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -5390,7 +5390,7 @@ def _split_copied_text_by_known_horses(raw_text, horse_gate_map):
         if not name:
             continue
         pattern = re.compile(
-            re.escape(name) + r"\s*(?:牡|牝|セ|騸|騙)\s*\d{1,2}"
+            re.escape(name) + r"\s*(?:牡|牝|セ|騸|騙|社)\s*\d{1,2}"
         )
         for match in pattern.finditer(text):
             matches.append((match.start(), match.end(), name))
@@ -6795,7 +6795,7 @@ if bulk_input_tab == "🔬 競馬ラボ文字入力":
                 normalize_horse_name(_name)
                 for _name in kl_horse_gate_map
                 if _name and re.search(
-                    re.escape(normalize_horse_name(_name)) + r"\s*(?:牡|牝|セ|騸|騙)\s*\d{1,2}",
+                    re.escape(normalize_horse_name(_name)) + r"\s*(?:牡|牝|セ|騸|騙|社)\s*\d{1,2}",
                     normalize_copied_text(copied_profile)
                 )
             }
