@@ -5374,66 +5374,51 @@ def _horse_header_match(line, horse_gate_map):
 def _split_copied_text_by_known_horses(raw_text, horse_gate_map):
     """競馬ラボのコピー文字を馬ごとの区間候補に分割する。
 
-    馬名見出しは「馬名 + 性齢」を優先して検出する。これにより、
-    レース結果末尾の「57.0 コンジェスタス」のような相手馬名を
-    馬の区切りとして誤認しない。
+    馬名 + 性齢を境界として全文を文字位置で分割する。
+    改行が消えた箇所や空行の有無に影響されず、各馬の区間を保つ。
     """
     text = normalize_copied_text(raw_text)
-    lines = [x.strip() for x in text.splitlines() if x.strip()]
-    if not lines or not horse_gate_map:
+    if not text.strip() or not horse_gate_map:
         return []
 
-    positions = []
-    for i, line in enumerate(lines):
-        horse = _horse_header_match(line, horse_gate_map)
-        if horse:
-            positions.append((i, horse))
-
-    # Ver1.20.09: コピー元によっては、プロフィールの終端と次の馬名が
-    # 改行なしで連結される（例:「芝不良 0-0-0-0コンジェスタス牡3」）。
-    # 行単位の検出だけでなく、全文中の「出走馬名 + 性齢」も境界として検出する。
-    # 性齢の直後に続く見出しだけを境界にするため、過去走中の馬名単独には反応しにくい。
-    _flat_text = normalize_copied_text(raw_text)
-    _known_names = sorted(
-        (normalize_horse_name(name) for name in horse_gate_map if name),
+    known_names = sorted(
+        {normalize_horse_name(name) for name in horse_gate_map if name},
         key=len, reverse=True
     )
-    for _name in _known_names:
-        if not _name:
+    matches = []
+    for name in known_names:
+        if not name:
             continue
-        _pat = re.compile(
-            re.escape(_name) + r"\\s*(?:牡|牝|セ|騸|騙)\\s*\\d{1,2}"
+        pattern = re.compile(
+            re.escape(name) + r"\s*(?:牡|牝|セ|騸|騙)\s*\d{1,2}"
         )
-        for _m in _pat.finditer(_flat_text):
-            _prefix = _flat_text[:_m.start()]
-            _line_index = _prefix.count("\\n")
-            positions.append((_line_index, _name))
+        for match in pattern.finditer(text):
+            matches.append((match.start(), match.end(), name))
 
-    # 同一行・同一馬の重複検出を除去。
-    dedup_positions = []
-    seen_pos = set()
-    for pos, horse in positions:
-        if pos in seen_pos:
+    # 同じ開始位置で複数の名前が一致した場合は、最長の名前を優先。
+    matches.sort(key=lambda x: (x[0], -(x[1] - x[0])))
+    unique = []
+    used_starts = set()
+    for item in matches:
+        if item[0] in used_starts:
             continue
-        seen_pos.add(pos)
-        dedup_positions.append((pos, horse))
-    positions = dedup_positions
-    if not positions:
+        used_starts.add(item[0])
+        unique.append(item)
+    unique.sort(key=lambda x: x[0])
+    if not unique:
         return []
 
     segments = []
-    for p, (pos, horse) in enumerate(positions):
-        next_pos = positions[p + 1][0] if p + 1 < len(positions) else len(lines)
-        after = "\n".join(lines[pos:next_pos]).strip()
-        if after:
-            segments.append((horse, after, "after"))
-
-        # 逆順候補も残すが、複数頭の通常コピーでは history 側で after を優先する。
-        before_start = positions[p - 1][0] + 1 if p > 0 else 0
-        before = "\n".join(lines[before_start:pos + 1]).strip()
-        if before and before != after:
+    for idx, (start_pos, _header_end, horse) in enumerate(unique):
+        end_pos = unique[idx + 1][0] if idx + 1 < len(unique) else len(text)
+        segment = text[start_pos:end_pos].strip()
+        if segment:
+            segments.append((horse, segment, "after"))
+        # 逆向き候補は履歴解析側の互換性のため残す。
+        before_start = unique[idx - 1][0] if idx > 0 else 0
+        before = text[before_start:end_pos].strip()
+        if before and before != segment:
             segments.append((horse, before, "before"))
-
     return segments
 
 
@@ -6810,7 +6795,7 @@ if bulk_input_tab == "🔬 競馬ラボ文字入力":
                 normalize_horse_name(_name)
                 for _name in kl_horse_gate_map
                 if _name and re.search(
-                    re.escape(normalize_horse_name(_name)) + r"\\s*(?:牡|牝|セ|騸|騙)\\s*\\d{1,2}",
+                    re.escape(normalize_horse_name(_name)) + r"\s*(?:牡|牝|セ|騸|騙)\s*\d{1,2}",
                     normalize_copied_text(copied_profile)
                 )
             }
