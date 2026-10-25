@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.19.97"
+APP_PATCH_VERSION = "Ver1.20.23"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -29,7 +29,7 @@ except Exception:
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
 st.set_page_config(page_title=f"ジェニーAI予想{APP_PATCH_VERSION}", layout="wide", initial_sidebar_state="collapsed")
-st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（ウマニティ馬名最終検査版）")
+st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（3連複2頭軸総流し対応版）")
 
 st.markdown("""
 <style>
@@ -5621,36 +5621,16 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
 
     breeder = clean_label_value(label_value("生産者", 80) or label_value("生産", 80))
 
-    # 成績欄はコピー時に複数列が混ざるため、見出しから次の見出しまでを
-    # 文字列として切り出し、着度数(1-2-3-4)を含む項目だけを残す。
-    section_names = ["距離別成績", "コース別成績", "馬場状態別成績", "脚質別成績",
-                     "時期別成績", "斤量別成績", "枠番別成績", "レース間隔別成績"]
-    flat = re.sub(r"[\r\n\t　]+", " ", raw)
-    flat = re.sub(r" +", " ", flat)
-    def extract_stats_section(section):
-        start = flat.find(section)
-        if start < 0:
-            return ""
-        start += len(section)
-        ends = [flat.find(name, start) for name in section_names if name != section]
-        ends = [x for x in ends if x >= 0]
-        chunk = flat[start:min(ends)] if ends else flat[start:]
-        # 距離(例 2000)または馬場(例 芝稍重)と着度数の組だけ抽出。
-        pattern = r"(芝\s*(?:良|稍重|重|不良)|ダート?\s*(?:良|稍重|重|不良)|\d{3,4})\s*(\d{1,3}-\d{1,3}-\d{1,3}-\d{1,3})"
-        found = re.findall(pattern, chunk)
-        return " / ".join(f"{re.sub(r'\\s+', '', label)} {score}" for label, score in found)
-
-    distance_stats = extract_stats_section("距離別成績")
-    course_stats = extract_stats_section("コース別成績")
-    condition_stats = extract_stats_section("馬場状態別成績")
-    # 不明データはFalse扱いにしない。道悪欄が取得できた場合のみ判定する。
-    heavy_record = None
-    if condition_stats:
-        heavy_record = any(
-            re.search(r"(?:稍重|重|不良)\s*([1-9]\d*|0)-([1-9]\d*|0)-([1-9]\d*|0)-", item)
-            and sum(int(x) for x in re.search(r"(?:稍重|重|不良)\s*([0-9]+)-([0-9]+)-([0-9]+)-", item).groups()) > 0
-            for item in condition_stats.split(" / ")
-        )
+    distance_stats = ""
+    course_stats = ""
+    dpos = next((i for i,x in enumerate(lines) if re.sub(r"\s+", "", x) == "距離別成績"), None)
+    cpos = next((i for i,x in enumerate(lines) if re.sub(r"\s+", "", x) == "コース別成績"), None)
+    if dpos is not None:
+        end = cpos if cpos is not None and cpos > dpos else len(lines)
+        distance_stats = " / ".join(lines[dpos+1:end][:12])
+    if cpos is not None:
+        end = next((i for i in range(cpos+1,len(lines)) if re.sub(r"\s+", "", lines[i]) in {"馬場状態別成績","脚質別成績","時期別成績","斤量別成績","枠番別成績","レース間隔別成績"}), len(lines))
+        course_stats = " / ".join(lines[cpos+1:end][:12])
 
     return [{
         '馬番': int(gate), '馬名': horse_name, '性齢': sex_age,
@@ -5659,7 +5639,6 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
         '2走前': second_previous_race, '父馬': sire, '母馬': dam,
         '母父': damsire, '厩舎': trainer, '馬主': owner, '生産者': breeder,
         '距離別成績': distance_stats, 'コース別成績': course_stats,
-        '馬場状態別成績': condition_stats, '道悪実績あり': heavy_record,
         '取得元': '競馬ラボ・プロフィール文字貼り付け(Ver1.19.64)',
     }]
 
@@ -6183,8 +6162,7 @@ def apply_specialized_image_records(records, auto_track_value):
             "wgh": int(prev.get("wgh", 0) or 0),
             "pop": int(prev.get("pop", 0) or 0),
             "win_odds": float(prev.get("win_odds", 0.0) or 0.0),
-            "heavy_record": (rec.get("道悪実績あり") if rec.get("道悪実績あり") is not None else prev.get("heavy_record", False)),
-            "profile_condition_stats": rec.get("馬場状態別成績") or prev.get("profile_condition_stats", ""),
+            "heavy_record": prev.get("heavy_record", False),
             "previous_jockey": rec.get("前走騎手") if rec.get("前走騎手") in JOCKEY_MASTER else prev.get("previous_jockey", "(未選択)"),
             "profile_sex_age": rec.get("性齢") or prev.get("profile_sex_age", ""),
             "profile_body_weight": rec.get("馬体重", prev.get("profile_body_weight")),
@@ -9060,6 +9038,108 @@ if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primar
                 },
             )
             
+            st.subheader("🎯 3連複・2頭軸総流し（AI軸馬選定）")
+            st.caption("能力順位・AI点・統合勝率・AI勝率・市場勝率を組み合わせて軸候補を評価します。過去成績の実測複勝率がない場合は、安定性を直接測定できないため、予測指標による暫定選定です。")
+
+            def _num_value(row, key, default=None):
+                try:
+                    value = row.get(key, default)
+                    if value is None or pd.isna(value):
+                        return default
+                    if isinstance(value, str):
+                        value = value.replace("%", "").replace("点", "").replace("倍", "").strip()
+                    return float(value)
+                except (TypeError, ValueError):
+                    return default
+
+            axis_df = res_df.copy()
+            if "馬番" in axis_df.columns and len(axis_df) >= 3:
+                # 各指標を0～1へ正規化。順位は小さいほど高評価。
+                def _norm_series(series, higher_is_better=True):
+                    vals = pd.to_numeric(series, errors="coerce")
+                    if vals.notna().sum() == 0:
+                        return pd.Series([0.5] * len(vals), index=vals.index)
+                    lo, hi = vals.min(), vals.max()
+                    if pd.isna(lo) or pd.isna(hi) or hi == lo:
+                        return pd.Series([0.5] * len(vals), index=vals.index)
+                    norm = (vals - lo) / (hi - lo)
+                    return norm if higher_is_better else 1 - norm
+
+                axis_df["_axis_score"] = 0.0
+                score_parts = []
+                if "能力順位" in axis_df.columns:
+                    score_parts.append((_norm_series(axis_df["能力順位"], False), 0.25))
+                if "AI点" in axis_df.columns:
+                    score_parts.append((_norm_series(axis_df["AI点"], True), 0.30))
+                if "統合勝率" in axis_df.columns:
+                    score_parts.append((_norm_series(axis_df["統合勝率"], True), 0.25))
+                if "AI勝率" in axis_df.columns:
+                    score_parts.append((_norm_series(axis_df["AI勝率"], True), 0.15))
+                if "市場勝率" in axis_df.columns:
+                    score_parts.append((_norm_series(axis_df["市場勝率"], True), 0.05))
+                total_weight = sum(weight for _, weight in score_parts)
+                if total_weight:
+                    axis_df["_axis_score"] = sum(series * weight for series, weight in score_parts) / total_weight
+                axis_df = axis_df.sort_values("_axis_score", ascending=False).reset_index(drop=True)
+
+                field_cols = st.columns(2)
+                with field_cols[0]:
+                    axis_mode = st.selectbox(
+                        "軸馬の選び方",
+                        ["AI自動選定", "能力順位上位から選定"],
+                        key="sanrenpuku_axis_mode",
+                        help="AI自動選定は複数指標を合成。能力順位上位は能力順位を優先します。",
+                    )
+                with field_cols[1]:
+                    axis_budget = st.number_input(
+                        "2頭軸総流しの合計予算（円）",
+                        min_value=100, max_value=1000000,
+                        value=max(100, int(total_budget * 0.4 / 100) * 100), step=100,
+                        key="sanrenpuku_axis_budget",
+                    )
+
+                if axis_mode == "能力順位上位から選定" and "能力順位" in res_df.columns:
+                    axis_df = res_df.copy()
+                    axis_df["_rank_numeric"] = pd.to_numeric(axis_df["能力順位"], errors="coerce")
+                    axis_df = axis_df.sort_values("_rank_numeric", na_position="last").reset_index(drop=True)
+
+                if len(axis_df) >= 3:
+                    axis1 = axis_df.iloc[0]
+                    # 2頭目はスコア上位から選び、同じ馬は除外。現時点では過去複勝率データが未接続のため、指標スコアで選定。
+                    axis2 = axis_df.iloc[1]
+                    axis_nums = {str(axis1["馬番"]), str(axis2["馬番"])}
+                    remaining = [str(x) for x in res_df["馬番"].tolist() if str(x) not in axis_nums]
+                    combo_count = len(remaining)
+                    each_amount = max(100, (int(axis_budget) // max(1, combo_count) // 100) * 100)
+                    actual_total = each_amount * combo_count
+                    st.success(
+                        f"AI選定の軸馬：{int(float(axis1['馬番']))}番 {axis1.get('馬名', '')} ＋ "
+                        f"{int(float(axis2['馬番']))}番 {axis2.get('馬名', '')}"
+                    )
+                    st.write(f"相手：残り{combo_count}頭へ総流し｜買い目数：{combo_count}点｜1点{each_amount:,}円｜合計{actual_total:,}円")
+                    st.caption("※100円単位で均等配分するため、実際の合計額は設定予算と一致しない場合があります。出走取消・除外馬は出馬表から除いてから予想してください。")
+                    axis_rows = []
+                    for _, horse in axis_df.head(2).iterrows():
+                        axis_rows.append({
+                            "役割": "軸馬",
+                            "馬番": horse.get("馬番", ""),
+                            "馬名": horse.get("馬名", ""),
+                            "能力順位": horse.get("能力順位", ""),
+                            "AI点": horse.get("AI点", ""),
+                            "選定スコア": round(float(horse.get("_axis_score", 0)) * 100, 1),
+                        })
+                    st.dataframe(pd.DataFrame(axis_rows), use_container_width=True, hide_index=True)
+                    axis_tickets = [
+                        {"券種": "3連複・2頭軸総流し", "買い目": f"{axis1['馬番']} - {axis2['馬番']} - {other}", "推奨投資額": f"{each_amount}円"}
+                        for other in remaining
+                    ]
+                    with st.expander("📋 2頭軸総流しの全買い目", expanded=True):
+                        st.dataframe(pd.DataFrame(axis_tickets), use_container_width=True, hide_index=True)
+                else:
+                    st.warning("2頭軸総流しには3頭以上の出走馬データが必要です。")
+            else:
+                st.warning("馬番データが不足しているため、2頭軸を選定できません。")
+
             st.subheader("💰 AI最適化推奨買い目 ＆ 資金配分シミュレーター")
             top_horses = res_df.head(5).to_dict(orient="records")
             
