@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.21"
+APP_PATCH_VERSION = "Ver1.20.15"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -29,7 +29,7 @@ except Exception:
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
 st.set_page_config(page_title=f"ジェニーAI予想{APP_PATCH_VERSION}", layout="wide", initial_sidebar_state="collapsed")
-st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（OCR原文確認・馬名照合版）")
+st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（距離・馬場実績改善版）")
 
 st.markdown("""
 <style>
@@ -3846,20 +3846,25 @@ def parse_umanity_screenshot_image_adaptive(uploaded_file, raw_text="", forced_s
             unique_gate_tokens[gate] = (cy, conf)
 
     if len(unique_gate_tokens) >= 3:
-        # Ver1.20.15修正：OCRで実際に検出した馬番を保持する。
-        # 旧処理は検出した行を start_gate + 行番号 で振り直していたため、
-        # 途中の馬番が1つ読み取れないだけで、以降の馬データが別馬番へずれる危険があった。
-        # 馬番を確実に検出できた行だけを採用し、欠番は後段で警告する。
-        row_defs = [
-            (gate, cy)
-            for gate, (cy, conf) in sorted(
-                unique_gate_tokens.items(), key=lambda item: item[1][0]
-            )
-        ]
+        # 馬番列が見えている場合は、OCRの数字そのものではなく上から下の行順を主キーにする。
+        ordered_gate_y = sorted(unique_gate_tokens.values(), key=lambda v: v[0])
+        cleaned_y = []
+        for cy, conf in ordered_gate_y:
+            if not cleaned_y or abs(cy - cleaned_y[-1]) > max(12.0, h * 0.012):
+                cleaned_y.append(cy)
+        cleaned_y = cleaned_y[:18]
+        # 1頭分の行がOCRで欠けても、等間隔から欠落行を補う。
+        if len(cleaned_y) >= 8:
+            diffs = [cleaned_y[i+1] - cleaned_y[i] for i in range(len(cleaned_y)-1) if cleaned_y[i+1] > cleaned_y[i]]
+            if diffs:
+                diffs_sorted = sorted(diffs)
+                step = diffs_sorted[len(diffs_sorted)//2]
+                estimated_count = int(round((cleaned_y[-1] - cleaned_y[0]) / max(step, 1.0))) + 1
+                estimated_count = max(len(cleaned_y), min(18, estimated_count))
+                cleaned_y = [cleaned_y[0] + i * step for i in range(estimated_count)]
+        row_defs = [(start_gate + i, cy) for i, cy in enumerate(cleaned_y)]
     else:
-        # 馬番が十分に検出できない場合は、推定連番を確定値として扱わない。
-        # 行順の暫定番号は従来どおりだが、少数行に限定して誤割当リスクを抑える。
-        row_defs = [(start_gate + i, g["y"]) for i, g in enumerate(row_groups[:8])]
+        row_defs = [(start_gate + i, g["y"]) for i, g in enumerate(row_groups)]
 
     # 列の基準は各行のU指数x。横スクロールしても相対位置はほぼ一定。
     rows = []
@@ -5733,55 +5738,26 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
     _style_aliases = {"逃げ": "逃げ", "先行": "先行", "差し": "差し", "追込": "追い込み", "追い込み": "追い込み"}
     running_style = _style_aliases.get(re.sub(r"\s+", "", running_style), "")
 
-    # 成績欄は競馬ラボの2列レイアウトのため、OCRが行を交互に並べたり、
-    # 見出しと数値を同じ行へ連結することがある。行範囲だけに依存せず、
-    # 全文から「ラベル＋1-2-3-4」の組を再構成する。
+    distance_stats = ""
+    course_stats = ""
+    condition_stats = ""
+    style_stats = ""
     _section_labels = {"距離別成績", "コース別成績", "馬場状態別成績", "脚質別成績", "時期別成績", "斤量別成績", "枠番別成績", "レース間隔別成績"}
     _section_pos = {}
     for _i, _line in enumerate(lines):
         _key = re.sub(r"\s+", "", _line)
-        for _lab in _section_labels:
-            if _lab in _key and _lab not in _section_pos:
-                _section_pos[_lab] = _i
+        if _key in _section_labels and _key not in _section_pos:
+            _section_pos[_key] = _i
     def _section_text(_label, _limit=16):
         _start = _section_pos.get(_label)
         if _start is None:
             return ""
         _end = min([_p for _k, _p in _section_pos.items() if _p > _start] or [len(lines)])
-        return " / ".join(lines[_start:_end+1][:_limit])
-    def _section_blob(_label):
-        # 見出しから次の成績見出しまで。全文上で見出しが見つからない場合は空。
-        _m = re.search(re.escape(_label), joined)
-        if not _m:
-            return ""
-        _tail = joined[_m.end():]
-        _next = re.search(r"距離別成績|コース別成績|馬場状態別成績|脚質別成績|時期別成績|斤量別成績|枠番別成績|レース間隔別成績", _tail)
-        return _tail[:_next.start()] if _next else _tail[:700]
-    def _records_from_blob(_label, _kind):
-        """競馬ラボの横並びコピー文字から距離別・馬場状態別成績を抽出する。"""
-        _blob = re.sub(r"\s+", "", joined)
-        _found = []
-        if _kind == "distance":
-            # 例: 2000 / 2-0-0-0 / 2400 / 0-0-0-2 / 当該 / 0-0-0-0
-            _pat = r"(当該|[0-9]{3,4})[/：:]*(?:成績)?([0-9]{1,2}-[0-9]{1,2}-[0-9]{1,2}-[0-9]{1,2})"
-        elif _kind == "condition":
-            # 例: 芝良 / 1-1-1-0 / 芝稍重 / 0-1-0-0
-            _pat = r"((?:芝|ダート)?(?:稍重|不良|良|重))[/：:]*(?:成績)?([0-9]{1,2}-[0-9]{1,2}-[0-9]{1,2}-[0-9]{1,2})"
-        else:
-            return ""
-        for _lab, _nums in re.findall(_pat, _blob):
-            _item = f"{_lab} {_nums}"
-            if _item not in _found:
-                _found.append(_item)
-        return " / ".join(_found)
-
-    # コピー文字は横並びの列順に連結されるため、見出し間の範囲抽出ではなく
-    # 成績ラベルと「1-2-3-4」の組を全文から直接抽出する。
-    distance_stats = _records_from_blob("距離別成績", "distance")
-    course_stats = ""  # 今回はコース別成績を予想入力に使用しない
-    condition_stats = _records_from_blob("馬場状態別成績", "condition")
-    style_stats = ""  # 脚質別成績は今回の取込対象外
-
+        return " / ".join(lines[_start+1:_end][:_limit])
+    distance_stats = _section_text("距離別成績", 16)
+    course_stats = _section_text("コース別成績", 16)
+    condition_stats = _section_text("馬場状態別成績", 12)
+    style_stats = _section_text("脚質別成績", 8)
 
     return [{
         '馬番': int(gate), '馬名': horse_name, '性齢': sex_age,
@@ -5792,7 +5768,7 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
         '脚質': running_style,
         '距離別成績': distance_stats, 'コース別成績': course_stats,
         '馬場状態別成績': condition_stats, '脚質別成績': style_stats,
-        '取得元': '競馬ラボ・プロフィール文字貼り付け(Ver1.20.21)',
+        '取得元': '競馬ラボ・プロフィール文字貼り付け(Ver1.20.15)',
     }]
 
 def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=None):
@@ -6282,42 +6258,31 @@ def merge_source_records(umanity_records, profile_records, history_records):
 
 
 
-def _parse_record_stats_text(raw_text):
-    """「1000 0-0-0-0 / 1400 2-0-0-2」のような成績文字列を構造化する。"""
-    out = []
-    text = str(raw_text or "")
-    for label, w, p, t, o in re.findall(
-        r"([^/\n]*?)\s*(\d{1,4})-(\d{1,4})-(\d{1,4})-(\d{1,4})", text
-    ):
-        label = re.sub(r"\s+", " ", label).strip(" /:")
-        if not label:
-            continue
-        try:
-            wins, places, thirds, others = map(int, (w, p, t, o))
-            starts = wins + places + thirds + others
-            if starts > 0:
-                out.append({"label": label, "wins": wins, "places": places,
-                            "thirds": thirds, "others": others, "starts": starts})
-        except ValueError:
-            continue
-    return out
+def _has_top3_bad_track_record(condition_stats):
+    """競馬ラボの馬場状態別成績から、稍重・重・不良で3着以内があるか判定。
 
-
-
-def _derive_heavy_record_from_profile(condition_stats):
-    """馬場状態別成績から道悪実績を判定。
-
-    稍重・重・不良のいずれかで、1〜3着の実績が1回以上あればTrue。
-    4着以下のみ、または出走数だけがある場合はFalse。
+    表記例: 芝稍重 0-1-0-0 / 芝重 0-0-0-0 / 芝不良 1-0-0-2
+    4区分は 1着-2着-3着-着外 として扱い、最初の3区分の合計が1以上なら該当。
     """
     text = str(condition_stats or "")
-    for rec in _parse_record_stats_text(text):
-        label = re.sub(r"[\s　・/]+", "", str(rec.get("label", "")))
-        label = label.replace("ダート", "").replace("芝", "")
-        top3 = sum(int(rec.get(k, 0) or 0) for k in ("wins", "places", "thirds"))
-        if label in {"稍重", "重", "不良"} and top3 > 0:
-            return True
-    return False
+    if not text.strip():
+        return None  # データ未取得は「実績なし」と区別する
+    found = False
+    for label, w, p, t, o in re.findall(
+        r"([^/\n]*?)\s*(\d{1,3})\s*[-－ー–—]\s*(\d{1,3})\s*[-－ー–—]\s*(\d{1,3})\s*[-－ー–—]\s*(\d{1,3})",
+        text,
+    ):
+        compact = re.sub(r"[\s　]", "", label)
+        if not any(token in compact for token in ("稍重", "重", "不良")):
+            continue
+        # 「重」は「稍重」にも含まれるが、どちらも道悪対象。
+        found = True
+        try:
+            if sum(map(int, (w, p, t))) > 0:
+                return True
+        except ValueError:
+            continue
+    return False if found else None
 
 
 def apply_specialized_image_records(records, auto_track_value):
@@ -6353,10 +6318,11 @@ def apply_specialized_image_records(records, auto_track_value):
             "wgh": int(prev.get("wgh", 0) or 0),
             "pop": int(prev.get("pop", 0) or 0),
             "win_odds": float(prev.get("win_odds", 0.0) or 0.0),
-            # プロフィールの馬場状態別成績が取得できた場合は道悪実績を自動判定。
-            # 成績欄が空なら既存の手入力値を維持する。
-            "heavy_record": (_derive_heavy_record_from_profile(rec.get("馬場状態別成績"))
-                              if rec.get("馬場状態別成績") else prev.get("heavy_record", False)),
+            "heavy_record": (
+                _has_top3_bad_track_record(rec.get("馬場状態別成績"))
+                if _has_top3_bad_track_record(rec.get("馬場状態別成績")) is not None
+                else prev.get("heavy_record", False)
+            ),
             "previous_jockey": rec.get("前走騎手") if rec.get("前走騎手") in JOCKEY_MASTER else prev.get("previous_jockey", "(未選択)"),
             "profile_sex_age": rec.get("性齢") or prev.get("profile_sex_age", ""),
             "profile_body_weight": rec.get("馬体重", prev.get("profile_body_weight")),
@@ -6377,10 +6343,6 @@ def apply_specialized_image_records(records, auto_track_value):
             "sel_frame": prev.get("sel_frame", calculate_frame_position(gate)),
             "sel_dist_change": prev.get("sel_dist_change", "同距離"),
         }
-        # 画像取り込み後に「道悪実績あり」のチェック欄にも自動判定を反映。
-        _condition_from_rec = rec.get("馬場状態別成績")
-        if _condition_from_rec:
-            st.session_state[f"rec_{gate}"] = _derive_heavy_record_from_profile(_condition_from_rec)
 
         # 既に生成済みのStreamlitウィジェットキーが残っていても、
         # 新しいレースのOCR結果を次回描画へ確実に同期する。
@@ -7218,13 +7180,20 @@ if bulk_input_tab == "📷 Android画像OCR":
                     try:
                         sg = int(u_start_map[f.name])
                         status_box.write(f"🔎 ウマニティ解析 {idx + 1}/{len(u_files)}：先頭 {sg}番")
-                        # Ver1.20.16: 常に全文OCR原文を保存し、抽出失敗の原因を後から確認可能にする。
-                        # 原文を先に取得してから画像専用解析へ渡し、抽出頭数が少ない場合は原文経路も比較する。
-                        raw = extract_text_from_screenshot(f)
-                        recs = parse_umanity_screenshot_image(f, raw, forced_start_gate=sg)
+                        recs = parse_umanity_screenshot_image(f, "", forced_start_gate=sg)
                         expected = max(1, min(18 - sg + 1, 18))
+                        raw = ""
+                        if len(recs) < expected:
+                            try:
+                                raw = extract_text_from_screenshot(f)
+                                fallback = parse_umanity_screenshot_image(f, raw, forced_start_gate=sg)
+                                if len(fallback) > len(recs):
+                                    recs = fallback
+                            except Exception:
+                                raw = ""
                         new_records.extend(recs)
-                        new_raw.append((f"ウマニティ:{f.name}", raw or "（OCR原文を取得できませんでした）"))
+                        if raw:
+                            new_raw.append((f"ウマニティ:{f.name}", raw))
                         diagnostics.append({
                             "画像": f.name, "種類": "ウマニティ",
                             "指定": f"先頭 {sg}番", "抽出頭数": len(recs),
@@ -7238,29 +7207,13 @@ if bulk_input_tab == "📷 Android画像OCR":
             status_box.empty()
             # 今回指定された馬番範囲は新結果で置換
             old = {int(r["馬番"]): r for r in st.session_state["v187_umanity_records"] if r.get("馬番")}
-            # Ver1.20.15修正：再OCRの空欄で、以前に読めた値を消さない。
-            # ただし馬名が異なる場合は別レース/別馬の可能性があるため、無条件に混ぜない。
-            for incoming in new_records:
-                if not incoming.get("馬番"):
-                    continue
-                gate = int(incoming["馬番"])
-                previous = old.get(gate)
-                if not previous:
-                    old[gate] = incoming
-                    continue
-                old_name = normalize_horse_name(previous.get("馬名", ""))
-                new_name = normalize_horse_name(incoming.get("馬名", ""))
-                if old_name and new_name and old_name != new_name:
-                    # 馬名が食い違う場合は自動統合せず、既存行を保護する。
-                    # 下の統合確認表で確認・修正できるようにする。
-                    continue
-                merged_row = dict(previous)
-                for key, value in incoming.items():
-                    if value not in (None, "", "(未選択)", "選択なし"):
-                        merged_row[key] = value
-                    elif key not in merged_row:
-                        merged_row[key] = value
-                old[gate] = merged_row
+            # 固定7頭ではなく、実際に検出した馬番だけを置換する。
+            for r in new_records:
+                if r.get("馬番"):
+                    old.pop(int(r["馬番"]), None)
+            for r in new_records:
+                if r.get("馬番"):
+                    old[int(r["馬番"])] = r
             st.session_state["v187_umanity_records"] = [old[k] for k in sorted(old)]
             st.session_state["v187_raw_texts"].extend(new_raw)
             st.session_state["v187_diagnostics"].extend(diagnostics)
@@ -7289,13 +7242,6 @@ if bulk_input_tab == "📷 Android画像OCR":
             pd.DataFrame(u_records)[[c for c in ["馬番","馬名","U指数","今回騎手","単勝","斤量"] if c in pd.DataFrame(u_records).columns]],
             use_container_width=True, hide_index=True,
         )
-    # 原文を見える場所に残す。読み取れなかった行も隠さず確認できる。
-    _umanity_raw_items = [item for item in st.session_state.get("v187_raw_texts", []) if str(item[0]).startswith("ウマニティ:")]
-    if _umanity_raw_items:
-        with st.expander("🔎 ウマニティOCR原文（読み取り失敗の確認用）", expanded=False):
-            for _raw_label, _raw_body in _umanity_raw_items[-6:]:
-                st.markdown(f"**{_raw_label}**")
-                st.text_area("OCR原文", str(_raw_body), height=180, key=f"raw_review_{abs(hash(_raw_label))}")
 
     if upload_mode == "📱 スマホ：1枚ずつ":
         p_one = st.file_uploader(
@@ -7358,31 +7304,13 @@ if bulk_input_tab == "📷 Android画像OCR":
                             errors.append(f"{f.name}: {gate}番の馬名がウマニティ側にありません")
                             continue
                         raw = extract_text_from_screenshot(f)
-                        # Ver1.20.16: OCR原文に別の出走馬名が明確にある場合、選択馬番を強制して誤登録しない。
-                        _raw_norm = normalize_horse_name(raw)
-                        _other_names = [
-                            (g, nm) for g, nm in gate_horse_map.items()
-                            if nm and int(g) != gate and nm in _raw_norm
-                        ]
-                        _target_in_raw = bool(normalize_horse_name(target_horse) and normalize_horse_name(target_horse) in _raw_norm)
-                        if _other_names and not _target_in_raw:
-                            new_raw.append((f"競馬ラボ・プロフィール:{f.name}", raw))
-                            errors.append(
-                                f"{f.name}: 選択は{gate}番 {target_horse}ですが、画像内に別の馬名「{_other_names[0][1]}」を検出したため登録を保留しました。対象馬番を確認してください。"
-                            )
-                            diagnostics.append({
-                                "画像": f.name, "種類": "競馬ラボ・プロフィール",
-                                "指定": f"{gate} {target_horse}", "抽出頭数": 0,
-                                "抽出馬": f"別馬名検出のため保留: {_other_names[0][1]}",
-                            })
-                            continue
                         # プロフィール画像は、画像専用の未定義関数に依存せず、
                         # 取得したOCR文字列を既存のプロフィール文字パーサーへ渡す。
                         recs = parse_keibalab_profile_screenshot_text(
                             raw, horse_gate_map, fallback_horse=target_horse
                         )
                         # 指定馬番・馬名を最終的に強制。OCRで項目が取れない場合も
-                        # 対象馬そのものは結果から消さない。ただし上で別馬名が明確なら登録しない。
+                        # 対象馬そのものは結果から消さない。
                         if not recs:
                             recs = [{
                                 "馬番": gate, "馬名": target_horse, "父馬": "",
@@ -8168,6 +8096,27 @@ ACTIVE_LEARNING_WEIGHTS = load_learning_weights()
 # ==========================================
 # 📊 プロフィール実績解析（Ver1.19.68）
 # ==========================================
+def _parse_record_stats_text(raw_text):
+    """「1000 0-0-0-0 / 1400 2-0-0-2」のような成績文字列を構造化する。"""
+    out = []
+    text = str(raw_text or "")
+    for label, w, p, t, o in re.findall(
+        r"([^/\n]*?)\s*(\d{1,4})-(\d{1,4})-(\d{1,4})-(\d{1,4})", text
+    ):
+        label = re.sub(r"\s+", " ", label).strip(" /:")
+        if not label:
+            continue
+        try:
+            wins, places, thirds, others = map(int, (w, p, t, o))
+            starts = wins + places + thirds + others
+            if starts > 0:
+                out.append({"label": label, "wins": wins, "places": places,
+                            "thirds": thirds, "others": others, "starts": starts})
+        except ValueError:
+            continue
+    return out
+
+
 def _record_top3_rate(record):
     return ((record["wins"] + record["places"] + record["thirds"]) /
             record["starts"]) if record and record.get("starts") else 0.0
