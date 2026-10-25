@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.15"
+APP_PATCH_VERSION = "Ver1.20.16"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -29,7 +29,7 @@ except Exception:
 # ⚙️ アプリ初期設定 & レイアウト
 # ==========================================
 st.set_page_config(page_title=f"ジェニーAI予想{APP_PATCH_VERSION}", layout="wide", initial_sidebar_state="collapsed")
-st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（OCR馬番ずれ・データ保護修正版）")
+st.title(f"🏆 ジェニーAI予想{APP_PATCH_VERSION}（OCR原文確認・馬名照合版）")
 
 st.markdown("""
 <style>
@@ -7144,20 +7144,13 @@ if bulk_input_tab == "📷 Android画像OCR":
                     try:
                         sg = int(u_start_map[f.name])
                         status_box.write(f"🔎 ウマニティ解析 {idx + 1}/{len(u_files)}：先頭 {sg}番")
-                        recs = parse_umanity_screenshot_image(f, "", forced_start_gate=sg)
+                        # Ver1.20.16: 常に全文OCR原文を保存し、抽出失敗の原因を後から確認可能にする。
+                        # 原文を先に取得してから画像専用解析へ渡し、抽出頭数が少ない場合は原文経路も比較する。
+                        raw = extract_text_from_screenshot(f)
+                        recs = parse_umanity_screenshot_image(f, raw, forced_start_gate=sg)
                         expected = max(1, min(18 - sg + 1, 18))
-                        raw = ""
-                        if len(recs) < expected:
-                            try:
-                                raw = extract_text_from_screenshot(f)
-                                fallback = parse_umanity_screenshot_image(f, raw, forced_start_gate=sg)
-                                if len(fallback) > len(recs):
-                                    recs = fallback
-                            except Exception:
-                                raw = ""
                         new_records.extend(recs)
-                        if raw:
-                            new_raw.append((f"ウマニティ:{f.name}", raw))
+                        new_raw.append((f"ウマニティ:{f.name}", raw or "（OCR原文を取得できませんでした）"))
                         diagnostics.append({
                             "画像": f.name, "種類": "ウマニティ",
                             "指定": f"先頭 {sg}番", "抽出頭数": len(recs),
@@ -7222,6 +7215,13 @@ if bulk_input_tab == "📷 Android画像OCR":
             pd.DataFrame(u_records)[[c for c in ["馬番","馬名","U指数","今回騎手","単勝","斤量"] if c in pd.DataFrame(u_records).columns]],
             use_container_width=True, hide_index=True,
         )
+    # 原文を見える場所に残す。読み取れなかった行も隠さず確認できる。
+    _umanity_raw_items = [item for item in st.session_state.get("v187_raw_texts", []) if str(item[0]).startswith("ウマニティ:")]
+    if _umanity_raw_items:
+        with st.expander("🔎 ウマニティOCR原文（読み取り失敗の確認用）", expanded=False):
+            for _raw_label, _raw_body in _umanity_raw_items[-6:]:
+                st.markdown(f"**{_raw_label}**")
+                st.text_area("OCR原文", str(_raw_body), height=180, key=f"raw_review_{abs(hash(_raw_label))}")
 
     if upload_mode == "📱 スマホ：1枚ずつ":
         p_one = st.file_uploader(
@@ -7284,13 +7284,31 @@ if bulk_input_tab == "📷 Android画像OCR":
                             errors.append(f"{f.name}: {gate}番の馬名がウマニティ側にありません")
                             continue
                         raw = extract_text_from_screenshot(f)
+                        # Ver1.20.16: OCR原文に別の出走馬名が明確にある場合、選択馬番を強制して誤登録しない。
+                        _raw_norm = normalize_horse_name(raw)
+                        _other_names = [
+                            (g, nm) for g, nm in gate_horse_map.items()
+                            if nm and int(g) != gate and nm in _raw_norm
+                        ]
+                        _target_in_raw = bool(normalize_horse_name(target_horse) and normalize_horse_name(target_horse) in _raw_norm)
+                        if _other_names and not _target_in_raw:
+                            new_raw.append((f"競馬ラボ・プロフィール:{f.name}", raw))
+                            errors.append(
+                                f"{f.name}: 選択は{gate}番 {target_horse}ですが、画像内に別の馬名「{_other_names[0][1]}」を検出したため登録を保留しました。対象馬番を確認してください。"
+                            )
+                            diagnostics.append({
+                                "画像": f.name, "種類": "競馬ラボ・プロフィール",
+                                "指定": f"{gate} {target_horse}", "抽出頭数": 0,
+                                "抽出馬": f"別馬名検出のため保留: {_other_names[0][1]}",
+                            })
+                            continue
                         # プロフィール画像は、画像専用の未定義関数に依存せず、
                         # 取得したOCR文字列を既存のプロフィール文字パーサーへ渡す。
                         recs = parse_keibalab_profile_screenshot_text(
                             raw, horse_gate_map, fallback_horse=target_horse
                         )
                         # 指定馬番・馬名を最終的に強制。OCRで項目が取れない場合も
-                        # 対象馬そのものは結果から消さない。
+                        # 対象馬そのものは結果から消さない。ただし上で別馬名が明確なら登録しない。
                         if not recs:
                             recs = [{
                                 "馬番": gate, "馬名": target_horse, "父馬": "",
