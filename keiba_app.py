@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.19"
+APP_PATCH_VERSION = "Ver1.20.20"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -5758,27 +5758,30 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
         _next = re.search(r"距離別成績|コース別成績|馬場状態別成績|脚質別成績|時期別成績|斤量別成績|枠番別成績|レース間隔別成績", _tail)
         return _tail[:_next.start()] if _next else _tail[:700]
     def _records_from_blob(_label, _kind):
-        _blob = _section_blob(_label)
-        if not _blob:
-            return ""
+        """2列表示のコピー文字でも、列ごとのまとまりに依存せず成績を抽出する。"""
+        _blob = re.sub(r"\\s+", "", joined)
         if _kind == "distance":
-            _pat = r"(当該|\d{3,4})\s*(\d{1,2}-\d{1,2}-\d{1,2}-\d{1,2})"
+            # 距離別成績は 2000 / 2400 / 3200 / 当該 のラベルと成績を拾う。
+            _pat = r"(当該|\\d{3,4})(\\d{1,2}-\\d{1,2}-\\d{1,2}-\\d{1,2})"
         elif _kind == "condition":
-            _pat = r"((?:芝|ダート)?(?:良|稍重|重|不良))\s*(\d{1,2}-\d{1,2}-\d{1,2}-\d{1,2})"
-        elif _kind == "style":
-            _pat = r"(逃げ|先行|差し|追込|追い込み)\s*(\d{1,2}-\d{1,2}-\d{1,2}-\d{1,2})"
+            # 「芝良」「芝稍重」「芝重」「芝不良」等。脚質欄は対象外。
+            _pat = r"((?:芝|ダート)?(?:稍重|不良|良|重))(\\d{1,2}-\\d{1,2}-\\d{1,2}-\\d{1,2})"
         else:
-            _pat = r"(全右|全左|全|[一-龥ぁ-んァ-ヶー]{1,5}(?:芝|ダート))\s*(\d{1,2}-\d{1,2}-\d{1,2}-\d{1,2})"
+            return ""
         _found = []
-        for _lab, _nums in re.findall(_pat, _blob.replace(" ", "")):
+        for _lab, _nums in re.findall(_pat, _blob):
             _item = f"{_lab} {_nums}"
             if _item not in _found:
                 _found.append(_item)
         return " / ".join(_found)
-    distance_stats = _records_from_blob("距離別成績", "distance") or _section_text("距離別成績", 16)
-    course_stats = _records_from_blob("コース別成績", "course") or _section_text("コース別成績", 16)
-    condition_stats = _records_from_blob("馬場状態別成績", "condition") or _section_text("馬場状態別成績", 12)
-    style_stats = _records_from_blob("脚質別成績", "style") or _section_text("脚質別成績", 8)
+
+    # コピー文字は横並びの列順に連結されるため、見出し間の範囲抽出ではなく
+    # 成績ラベルと「1-2-3-4」の組を全文から直接抽出する。
+    distance_stats = _records_from_blob("距離別成績", "distance")
+    course_stats = ""  # 今回はコース別成績を予想入力に使用しない
+    condition_stats = _records_from_blob("馬場状態別成績", "condition")
+    style_stats = ""  # 脚質別成績は今回の取込対象外
+
 
     return [{
         '馬番': int(gate), '馬名': horse_name, '性齢': sex_age,
@@ -5789,7 +5792,7 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
         '脚質': running_style,
         '距離別成績': distance_stats, 'コース別成績': course_stats,
         '馬場状態別成績': condition_stats, '脚質別成績': style_stats,
-        '取得元': '競馬ラボ・プロフィール文字貼り付け(Ver1.20.13)',
+        '取得元': '競馬ラボ・プロフィール文字貼り付け(Ver1.20.20)',
     }]
 
 def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=None):
