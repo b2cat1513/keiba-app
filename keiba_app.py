@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.18"
+APP_PATCH_VERSION = "Ver1.20.19"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -6279,6 +6279,28 @@ def merge_source_records(umanity_records, profile_records, history_records):
 
 
 
+def _parse_record_stats_text(raw_text):
+    """「1000 0-0-0-0 / 1400 2-0-0-2」のような成績文字列を構造化する。"""
+    out = []
+    text = str(raw_text or "")
+    for label, w, p, t, o in re.findall(
+        r"([^/\n]*?)\s*(\d{1,4})-(\d{1,4})-(\d{1,4})-(\d{1,4})", text
+    ):
+        label = re.sub(r"\s+", " ", label).strip(" /:")
+        if not label:
+            continue
+        try:
+            wins, places, thirds, others = map(int, (w, p, t, o))
+            starts = wins + places + thirds + others
+            if starts > 0:
+                out.append({"label": label, "wins": wins, "places": places,
+                            "thirds": thirds, "others": others, "starts": starts})
+        except ValueError:
+            continue
+    return out
+
+
+
 def _derive_heavy_record_from_profile(condition_stats):
     """馬場状態別成績から道悪実績を判定。
 
@@ -8143,27 +8165,6 @@ ACTIVE_LEARNING_WEIGHTS = load_learning_weights()
 # ==========================================
 # 📊 プロフィール実績解析（Ver1.19.68）
 # ==========================================
-def _parse_record_stats_text(raw_text):
-    """「1000 0-0-0-0 / 1400 2-0-0-2」のような成績文字列を構造化する。"""
-    out = []
-    text = str(raw_text or "")
-    for label, w, p, t, o in re.findall(
-        r"([^/\n]*?)\s*(\d{1,4})-(\d{1,4})-(\d{1,4})-(\d{1,4})", text
-    ):
-        label = re.sub(r"\s+", " ", label).strip(" /:")
-        if not label:
-            continue
-        try:
-            wins, places, thirds, others = map(int, (w, p, t, o))
-            starts = wins + places + thirds + others
-            if starts > 0:
-                out.append({"label": label, "wins": wins, "places": places,
-                            "thirds": thirds, "others": others, "starts": starts})
-        except ValueError:
-            continue
-    return out
-
-
 def _record_top3_rate(record):
     return ((record["wins"] + record["places"] + record["thirds"]) /
             record["starts"]) if record and record.get("starts") else 0.0
