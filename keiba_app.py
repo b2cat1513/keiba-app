@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.20"
+APP_PATCH_VERSION = "Ver1.20.21"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -5758,17 +5758,17 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
         _next = re.search(r"距離別成績|コース別成績|馬場状態別成績|脚質別成績|時期別成績|斤量別成績|枠番別成績|レース間隔別成績", _tail)
         return _tail[:_next.start()] if _next else _tail[:700]
     def _records_from_blob(_label, _kind):
-        """2列表示のコピー文字でも、列ごとのまとまりに依存せず成績を抽出する。"""
-        _blob = re.sub(r"\\s+", "", joined)
+        """競馬ラボの横並びコピー文字から距離別・馬場状態別成績を抽出する。"""
+        _blob = re.sub(r"\s+", "", joined)
+        _found = []
         if _kind == "distance":
-            # 距離別成績は 2000 / 2400 / 3200 / 当該 のラベルと成績を拾う。
-            _pat = r"(当該|\\d{3,4})(\\d{1,2}-\\d{1,2}-\\d{1,2}-\\d{1,2})"
+            # 例: 2000 / 2-0-0-0 / 2400 / 0-0-0-2 / 当該 / 0-0-0-0
+            _pat = r"(当該|[0-9]{3,4})[/：:]*(?:成績)?([0-9]{1,2}-[0-9]{1,2}-[0-9]{1,2}-[0-9]{1,2})"
         elif _kind == "condition":
-            # 「芝良」「芝稍重」「芝重」「芝不良」等。脚質欄は対象外。
-            _pat = r"((?:芝|ダート)?(?:稍重|不良|良|重))(\\d{1,2}-\\d{1,2}-\\d{1,2}-\\d{1,2})"
+            # 例: 芝良 / 1-1-1-0 / 芝稍重 / 0-1-0-0
+            _pat = r"((?:芝|ダート)?(?:稍重|不良|良|重))[/：:]*(?:成績)?([0-9]{1,2}-[0-9]{1,2}-[0-9]{1,2}-[0-9]{1,2})"
         else:
             return ""
-        _found = []
         for _lab, _nums in re.findall(_pat, _blob):
             _item = f"{_lab} {_nums}"
             if _item not in _found:
@@ -5792,7 +5792,7 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
         '脚質': running_style,
         '距離別成績': distance_stats, 'コース別成績': course_stats,
         '馬場状態別成績': condition_stats, '脚質別成績': style_stats,
-        '取得元': '競馬ラボ・プロフィール文字貼り付け(Ver1.20.20)',
+        '取得元': '競馬ラボ・プロフィール文字貼り付け(Ver1.20.21)',
     }]
 
 def parse_keibalab_history_screenshot_text(text, horse_gate_map, fallback_horse=None):
