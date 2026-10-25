@@ -11,7 +11,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.16"
+APP_PATCH_VERSION = "Ver1.20.18"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -5733,26 +5733,52 @@ def parse_keibalab_profile_screenshot_text(text, horse_gate_map, fallback_horse=
     _style_aliases = {"逃げ": "逃げ", "先行": "先行", "差し": "差し", "追込": "追い込み", "追い込み": "追い込み"}
     running_style = _style_aliases.get(re.sub(r"\s+", "", running_style), "")
 
-    distance_stats = ""
-    course_stats = ""
-    condition_stats = ""
-    style_stats = ""
+    # 成績欄は競馬ラボの2列レイアウトのため、OCRが行を交互に並べたり、
+    # 見出しと数値を同じ行へ連結することがある。行範囲だけに依存せず、
+    # 全文から「ラベル＋1-2-3-4」の組を再構成する。
     _section_labels = {"距離別成績", "コース別成績", "馬場状態別成績", "脚質別成績", "時期別成績", "斤量別成績", "枠番別成績", "レース間隔別成績"}
     _section_pos = {}
     for _i, _line in enumerate(lines):
         _key = re.sub(r"\s+", "", _line)
-        if _key in _section_labels and _key not in _section_pos:
-            _section_pos[_key] = _i
+        for _lab in _section_labels:
+            if _lab in _key and _lab not in _section_pos:
+                _section_pos[_lab] = _i
     def _section_text(_label, _limit=16):
         _start = _section_pos.get(_label)
         if _start is None:
             return ""
         _end = min([_p for _k, _p in _section_pos.items() if _p > _start] or [len(lines)])
-        return " / ".join(lines[_start+1:_end][:_limit])
-    distance_stats = _section_text("距離別成績", 16)
-    course_stats = _section_text("コース別成績", 16)
-    condition_stats = _section_text("馬場状態別成績", 12)
-    style_stats = _section_text("脚質別成績", 8)
+        return " / ".join(lines[_start:_end+1][:_limit])
+    def _section_blob(_label):
+        # 見出しから次の成績見出しまで。全文上で見出しが見つからない場合は空。
+        _m = re.search(re.escape(_label), joined)
+        if not _m:
+            return ""
+        _tail = joined[_m.end():]
+        _next = re.search(r"距離別成績|コース別成績|馬場状態別成績|脚質別成績|時期別成績|斤量別成績|枠番別成績|レース間隔別成績", _tail)
+        return _tail[:_next.start()] if _next else _tail[:700]
+    def _records_from_blob(_label, _kind):
+        _blob = _section_blob(_label)
+        if not _blob:
+            return ""
+        if _kind == "distance":
+            _pat = r"(当該|\d{3,4})\s*(\d{1,2}-\d{1,2}-\d{1,2}-\d{1,2})"
+        elif _kind == "condition":
+            _pat = r"((?:芝|ダート)?(?:良|稍重|重|不良))\s*(\d{1,2}-\d{1,2}-\d{1,2}-\d{1,2})"
+        elif _kind == "style":
+            _pat = r"(逃げ|先行|差し|追込|追い込み)\s*(\d{1,2}-\d{1,2}-\d{1,2}-\d{1,2})"
+        else:
+            _pat = r"(全右|全左|全|[一-龥ぁ-んァ-ヶー]{1,5}(?:芝|ダート))\s*(\d{1,2}-\d{1,2}-\d{1,2}-\d{1,2})"
+        _found = []
+        for _lab, _nums in re.findall(_pat, _blob.replace(" ", "")):
+            _item = f"{_lab} {_nums}"
+            if _item not in _found:
+                _found.append(_item)
+        return " / ".join(_found)
+    distance_stats = _records_from_blob("距離別成績", "distance") or _section_text("距離別成績", 16)
+    course_stats = _records_from_blob("コース別成績", "course") or _section_text("コース別成績", 16)
+    condition_stats = _records_from_blob("馬場状態別成績", "condition") or _section_text("馬場状態別成績", 12)
+    style_stats = _records_from_blob("脚質別成績", "style") or _section_text("脚質別成績", 8)
 
     return [{
         '馬番': int(gate), '馬名': horse_name, '性齢': sex_age,
@@ -6253,6 +6279,22 @@ def merge_source_records(umanity_records, profile_records, history_records):
 
 
 
+def _derive_heavy_record_from_profile(condition_stats):
+    """馬場状態別成績から道悪実績を判定。
+
+    稍重・重・不良のいずれかで、1〜3着の実績が1回以上あればTrue。
+    4着以下のみ、または出走数だけがある場合はFalse。
+    """
+    text = str(condition_stats or "")
+    for rec in _parse_record_stats_text(text):
+        label = re.sub(r"[\s　・/]+", "", str(rec.get("label", "")))
+        label = label.replace("ダート", "").replace("芝", "")
+        top3 = sum(int(rec.get(k, 0) or 0) for k in ("wins", "places", "thirds"))
+        if label in {"稍重", "重", "不良"} and top3 > 0:
+            return True
+    return False
+
+
 def apply_specialized_image_records(records, auto_track_value):
     st.session_state["loaded_data"].setdefault("rows", {})
     for rec in records:
@@ -6286,7 +6328,10 @@ def apply_specialized_image_records(records, auto_track_value):
             "wgh": int(prev.get("wgh", 0) or 0),
             "pop": int(prev.get("pop", 0) or 0),
             "win_odds": float(prev.get("win_odds", 0.0) or 0.0),
-            "heavy_record": prev.get("heavy_record", False),
+            # プロフィールの馬場状態別成績が取得できた場合は道悪実績を自動判定。
+            # 成績欄が空なら既存の手入力値を維持する。
+            "heavy_record": (_derive_heavy_record_from_profile(rec.get("馬場状態別成績"))
+                              if rec.get("馬場状態別成績") else prev.get("heavy_record", False)),
             "previous_jockey": rec.get("前走騎手") if rec.get("前走騎手") in JOCKEY_MASTER else prev.get("previous_jockey", "(未選択)"),
             "profile_sex_age": rec.get("性齢") or prev.get("profile_sex_age", ""),
             "profile_body_weight": rec.get("馬体重", prev.get("profile_body_weight")),
@@ -6307,6 +6352,10 @@ def apply_specialized_image_records(records, auto_track_value):
             "sel_frame": prev.get("sel_frame", calculate_frame_position(gate)),
             "sel_dist_change": prev.get("sel_dist_change", "同距離"),
         }
+        # 画像取り込み後に「道悪実績あり」のチェック欄にも自動判定を反映。
+        _condition_from_rec = rec.get("馬場状態別成績")
+        if _condition_from_rec:
+            st.session_state[f"rec_{gate}"] = _derive_heavy_record_from_profile(_condition_from_rec)
 
         # 既に生成済みのStreamlitウィジェットキーが残っていても、
         # 新しいレースのOCR結果を次回描画へ確実に同期する。
