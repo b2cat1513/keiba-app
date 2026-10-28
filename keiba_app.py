@@ -7,11 +7,12 @@ import re
 import math
 import sqlite3
 import uuid
+import hashlib
 import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.23"
+APP_PATCH_VERSION = "Ver1.20.25"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -7641,6 +7642,18 @@ def init_auto_weight_tables():
                 setting_value TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS runner_results (
+                prediction_id TEXT NOT NULL,
+                horse_number TEXT NOT NULL,
+                horse_name TEXT NOT NULL DEFAULT '',
+                predicted_score REAL,
+                breakdown_json TEXT NOT NULL DEFAULT '{}',
+                actual_rank INTEGER NOT NULL,
+                recorded_at TEXT NOT NULL,
+                PRIMARY KEY (prediction_id, horse_number)
+            )
+        """)
         conn.execute(
             "INSERT OR IGNORE INTO learning_settings(setting_key, setting_value) VALUES ('auto_adjust_enabled', '1')"
         )
@@ -7683,11 +7696,22 @@ def recalculate_learning_weights():
         with sqlite3.connect(LEARNING_DB_PATH, timeout=10) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("""
-                SELECT p.breakdown_json, r.actual_rank
+                SELECT breakdown_json, actual_rank
+                FROM runner_results
+                WHERE actual_rank IS NOT NULL
+            """).fetchall()
+            # 古い履歴で全馬着順がまだ登録されていないものは、本命馬の記録を補助的に利用する。
+            fallback_rows = conn.execute("""
+                SELECT p.prediction_id, p.breakdown_json, r.actual_rank
                 FROM predictions p
                 INNER JOIN race_results r ON p.prediction_id = r.prediction_id
                 WHERE r.actual_rank IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM runner_results rr
+                      WHERE rr.prediction_id = p.prediction_id
+                  )
             """).fetchall()
+            rows = list(rows) + list(fallback_rows)
     except sqlite3.Error:
         rows = []
 
@@ -7695,6 +7719,8 @@ def recalculate_learning_weights():
         try:
             breakdown = json.loads(row["breakdown_json"] or "{}")
         except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(breakdown, dict):
             continue
         placed = 1 if int(row["actual_rank"]) <= 3 else 0
         for factor in LEARNING_FACTORS:
@@ -8633,6 +8659,20 @@ def init_learning_db():
                 setting_key TEXT PRIMARY KEY, setting_value TEXT NOT NULL
             )
         """)
+        # 全出走馬の実着順を保存する追加テーブル（既存DBを壊さず追加）
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS runner_results (
+                prediction_id TEXT NOT NULL,
+                horse_number TEXT NOT NULL,
+                horse_name TEXT NOT NULL DEFAULT '',
+                predicted_score REAL,
+                breakdown_json TEXT NOT NULL DEFAULT '{}',
+                actual_rank INTEGER NOT NULL,
+                recorded_at TEXT NOT NULL,
+                PRIMARY KEY (prediction_id, horse_number),
+                FOREIGN KEY(prediction_id) REFERENCES predictions(prediction_id)
+            )
+        """)
         conn.commit()
 
 
@@ -8714,6 +8754,94 @@ def save_race_result(prediction_id, actual_rank, return_amount):
         conn.commit()
 
 
+def save_runner_results(prediction_id, actual_ranks_text, main_actual_rank=None):
+    """馬番:着順の入力を、保存済み全馬スナップショットと照合して保存する。"""
+    with get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT race_snapshot_json, top_horse FROM predictions WHERE prediction_id = ?",
+            (prediction_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("対象の予想履歴が見つかりません。")
+        try:
+            snapshot = json.loads(row["race_snapshot_json"] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            snapshot = []
+        if not isinstance(snapshot, list) or not snapshot:
+            raise ValueError("保存済みの全出走馬データがありません。新しい予想でお試しください。")
+
+        by_number = {}
+        main_number = None
+        for horse in snapshot:
+            if not isinstance(horse, dict):
+                continue
+            number = str(horse.get("馬番", "")).strip()
+            if not number:
+                continue
+            by_number[number] = horse
+            if str(horse.get("馬名", "")).strip() == str(row["top_horse"]).strip() and main_number is None:
+                main_number = number
+
+        parsed = {}
+        for part in re.split(r"[,，;；\n]+", str(actual_ranks_text or "").strip()):
+            part = part.strip()
+            if not part:
+                continue
+            match = re.fullmatch(r"(\d+)\s*[:：=＝-]\s*(\d+)", part)
+            if not match:
+                raise ValueError(f"入力形式が違います:「{part}」。例：1:3, 2:1, 3:5")
+            number, rank = match.group(1), int(match.group(2))
+            if number not in by_number:
+                raise ValueError(f"馬番 {number} は保存済みの出走馬一覧にありません。")
+            if rank < 1 or rank > 18:
+                raise ValueError(f"馬番 {number} の着順は1～18で入力してください。")
+            parsed[number] = rank
+
+        if main_actual_rank is not None and main_number is not None:
+            parsed[main_number] = int(main_actual_rank)
+        if not parsed:
+            raise ValueError("全馬の着順を入力してください。例：1:3, 2:1, 3:5")
+
+        recorded_at = datetime.now().isoformat(timespec="seconds")
+        for number, rank in parsed.items():
+            horse = by_number[number]
+            breakdown = horse.get("得点内訳", {})
+            if not isinstance(breakdown, dict):
+                breakdown = {}
+            try:
+                predicted_score = float(horse.get("AI点", horse.get("最終スコア", 0)) or 0)
+            except (TypeError, ValueError):
+                predicted_score = 0.0
+            conn.execute("""
+                INSERT INTO runner_results(
+                    prediction_id, horse_number, horse_name, predicted_score,
+                    breakdown_json, actual_rank, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(prediction_id, horse_number) DO UPDATE SET
+                    horse_name = excluded.horse_name,
+                    predicted_score = excluded.predicted_score,
+                    breakdown_json = excluded.breakdown_json,
+                    actual_rank = excluded.actual_rank,
+                    recorded_at = excluded.recorded_at
+            """, (
+                prediction_id, number, str(horse.get("馬名", "")), predicted_score,
+                json.dumps(breakdown, ensure_ascii=False, default=str), rank, recorded_at
+            ))
+        conn.commit()
+    return len(parsed)
+
+
+def load_runner_results(prediction_id):
+    with get_db_connection() as conn:
+        rows = conn.execute("""
+            SELECT horse_number, horse_name, predicted_score, actual_rank
+            FROM runner_results
+            WHERE prediction_id = ?
+            ORDER BY CAST(horse_number AS INTEGER)
+        """, (prediction_id,)).fetchall()
+    return [dict(row) for row in rows]
+
+
 def delete_prediction_record(prediction_id):
     """保存済み予想を削除する。関連するレース結果も先に削除する。"""
     with get_db_connection() as conn:
@@ -8753,7 +8881,7 @@ def load_prediction_history(include_pending=True):
             SELECT
                 p.prediction_id, p.created_at, p.course, p.top_horse,
                 p.ai_score, p.ai_rank, p.confidence, p.final_score,
-                p.budget, p.breakdown_json, p.reasons_json,
+                p.budget, p.breakdown_json, p.reasons_json, p.race_snapshot_json,
                 r.actual_rank, r.return_amount, r.hit_win, r.hit_place,
                 r.profit, r.recorded_at
             FROM predictions p
@@ -8765,124 +8893,81 @@ def load_prediction_history(include_pending=True):
 
 
 def build_factor_learning(history_rows):
-    """本命馬の得点内訳と実着順から項目別の成績を集計する。"""
+    """全馬の得点内訳と実着順から項目別の成績を集計する。未入力履歴は本命馬で補完。"""
     records = []
     for row in history_rows:
         if row.get("actual_rank") is None:
             continue
-        try:
-            breakdown = json.loads(row.get("breakdown_json") or "{}")
-        except (TypeError, json.JSONDecodeError):
-            breakdown = {}
 
-        for factor, value in breakdown.items():
-            if factor == "学習補正":
-                continue
+        runner_rows = []
+        prediction_id = row.get("prediction_id")
+        if prediction_id:
             try:
-                numeric_value = float(value)
+                with get_db_connection() as conn:
+                    runner_rows = [
+                        dict(item) for item in conn.execute("""
+                            SELECT breakdown_json, actual_rank
+                            FROM runner_results
+                            WHERE prediction_id = ?
+                        """, (prediction_id,)).fetchall()
+                    ]
+            except sqlite3.Error:
+                runner_rows = []
+
+        # 全馬着順が登録済みなら全馬を使用。未登録の旧履歴は本命馬のみで集計する。
+        if runner_rows:
+            outcomes = runner_rows
+        else:
+            outcomes = [{
+                "breakdown_json": row.get("breakdown_json") or "{}",
+                "actual_rank": row.get("actual_rank"),
+            }]
+
+        for outcome in outcomes:
+            try:
+                breakdown = json.loads(outcome.get("breakdown_json") or "{}")
+            except (TypeError, json.JSONDecodeError):
+                breakdown = {}
+            if not isinstance(breakdown, dict):
+                continue
+
+            try:
+                actual_rank = int(outcome.get("actual_rank"))
             except (TypeError, ValueError):
                 continue
-            records.append({
-                "評価項目": factor,
-                "加減点": numeric_value,
-                "1着": int(row.get("actual_rank") == 1),
-                "3着内": int(row.get("actual_rank") <= 3),
-            })
+            for factor, value in breakdown.items():
+                if factor == "学習補正":
+                    continue
+                try:
+                    numeric_value = float(value)
+                except (TypeError, ValueError):
+                    continue
+                records.append({
+                    "評価項目": factor,
+                    "加減点": numeric_value,
+                    "1着": int(actual_rank == 1),
+                    "3着内": int(actual_rank <= 3),
+                })
 
     if not records:
         return pd.DataFrame()
 
-    detail = pd.DataFrame(records)
-    rows = []
-    for factor, group in detail.groupby("評価項目"):
+    data = pd.DataFrame(records)
+    result = []
+    for factor, group in data.groupby("評価項目"):
         positive = group[group["加減点"] > 0]
-        negative = group[group["加減点"] < 0]
-        positive_place = positive["3着内"].mean() * 100 if not positive.empty else 0.0
-        overall_place = group["3着内"].mean() * 100
-        lift = positive_place - overall_place if not positive.empty else 0.0
-
-        if len(positive) < 5:
-            suggestion = "データ不足"
-        elif lift >= 10:
-            suggestion = "重みを少し強める候補"
-        elif lift <= -10:
-            suggestion = "重みを弱める候補"
-        else:
-            suggestion = "現状維持候補"
-
-        rows.append({
+        positive_place_rate = positive["3着内"].mean() * 100 if not positive.empty else 0.0
+        overall_place_rate = group["3着内"].mean() * 100 if not group.empty else 0.0
+        result.append({
             "評価項目": factor,
-            "記録数": len(group),
-            "プラス評価数": len(positive),
+            "記録数": int(len(group)),
+            "プラス評価数": int(len(positive)),
             "プラス時1着率": positive["1着"].mean() * 100 if not positive.empty else 0.0,
-            "プラス時3着内率": positive_place,
-            "全体3着内率": overall_place,
-            "効果差": lift,
-            "学習判断": suggestion,
-            "マイナス評価数": len(negative),
+            "プラス時3着内率": positive_place_rate,
+            "全体3着内率": overall_place_rate,
+            "効果差": positive_place_rate - overall_place_rate,
         })
-
-    return pd.DataFrame(rows).sort_values(["効果差", "プラス評価数"], ascending=[False, False])
-
-
-init_learning_db()
-
-# ==========================================
-# 💾 スマホ専用セーブデータ生成エリア
-# ==========================================
-st.divider()
-st.write("### 💾 スマホ用セーブデータ生成")
-
-mobile_code = encode_for_mobile(current_inputs)
-generated_url = f"/?data={mobile_code}"
-
-save_cols = st.columns(2)
-with save_cols[0]:
-    st.write("▼ 【推奨】コードだけをコピー（メモ帳保存用）")
-    if st.button("📋 セーブコードをコピー", use_container_width=True):
-        html(f"""<script>
-            if (navigator.clipboard) {{
-                navigator.clipboard.writeText('{mobile_code}').then(function() {{
-                    alert('📥 短いセーブコードをクリップボードにコピーしました！スマホのメモ帳等に貼り付けて保存してください。');
-                }}).catch(function(e) {{
-                    alert('コピーに失敗しました。下の入力欄から手動で選択してコピーしてください。');
-                }});
-            }} else {{
-                alert('お使いのブラウザは自動コピーに対応していません。下の入力欄からコピーしてください。');
-            }}
-            </script>""", height=0)
-    st.text_area("（手動コピー・確認用）セーブコード全文:", value=mobile_code, height=70, label_visibility="collapsed")
-
-with save_cols[1]:
-    st.write("▼ URLパラメータをコピー（復元用）")
-    if st.button("🔗 復元パラメータをコピー", use_container_width=True):
-        html(f"""<script>
-            if (navigator.clipboard) {{
-                navigator.clipboard.writeText('{generated_url}').then(function() {{
-                    alert('🔗 復元用のURLパラメータ（{generated_url}）をコピーしました！現在のアプリURLの末尾に付け足してお使いください。');
-                }}).catch(function(e) {{
-                    alert('コピーに失敗しました。手動で選択してください： ' + '{generated_url}');
-                }});
-            }} else {{
-                alert('お使いのブラウザは自動コピーに対応していません。');
-            }}
-            </script>""", height=0)
-    st.caption("※アプリをWebに公開した後は、その公開サイトのURLの直後に `?data=...` を付与することでお気に入りから直接復元できます。")
-
-# ==========================================
-# 📈 Ver1.13 単勝オッズ・市場確率統合
-# ==========================================
-def _softmax_probability(values, temperature=10.0):
-    series = pd.to_numeric(values, errors="coerce").fillna(0.0).astype(float)
-    if series.empty:
-        return series
-    temperature = max(float(temperature), 0.1)
-    max_value = float(series.max())
-    exp_values = series.map(lambda value: math.exp((float(value) - max_value) / temperature))
-    total = float(exp_values.sum())
-    if total <= 0 or not math.isfinite(total):
-        return pd.Series([1.0 / len(series)] * len(series), index=series.index)
-    return exp_values / total
+    return pd.DataFrame(result).sort_values(["効果差", "記録数"], ascending=[False, False])
 
 
 def _market_probability(odds_values, smoothing=0.15):
@@ -8936,6 +9021,9 @@ def add_odds_blended_probability(result_df, ai_weight=0.70, market_weight=0.30, 
 # 🏆 ランキング生成 & 買い目自動生成
 # ==========================================
 if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primary", use_container_width=True):
+    st.session_state["show_prediction_results"] = True
+
+if st.session_state.get("show_prediction_results", False):
     if calculated_results:
         res_df = pd.DataFrame(calculated_results)
         res_df = res_df[res_df["馬名"] != ""].sort_values(by="能力スコア", ascending=False)
@@ -9110,14 +9198,20 @@ if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primar
                     axis_nums = {str(axis1["馬番"]), str(axis2["馬番"])}
                     remaining = [str(x) for x in res_df["馬番"].tolist() if str(x) not in axis_nums]
                     combo_count = len(remaining)
-                    each_amount = max(100, (int(axis_budget) // max(1, combo_count) // 100) * 100)
+                    each_amount = (int(axis_budget) // max(1, combo_count) // 100) * 100
                     actual_total = each_amount * combo_count
                     st.success(
                         f"AI選定の軸馬：{int(float(axis1['馬番']))}番 {axis1.get('馬名', '')} ＋ "
                         f"{int(float(axis2['馬番']))}番 {axis2.get('馬名', '')}"
                     )
-                    st.write(f"相手：残り{combo_count}頭へ総流し｜買い目数：{combo_count}点｜1点{each_amount:,}円｜合計{actual_total:,}円")
-                    st.caption("※100円単位で均等配分するため、実際の合計額は設定予算と一致しない場合があります。出走取消・除外馬は出馬表から除いてから予想してください。")
+                    if each_amount >= 100:
+                        st.write(f"相手：残り{combo_count}頭へ総流し｜買い目数：{combo_count}点｜1点{each_amount:,}円｜合計{actual_total:,}円")
+                    else:
+                        st.warning(
+                            f"設定予算 {int(axis_budget):,}円では、総流し{combo_count}点に最低100円ずつ配分できません。"
+                            f"最低必要額は {combo_count * 100:,}円です。予算を増やすか買い目数を減らしてください。"
+                        )
+                    st.caption("※100円単位で均等配分し、設定予算を超えないようにしています。出走取消・除外馬は出馬表から除いてから予想してください。")
                     axis_rows = []
                     for _, horse in axis_df.head(2).iterrows():
                         axis_rows.append({
@@ -9129,10 +9223,12 @@ if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primar
                             "選定スコア": round(float(horse.get("_axis_score", 0)) * 100, 1),
                         })
                     st.dataframe(pd.DataFrame(axis_rows), use_container_width=True, hide_index=True)
-                    axis_tickets = [
-                        {"券種": "3連複・2頭軸総流し", "買い目": f"{axis1['馬番']} - {axis2['馬番']} - {other}", "推奨投資額": f"{each_amount}円"}
-                        for other in remaining
-                    ]
+                    axis_tickets = (
+                        [
+                            {"券種": "3連複・2頭軸総流し", "買い目": f"{axis1['馬番']} - {axis2['馬番']} - {other}", "推奨投資額": f"{each_amount}円"}
+                            for other in remaining
+                        ] if each_amount >= 100 else []
+                    )
                     with st.expander("📋 2頭軸総流しの全買い目", expanded=True):
                         st.dataframe(pd.DataFrame(axis_tickets), use_container_width=True, hide_index=True)
                 else:
@@ -9142,46 +9238,104 @@ if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primar
 
             st.subheader("💰 AI最適化推奨買い目 ＆ 資金配分シミュレーター")
             top_horses = res_df.head(5).to_dict(orient="records")
-            
+
             if len(top_horses) >= 3:
                 h_maru = top_horses[0]["馬番"]
                 h_fuku = top_horses[1]["馬番"]
                 h_ana = top_horses[2]["馬番"]
                 h_sa = [h["馬番"] for h in top_horses[3:5]]
-                
-                pool_maruren = total_budget * 0.40
-                pool_sanrenpuku = total_budget * 0.40
-                pool_sanrentan = total_budget * 0.20
-                
-                tickets = []
+
+                # 出走頭数に合わせて買い目候補を作成。存在しない4・5頭目は参照しない。
+                candidates = []
                 maruren_targets = [h_fuku, h_ana] + h_sa
-                weights = [0.4, 0.3, 0.15, 0.15]
-                for target, w in zip(maruren_targets, weights):
-                    amt = max(100, int((pool_maruren * w) // 100) * 100)
-                    tickets.append({"券種": "馬連", "買い目": f"{h_maru} ➔ {target}", "推奨投資額": f"{amt}円", "狙い": "軸堅実プラン"})
-                    
-                sanren_combos = [
-                    f"{h_maru} - {h_fuku} - {h_ana}",
-                    f"{h_maru} - {h_fuku} - {h_sa[0]}",
-                    f"{h_maru} - {h_fuku} - {h_sa[1]}",
-                    f"{h_maru} - {h_ana} - {h_sa[0]}",
-                    f"{h_maru} - {h_ana} - {h_sa[1]}",
-                ]
-                each_sanren = max(100, int((pool_sanrenpuku / len(sanren_combos)) // 100) * 100)
+                for target in maruren_targets:
+                    candidates.append({
+                        "券種": "馬連", "買い目": f"{h_maru} ➔ {target}",
+                        "狙い": "軸堅実プラン", "_weight": 0.40 / max(1, len(maruren_targets))
+                    })
+
+                other_horses = [h_fuku, h_ana] + h_sa
+                sanren_combos = []
+                for i in range(len(other_horses)):
+                    for j in range(i + 1, len(other_horses)):
+                        sanren_combos.append(f"{h_maru} - {other_horses[i]} - {other_horses[j]}")
                 for combo in sanren_combos:
-                    tickets.append({"券種": "3連複", "買い目": combo, "推奨投資額": f"{each_sanren}円", "狙い": "高回収リターン"})
-                    
-                tickets.append({"券種": "3連単", "買い目": f"{h_maru} ➔ {h_fuku} ➔ {h_ana}", "推奨投資額": f"{int((pool_sanrentan * 0.6) // 100) * 100}円", "狙い": "一撃必殺・本線"})
-                tickets.append({"券種": "3連単", "買い目": f"{h_maru} ➔ {h_fuku} ➔ {h_sa[0]}", "推奨投資額": f"{int((pool_sanrentan * 0.4) // 100) * 100}円", "狙い": "一撃必殺・押さえ"})
-                
-                st.dataframe(pd.DataFrame(tickets), use_container_width=True, hide_index=True)
-                
+                    candidates.append({
+                        "券種": "3連複", "買い目": combo,
+                        "狙い": "高回収リターン", "_weight": 0.40 / max(1, len(sanren_combos))
+                    })
+
+                # 3連単候補は3頭以上ある場合のみ生成する。
+                trifecta_targets = [h_ana] + h_sa
+                for idx, target in enumerate(trifecta_targets):
+                    candidates.append({
+                        "券種": "3連単", "買い目": f"{h_maru} ➔ {h_fuku} ➔ {target}",
+                        "狙い": "一撃必殺・本線" if idx == 0 else "一撃必殺・押さえ",
+                        "_weight": 0.20 / max(1, len(trifecta_targets))
+                    })
+
+                # 100円単位で予算内に配分。最低購入単位を確保できない候補は表示しない。
+                budget_units = max(0, int(total_budget) // 100)
+                if budget_units < len(candidates):
+                    st.warning(
+                        f"予算 {int(total_budget):,}円では全{len(candidates)}点に最低100円ずつ配分できません。"
+                        "買い目数を予算内に収まる範囲へ減らします。"
+                    )
+                    candidates = candidates[:budget_units]
+
+                if candidates:
+                    weights = [max(0.0, float(item.pop("_weight"))) for item in candidates]
+                    weight_total = sum(weights) or float(len(candidates))
+                    exact_units = [budget_units * (w / weight_total) for w in weights]
+                    units = [int(x) for x in exact_units]
+                    # 各候補へ最低1単位を割り当て、残りは最大剰余法で配分。
+                    units = [max(1, u) for u in units]
+                    while sum(units) > budget_units:
+                        eligible = [i for i, u in enumerate(units) if u > 1]
+                        if not eligible:
+                            break
+                        idx = min(eligible, key=lambda i: exact_units[i] - int(exact_units[i]))
+                        units[idx] -= 1
+                    while sum(units) < budget_units:
+                        idx = max(range(len(units)), key=lambda i: exact_units[i] - units[i])
+                        units[idx] += 1
+                        exact_units[idx] = units[idx]  # avoid repeatedly assigning the same remainder
+                    for item, unit_count in zip(candidates, units):
+                        item["推奨投資額"] = f"{unit_count * 100:,}円"
+                    st.dataframe(pd.DataFrame(candidates), use_container_width=True, hide_index=True)
+                    st.caption(
+                        f"推奨投資額の合計：{sum(units) * 100:,}円（設定予算 {int(total_budget):,}円以内）"
+                    )
+                else:
+                    st.info("設定予算が100円未満のため、買い目を作成できません。")
+
                 st.session_state["last_predict_horse"] = top_horses[0]["馬名"]
                 st.session_state["last_predict_course"] = sel_course
 
-                prediction_id = save_prediction_record(res_df, sel_course, total_budget)
-                st.session_state["last_prediction_id"] = prediction_id
-                st.success("🧠 今回の予想を学習データベースへ保存しました。レース後に下の結果入力欄から着順を登録してください。")
+                # 同じセッション内の再描画では同一予想を重複保存しない。
+                fingerprint_payload = {
+                    "course": str(sel_course),
+                    "budget": int(total_budget),
+                    "horses": [
+                        {
+                            "馬番": str(row.get("馬番", "")),
+                            "馬名": str(row.get("馬名", "")),
+                            "AI点": round(float(row.get("AI点", 0) or 0), 4),
+                            "統合勝率": round(float(row.get("統合勝率", 0) or 0), 4),
+                        }
+                        for row in res_df.to_dict(orient="records")
+                    ],
+                }
+                fingerprint = hashlib.sha256(
+                    json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest()
+                if st.session_state.get("last_saved_prediction_fingerprint") != fingerprint:
+                    prediction_id = save_prediction_record(res_df, sel_course, total_budget)
+                    st.session_state["last_prediction_id"] = prediction_id
+                    st.session_state["last_saved_prediction_fingerprint"] = fingerprint
+                    st.success("🧠 今回の予想を学習データベースへ保存しました。レース後に下の結果入力欄から着順を登録してください。")
+                else:
+                    st.info("この予想はすでに今回のセッションで保存済みです。履歴への重複保存を防ぎました。")
     else:
         st.error("出馬表データが入力されていません。")
 
@@ -9190,7 +9344,7 @@ if st.button("🏆 最終予想 ＆ 資金配分AI買い目生成", type="primar
 # ==========================================
 st.divider()
 st.header("🧠 過去予想の保存・結果登録・学習分析")
-st.caption("予想時点のAI点・評価理由・得点内訳をSQLiteへ保存し、レース結果から各評価項目の有効性を集計します。")
+st.caption("予想時点の全出走馬データをSQLiteへ保存し、入力された各馬の着順と得点内訳から評価項目の有効性を集計します。")
 
 all_history = load_prediction_history(include_pending=True)
 pending_history = [row for row in all_history if row.get("actual_rank") is None]
@@ -9209,10 +9363,43 @@ with st.expander("📝 保存済み予想へレース結果を登録する", exp
         with result_cols[1]:
             return_amount = st.number_input("このレースの払戻金額（円）", min_value=0, max_value=10000000, value=0, step=100)
 
+        selected_prediction_id = option_map[selected_label]
+        selected_history_row = next(
+            (row for row in pending_history if row["prediction_id"] == selected_prediction_id),
+            {},
+        )
+        try:
+            selected_snapshot = json.loads(selected_history_row.get("race_snapshot_json") or "[]")
+        except (TypeError, json.JSONDecodeError):
+            selected_snapshot = []
+        if isinstance(selected_snapshot, list) and selected_snapshot:
+            horse_labels = [
+                f"{horse.get('馬番', '?')}番 {horse.get('馬名', '馬名不明')}"
+                for horse in selected_snapshot if isinstance(horse, dict)
+            ]
+            st.caption("保存済み出走馬：" + "、".join(horse_labels))
+            st.markdown("**全出走馬の着順（任意入力欄）**")
+            st.caption("馬番:着順 の形式で入力してください。例：1:3, 2:1, 3:5。入力した馬は全馬学習に使われます。本命馬の着順は上の入力値を優先します。")
+            runner_ranks_text = st.text_area(
+                "馬番と実着順",
+                placeholder="例：1:3, 2:1, 3:5, 4:2",
+                key=f"runner_ranks_{selected_prediction_id}",
+                label_visibility="collapsed",
+            )
+        else:
+            runner_ranks_text = ""
+            st.warning("この履歴には全出走馬スナップショットがありません。全馬学習は新しく保存した予想から利用できます。")
+
         if st.button("💾 レース結果を保存して学習へ反映", type="primary"):
             try:
-                save_race_result(option_map[selected_label], actual_rank, return_amount)
-                st.success("結果を保存しました。学習集計へ反映されます。")
+                if isinstance(selected_snapshot, list) and selected_snapshot:
+                    save_runner_results(
+                        selected_prediction_id,
+                        runner_ranks_text,
+                        main_actual_rank=actual_rank,
+                    )
+                save_race_result(selected_prediction_id, actual_rank, return_amount)
+                st.success("結果を保存しました。入力された全出走馬の着順を学習集計へ反映します。")
                 st.rerun()
             except (ValueError, sqlite3.Error) as exc:
                 st.error(f"結果を保存できませんでした: {exc}")
