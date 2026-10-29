@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.25"
+APP_PATCH_VERSION = "Ver1.20.26"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -6596,20 +6596,79 @@ if bulk_input_tab == "🔬 競馬ラボ文字入力":
     if not kl_u_records:
         kl_u_records = st.session_state.get("v190_umanity_full_records", [])
 
+    # loaded_data.rows を正本として全馬番を候補に含める。馬名が空欄の馬も選択可能にする。
+    loaded_rows = st.session_state.get("loaded_data", {}).get("rows", {})
     if not kl_u_records:
-        loaded_rows = st.session_state.get("loaded_data", {}).get("rows", {})
         kl_u_records = [
             {"馬番": int(k), "馬名": v.get("name", "")}
-            for k, v in loaded_rows.items()
-            if str(k).isdigit() and v.get("name")
+            for k, v in loaded_rows.items() if str(k).isdigit()
         ]
 
     kl_gate_horse_map = {
         int(r["馬番"]): normalize_horse_name(r.get("馬名", ""))
-        for r in kl_u_records if r.get("馬番") and r.get("馬名")
+        for r in kl_u_records if str(r.get("馬番", "")).isdigit()
     }
+    # 既存行にある馬番も追加。名前が未取得の7番などもプロフィール対象にできる。
+    for _k, _v in loaded_rows.items():
+        if str(_k).isdigit():
+            kl_gate_horse_map.setdefault(int(_k), normalize_horse_name(_v.get("name", "")))
     kl_horse_gate_map = {name: gate for gate, name in kl_gate_horse_map.items() if name}
-    kl_gate_choices = sorted(kl_gate_horse_map.keys()) if kl_gate_horse_map else list(range(1, 19))
+    kl_gate_choices = list(range(1, max(18, max(kl_gate_horse_map.keys(), default=0)) + 1))
+
+    # Ver1.20.26: 読み取り漏れをその場で直せる全馬手入力テーブル。
+    st.markdown("## ①-b 出走馬データの手入力修正")
+    st.caption("馬名・騎手・U指数・斤量が空欄の馬も、馬番を基準に直接修正できます。保存後は予想計算に使う loaded_data へ反映されます。")
+    _editable_rows = []
+    for _gate in kl_gate_choices:
+        _r = loaded_rows.get(str(_gate), {})
+        _editable_rows.append({
+            "馬番": int(_gate),
+            "馬名": str(_r.get("name", kl_gate_horse_map.get(_gate, "")) or ""),
+            "今回騎手": str(_r.get("jock", "") or ""),
+            "U指数": float(_r.get("idx", 0) or 0),
+            "斤量": float(_r.get("wgt", 56.0) or 56.0),
+        })
+    _edit_df = st.data_editor(
+        pd.DataFrame(_editable_rows), use_container_width=True, hide_index=True,
+        disabled=["馬番"], num_rows="fixed",
+        column_config={
+            "馬番": st.column_config.NumberColumn("馬番", format="%d"),
+            "馬名": st.column_config.TextColumn("馬名"),
+            "今回騎手": st.column_config.TextColumn("今回騎手"),
+            "U指数": st.column_config.NumberColumn("U指数", min_value=0.0, max_value=200.0, step=0.1),
+            "斤量": st.column_config.NumberColumn("斤量", min_value=0.0, max_value=100.0, step=0.5),
+        }, key="manual_horse_table_v12026",
+    )
+    if st.button("💾 手入力した出走馬データを保存", key="save_manual_horse_table_v12026", use_container_width=True):
+        st.session_state["loaded_data"].setdefault("rows", {})
+        _saved_manual = 0
+        for _item in _edit_df.to_dict(orient="records"):
+            _gate = int(_item["馬番"]); _key = str(_gate)
+            _row = st.session_state["loaded_data"]["rows"].get(_key, {})
+            _row.setdefault("num", _key)
+            _row.setdefault("wgh", 480); _row.setdefault("pop", 0); _row.setdefault("win_odds", 0.0)
+            _row.setdefault("l3f", 35.0); _row.setdefault("sire", ""); _row.setdefault("heavy_record", False)
+            _row.setdefault("sel_frame", calculate_frame_position(_gate))
+            _row.setdefault("sel_track", "選択なし"); _row.setdefault("sel_style", "選択なし")
+            _row.setdefault("sel_dist_change", "同距離"); _row.setdefault("previous_jockey", "(未選択)")
+            _row.setdefault("trainer", "(未選択)"); _row.setdefault("owner", "(未選択)")
+            _name = normalize_horse_name(str(_item.get("馬名", "") or "").strip())
+            _row["name"] = _name
+            _jockey = str(_item.get("今回騎手", "") or "").strip()
+            _row["jock"] = _jockey if _jockey in JOCKEY_MASTER else "その他（自由手入力）"
+            _row["custom_note"] = str(_row.get("custom_note", "") or "")
+            try: _row["idx"] = float(_item.get("U指数", 0) or 0)
+            except (TypeError, ValueError): _row["idx"] = 0.0
+            try: _row["wgt"] = float(_item.get("斤量", 56.0) or 56.0)
+            except (TypeError, ValueError): _row["wgt"] = 56.0
+            if _jockey and _jockey not in JOCKEY_MASTER:
+                _row["custom_note"] = (_row["custom_note"] + " / " if _row["custom_note"] else "") + f"今回騎手:{_jockey}"
+            st.session_state["loaded_data"]["rows"][_key] = _row
+            _saved_manual += 1
+        # プロフィール選択用マップも更新
+        st.session_state["manual_horse_table_saved_v12026"] = True
+        st.success(f"{_saved_manual}頭分の手入力データを保存しました。")
+        st.rerun()
 
     if not kl_u_records:
         st.warning("先に「🐎 ウマニティ文字入力」で出馬表を解析してください。")
