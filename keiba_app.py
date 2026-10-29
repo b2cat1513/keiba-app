@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.26"
+APP_PATCH_VERSION = "Ver1.20.28"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -8732,6 +8732,28 @@ def init_learning_db():
                 FOREIGN KEY(prediction_id) REFERENCES predictions(prediction_id)
             )
         """)
+
+        # 古いバージョンのDBに不足している列を追加し、読み込み時のSQLエラーを防ぐ。
+        migrations = {
+            "predictions": {
+                "created_at": "TEXT NOT NULL DEFAULT ''", "course": "TEXT DEFAULT ''",
+                "top_horse": "TEXT NOT NULL DEFAULT ''", "ai_score": "REAL DEFAULT 0",
+                "ai_rank": "TEXT DEFAULT ''", "confidence": "INTEGER DEFAULT 0",
+                "final_score": "REAL DEFAULT 0", "budget": "INTEGER DEFAULT 0",
+                "breakdown_json": "TEXT NOT NULL DEFAULT '{}'", "reasons_json": "TEXT NOT NULL DEFAULT '[]'",
+                "race_snapshot_json": "TEXT NOT NULL DEFAULT '{}'",
+            },
+            "race_results": {
+                "recorded_at": "TEXT DEFAULT ''", "actual_rank": "INTEGER DEFAULT 0",
+                "return_amount": "INTEGER NOT NULL DEFAULT 0", "hit_win": "INTEGER NOT NULL DEFAULT 0",
+                "hit_place": "INTEGER NOT NULL DEFAULT 0", "profit": "INTEGER NOT NULL DEFAULT 0",
+            },
+        }
+        for table, columns in migrations.items():
+            existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            for column, definition in columns.items():
+                if column not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
         conn.commit()
 
 
@@ -8934,6 +8956,8 @@ def update_prediction_registration(prediction_id, course=None, top_horse=None):
 
 def load_prediction_history(include_pending=True):
     """予想履歴と結果を読み込む。既存DBの列定義差にも対応する。"""
+    # 画面から直接呼び出されても、必要なテーブルと不足列を先に整える。
+    init_learning_db()
     where = "" if include_pending else "WHERE r.prediction_id IS NOT NULL"
     with get_db_connection() as conn:
         sql = f"""
