@@ -8933,21 +8933,56 @@ def update_prediction_registration(prediction_id, course=None, top_horse=None):
 
 
 def load_prediction_history(include_pending=True):
-    """予想履歴と結果を読み込む。"""
+    """予想履歴と結果を読み込む。既存DBの列定義差にも対応する。"""
     where = "" if include_pending else "WHERE r.prediction_id IS NOT NULL"
     with get_db_connection() as conn:
-        rows = conn.execute(f"""
+        sql = f"""
             SELECT
                 p.prediction_id, p.created_at, p.course, p.top_horse,
                 p.ai_score, p.ai_rank, p.confidence, p.final_score,
                 p.budget, p.breakdown_json, p.reasons_json, p.race_snapshot_json,
                 r.actual_rank, r.return_amount, r.hit_win, r.hit_place,
                 r.profit, r.recorded_at
-            FROM predictions p
-            LEFT JOIN race_results r ON p.prediction_id = r.prediction_id
+            FROM predictions AS p
+            LEFT JOIN race_results AS r ON p.prediction_id = r.prediction_id
             {where}
-            ORDER BY p.created_at DESC
-        """).fetchall()
+            ORDER BY 2 DESC
+        """
+        try:
+            rows = conn.execute(sql).fetchall()
+        except sqlite3.OperationalError as exc:
+            message = str(exc).lower()
+            if "no such column" not in message and "syntax error" not in message:
+                raise
+            pred_cols = {row["name"] for row in conn.execute("PRAGMA table_info(predictions)").fetchall()}
+            result_cols = {row["name"] for row in conn.execute("PRAGMA table_info(race_results)").fetchall()}
+            if "prediction_id" not in pred_cols:
+                raise
+            p_defaults = {
+                "prediction_id": "''", "created_at": "''", "course": "''",
+                "top_horse": "''", "ai_score": "0", "ai_rank": "''",
+                "confidence": "0", "final_score": "0", "budget": "0",
+                "breakdown_json": "'{}'", "reasons_json": "'[]'",
+                "race_snapshot_json": "'{}'",
+            }
+            r_defaults = {
+                "actual_rank": "NULL", "return_amount": "0", "hit_win": "0",
+                "hit_place": "0", "profit": "0", "recorded_at": "NULL",
+            }
+            p_select = [f"p.{c}" if c in pred_cols else f"{d} AS {c}" for c, d in p_defaults.items()]
+            r_select = [f"r.{c}" if c in result_cols else f"{d} AS {c}" for c, d in r_defaults.items()]
+            if "prediction_id" in result_cols:
+                join = "LEFT JOIN race_results AS r ON p.prediction_id = r.prediction_id"
+            else:
+                join = ("LEFT JOIN (SELECT NULL AS prediction_id, NULL AS actual_rank, "
+                        "0 AS return_amount, 0 AS hit_win, 0 AS hit_place, "
+                        "0 AS profit, NULL AS recorded_at WHERE 0) AS r "
+                        "ON p.prediction_id = r.prediction_id")
+            fallback_where = "" if include_pending else "WHERE r.prediction_id IS NOT NULL"
+            fallback_sql = ("SELECT " + ", ".join(p_select + r_select) +
+                            " FROM predictions AS p " + join + " " + fallback_where +
+                            " ORDER BY 2 DESC")
+            rows = conn.execute(fallback_sql).fetchall()
     return [dict(row) for row in rows]
 
 
