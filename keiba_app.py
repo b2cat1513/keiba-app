@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.28"
+APP_PATCH_VERSION = "Ver1.20.29"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -190,6 +190,29 @@ with st.sidebar:
                     st.error("❌ データの解析に失敗しました。コードが正しいか確認してください。")
             else:
                 st.warning("⚠️ 貼り付け欄にコードを入力するか、上の読み込みボタンをもう一度試してください。")
+
+    # Ver1.20.29: セーブコード作成UIを復旧。現在の入力データを文字列化して表示・ダウンロードできる。
+    st.divider()
+    st.subheader("💾 セーブコードの作成・保存")
+    st.caption("現在の入力内容をコード化します。コードをコピーしてメモ帳などに保存してください。")
+    if st.button("🔐 現在の入力からセーブコードを作成", key="create_mobile_save_code_v12029", use_container_width=True):
+        try:
+            current_data = st.session_state.get("loaded_data", {}) or {}
+            st.session_state["generated_mobile_save_code"] = encode_for_mobile(current_data)
+        except Exception as exc:
+            st.session_state["generated_mobile_save_code"] = ""
+            st.error(f"セーブコードの作成に失敗しました: {exc}")
+    generated_code = st.session_state.get("generated_mobile_save_code", "")
+    if generated_code:
+        st.text_area("作成されたセーブコード（全体をコピー）", value=generated_code, height=140, key="generated_mobile_save_code_display_v12029")
+        st.download_button(
+            "⬇️ セーブコードをテキスト保存",
+            data=generated_code,
+            file_name="jenny_ai_save_code.txt",
+            mime="text/plain",
+            use_container_width=True,
+            key="download_mobile_save_code_v12029",
+        )
 
 # ==========================================
 # 🏇 1. ジョッキー事典マスターデータ
