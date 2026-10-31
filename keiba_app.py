@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.29"
+APP_PATCH_VERSION = "Ver1.20.30"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -194,10 +194,43 @@ with st.sidebar:
     # Ver1.20.29: セーブコード作成UIを復旧。現在の入力データを文字列化して表示・ダウンロードできる。
     st.divider()
     st.subheader("💾 セーブコードの作成・保存")
-    st.caption("現在の入力内容をコード化します。コードをコピーしてメモ帳などに保存してください。")
+    st.caption("画面上の馬データを同期してからコード化します。作成したコードをコピーして保存してください。")
     if st.button("🔐 現在の入力からセーブコードを作成", key="create_mobile_save_code_v12029", use_container_width=True):
         try:
-            current_data = st.session_state.get("loaded_data", {}) or {}
+            # Ver1.20.30: 画面上のウィジェット値をすべて loaded_data に同期してから保存する。
+            # 以前は loaded_data だけをエンコードしていたため、画面上で入力した値が
+            # 馬名以外（U指数・斤量・騎手等）保存されない場合があった。
+            current_data = dict(st.session_state.get("loaded_data", {}) or {})
+            current_data["rows"] = dict(current_data.get("rows", {}) or {})
+            _field_map = {
+                "num": "num", "name": "name", "pop": "pop",
+                "win_odds": "win_odds", "idx": "idx", "wgt": "wgt",
+                "wgh": "wgh", "l3f": "l3f", "sire": "sire",
+                "heavy_record": "rec", "jock": "jock",
+                "previous_jockey": "previous_jockey", "trainer": "trainer",
+                "owner": "owner", "custom_note": "custom_note",
+                "sel_track": "track", "sel_style": "style",
+                "sel_frame": "frame", "sel_dist_change": "dist_change",
+            }
+            for _i in range(1, 19):
+                _key = str(_i)
+                _row = dict(current_data["rows"].get(_key, {}) or {})
+                for _field, _widget_prefix in _field_map.items():
+                    _widget_key = f"{_widget_prefix}_{_i}"
+                    if _widget_key in st.session_state:
+                        _row[_field] = st.session_state[_widget_key]
+                _row.setdefault("num", _key)
+                current_data["rows"][_key] = _row
+
+            # 環境設定など、既に session_state に値がある項目も保持する。
+            for _data_key, _session_key in [
+                ("course", "course"), ("track_condition", "track_condition"),
+                ("race_class", "race_class"), ("track_bias", "track_bias"),
+                ("race_month", "race_month"), ("total_budget", "total_budget"),
+            ]:
+                if _session_key in st.session_state:
+                    current_data[_data_key] = st.session_state[_session_key]
+
             st.session_state["generated_mobile_save_code"] = encode_for_mobile(current_data)
         except Exception as exc:
             st.session_state["generated_mobile_save_code"] = ""
