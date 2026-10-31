@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.30"
+APP_PATCH_VERSION = "Ver1.20.31"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -9144,6 +9144,31 @@ def build_factor_learning(history_rows):
     return pd.DataFrame(result).sort_values(["効果差", "記録数"], ascending=[False, False])
 
 
+def _softmax_probability(score_values, temperature=10.0):
+    """能力スコアを安定したsoftmaxで勝率へ変換する。欠損・非数値にも安全に対応。"""
+    scores = pd.to_numeric(pd.Series(score_values), errors="coerce").astype(float)
+    if scores.empty:
+        return pd.Series(dtype=float, index=scores.index)
+    scores = scores.replace([float("inf"), float("-inf")], float("nan"))
+    # 欠損値は中立値（有効スコアの中央値、全件欠損なら0）で補完する。
+    valid_scores = scores.dropna()
+    neutral = float(valid_scores.median()) if not valid_scores.empty else 0.0
+    scores = scores.fillna(neutral)
+    try:
+        temp = float(temperature)
+    except (TypeError, ValueError):
+        temp = 10.0
+    if not pd.notna(temp) or temp <= 0:
+        temp = 10.0
+    temp = max(temp, 1e-6)
+    shifted = (scores - float(scores.max())) / temp
+    exps = np.exp(shifted.clip(lower=-700, upper=0))
+    total = float(exps.sum())
+    if not np.isfinite(total) or total <= 0:
+        return pd.Series([1.0 / len(scores)] * len(scores), index=scores.index, dtype=float)
+    return exps / total
+
+
 def _market_probability(odds_values, smoothing=0.15):
     odds = pd.to_numeric(odds_values, errors="coerce")
     valid = odds.notna() & (odds > 1.0)
@@ -9161,8 +9186,20 @@ def _market_probability(odds_values, smoothing=0.15):
 def add_odds_blended_probability(result_df, ai_weight=0.70, market_weight=0.30, temperature=10.0, smoothing=0.15):
     """能力値と単勝市場を確率化し、的中率重視の統合勝率を作る。"""
     df = result_df.copy()
+    # 予想結果の列名が異なる場合や、古い保存データで能力スコアが欠ける場合に備える。
+    if "能力スコア" not in df.columns:
+        fallback_col = next((c for c in ("最終スコア", "AI点", "スコア", "U指数") if c in df.columns), None)
+        if fallback_col is not None:
+            df["能力スコア"] = pd.to_numeric(df[fallback_col], errors="coerce")
+        else:
+            df["能力スコア"] = 0.0
+    df["能力スコア"] = pd.to_numeric(df["能力スコア"], errors="coerce")
+    df["能力スコア"] = df["能力スコア"].replace([float("inf"), float("-inf")], float("nan"))
+    df["能力スコア"] = df["能力スコア"].fillna(df["能力スコア"].median() if df["能力スコア"].notna().any() else 0.0)
+    if "単勝オッズ" not in df.columns:
+        df["単勝オッズ"] = float("nan")
     ai_prob = _softmax_probability(df["能力スコア"], temperature)
-    market_prob = _market_probability(df.get("単勝オッズ", pd.Series(index=df.index, dtype=float)), smoothing)
+    market_prob = _market_probability(df["単勝オッズ"], smoothing)
 
     if market_prob is None:
         blended = ai_prob
