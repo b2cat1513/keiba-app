@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.31"
+APP_PATCH_VERSION = "Ver1.20.32"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -9162,9 +9162,10 @@ def _softmax_probability(score_values, temperature=10.0):
         temp = 10.0
     temp = max(temp, 1e-6)
     shifted = (scores - float(scores.max())) / temp
-    exps = np.exp(shifted.clip(lower=-700, upper=0))
+    # NumPyはアプリ全体で無効化されているため、標準mathで計算する。
+    exps = shifted.clip(lower=-700, upper=0).map(math.exp)
     total = float(exps.sum())
-    if not np.isfinite(total) or total <= 0:
+    if not math.isfinite(total) or total <= 0:
         return pd.Series([1.0 / len(scores)] * len(scores), index=scores.index, dtype=float)
     return exps / total
 
