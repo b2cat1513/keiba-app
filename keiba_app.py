@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.32"
+APP_PATCH_VERSION = "Ver1.20.33"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -265,7 +265,6 @@ Ver1.18.16 modular
 
 UIやOCRから独立させ、騎手・血統・コース関連の共通処理を管理します。
 """
-import re
 
 JOCKEY_MASTER = {
     "C.ルメール": {
@@ -295,7 +294,7 @@ JOCKEY_MASTER = {
     },
     "松山弘平": {
         "base": 1.15,
-        "factors": {"芝": -0.05, "ダート": 0.05, "先行": 0.05, "差し": -0.05, "内枠": 0.05, "外枠": -0.05, "短距離": 0.05, "ダート": 0.15, "新馬戦": 0.15, "前哨戦": 0.15, "中山ダ1800": 0.15, "京都ダ1800": 0.15},
+        "factors": {"芝": -0.05, "ダート": 0.15, "先行": 0.05, "差し": -0.05, "内枠": 0.05, "外枠": -0.05, "短距離": 0.05, "新馬戦": 0.15, "前哨戦": 0.15, "中山ダ1800": 0.15, "京都ダ1800": 0.15},
         "note": "非常に堅実でダート◎。新馬戦&前哨戦◎、マイル以下の重賞◯、堀厩舎◯"
     },
     "武豊": {
@@ -3238,23 +3237,6 @@ COURSE_LINEAGE_RULES = {'東京芝1600m': [{'sire': 'ロードカナロア', 'sc
                 {'sire': 'アジアエクスプレス', 'score': 5.0, 'sex': ['牡', 'セ']},
                 {'sire': 'アメリカンペイトリオット', 'score': 5.0, 'sex': ['牝']}]}
 
-SIRE_NAME_ALIASES = {
-    "ドレフィン": "ドレフォン",
-    "シスターミニスター": "シニスターミニスター",
-    "ビックアーサー": "ビッグアーサー",
-    "スワーブリチャード": "スワーヴリチャード",
-    "マイルドユアビスケッツ": "マインドユアビスケッツ",
-}
-
-
-def normalize_sire_name(name):
-    """種牡馬名の表記揺れを統一する。"""
-    normalized = str(name or "").strip()
-    for old, new in SIRE_NAME_ALIASES.items():
-        normalized = normalized.replace(old, new)
-    return normalized
-
-
 def normalize_sex_code(sex):
     """性別表記を牡・牝・セへ統一する。"""
     return "セ" if sex in ("騸", "セ") else sex
@@ -3345,9 +3327,6 @@ def calculate_detailed_lineage_adjustment(
 """ジェニーAI予想 - OCR/画像解析モジュール
 Ver1.18.16 modular
 """
-import io
-import re
-import difflib
 
 try:
     from PIL import Image, ImageOps, ImageFilter
@@ -7726,6 +7705,8 @@ st.info(f"**現在の登録馬から算出された展開:** {pace_status} (逃�
 # 🧠 Ver1.07 学習結果による配点自動調整
 # ==========================================
 LEARNING_DB_PATH = Path(__file__).with_name("keiba_learning.db")
+DB_PATH = LEARNING_DB_PATH  # DBパスを共通化
+LEARNING_
 LEARNING_FACTORS = [
     "指数", "斤量", "馬体重", "格・斤量価値", "馬番・枠",
     "血統・コース", "脚質・距離", "距離適性", "コース実績", "騎手補正", "騎手条件", "人気補正",
@@ -8721,7 +8702,6 @@ def add_ai_comments(result_df):
 # ==========================================
 # 🧠 Ver1.06 過去予想保存・学習分析エンジン
 # ==========================================
-DB_PATH = Path(__file__).with_name("keiba_learning.db")
 
 
 def get_db_connection():
