@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.33"
+APP_PATCH_VERSION = "Ver1.20.34"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -7706,7 +7706,6 @@ st.info(f"**現在の登録馬から算出された展開:** {pace_status} (逃�
 # ==========================================
 LEARNING_DB_PATH = Path(__file__).with_name("keiba_learning.db")
 DB_PATH = LEARNING_DB_PATH  # DBパスを共通化
-LEARNING_
 LEARNING_FACTORS = [
     "指数", "斤量", "馬体重", "格・斤量価値", "馬番・枠",
     "血統・コース", "脚質・距離", "距離適性", "コース実績", "騎手補正", "騎手条件", "人気補正",
