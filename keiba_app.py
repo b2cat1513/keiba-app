@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.34"
+APP_PATCH_VERSION = "Ver1.20.35"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -9833,3 +9833,91 @@ st.info(
     "安全設計：倍率は0.85～1.15に制限し、既存ロジックを直接書き換えません。"
     "各馬の基本スコア計算後に差分だけを加えるため、設定をオフにすれば元の予想へ戻せます。"
 )
+
+
+# ==========================================
+# 📊 バックテスト用画像取り込み（Ver1.20.35）
+# 既存の予想ロジックには接続せず、画像OCRと確認用データ作成を独立して行う。
+# ==========================================
+st.divider()
+st.header("📊 バックテスト用データ取り込み")
+st.caption("過去レースの結果画像を読み取り、OCR原文を確認・修正してCSVに保存します。既存の予想ロジックや学習DBは変更しません。")
+
+with st.expander("📷 レース結果画像を読み込む", expanded=True):
+    bt_images = st.file_uploader(
+        "netkeibaなどのレース結果スクリーンショットを選択（複数可）",
+        type=["png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=True,
+        key="backtest_result_images_v12035",
+        help="まずは着順・馬番・馬名・単勝オッズが見えるレース結果画像を使ってください。",
+    )
+    bt_race_name = st.text_input("レース名", placeholder="例：スプリンターズステークス", key="bt_race_name_v12035")
+    bt_race_date = st.text_input("開催日", placeholder="例：2026-10-04", key="bt_race_date_v12035")
+
+    if bt_images:
+        if not OCR_AVAILABLE:
+            st.error("OCRを利用できません。Tesseract本体・日本語データ(jpn)・Pillow・pytesseractの設定を確認してください。")
+        else:
+            if "bt_ocr_texts_v12035" not in st.session_state:
+                st.session_state["bt_ocr_texts_v12035"] = {}
+            for img_file in bt_images:
+                if img_file.name not in st.session_state["bt_ocr_texts_v12035"]:
+                    try:
+                        img_file.seek(0)
+                        bt_img = Image.open(img_file)
+                        bt_img = ImageOps.exif_transpose(bt_img).convert("RGB")
+                        # 横長の結果表にも対応するため、幅を拡大してOCRする。
+                        if bt_img.width < 1400:
+                            scale = 1400 / max(1, bt_img.width)
+                            bt_img = bt_img.resize((1400, int(bt_img.height * scale)))
+                        try:
+                            bt_text = pytesseract.image_to_string(bt_img, lang="jpn+eng", config="--oem 3 --psm 6", timeout=30)
+                        except Exception:
+                            bt_text = pytesseract.image_to_string(bt_img, lang="eng", config="--oem 3 --psm 6", timeout=30)
+                        st.session_state["bt_ocr_texts_v12035"][img_file.name] = bt_text
+                    except Exception as bt_exc:
+                        st.error(f"{img_file.name} の読み取りに失敗しました：{bt_exc}")
+
+            for img_file in bt_images:
+                st.markdown(f"**📄 {img_file.name}**")
+                st.image(img_file, caption="読み込んだ画像", use_container_width=True)
+                raw_bt_text = st.session_state.get("bt_ocr_texts_v12035", {}).get(img_file.name, "")
+                st.text_area(
+                    "OCR読み取り結果（誤認識があればここで修正できます）",
+                    value=raw_bt_text,
+                    height=220,
+                    key=f"bt_ocr_edit_{img_file.name}_v12035",
+                )
+
+    st.markdown("#### 🧾 登録用データ")
+    st.caption("OCRは画像の文字を読み取る補助機能です。馬番・馬名・着順・オッズは必ず原画像と照合してください。")
+    bt_template = pd.DataFrame([
+        {"開催日": "", "レース名": "", "着順": 1, "馬番": 1, "馬名": "", "単勝オッズ": None, "上がり3F": None, "人気": None},
+    ])
+    st.download_button(
+        "📥 入力用CSVひな形をダウンロード",
+        data=bt_template.to_csv(index=False).encode("utf-8-sig"),
+        file_name="backtest_result_template.csv",
+        mime="text/csv",
+        key="bt_template_download_v12035",
+    )
+    bt_csv_file = st.file_uploader(
+        "確認・整理したCSVを読み込む（任意）",
+        type=["csv"],
+        key="bt_csv_upload_v12035",
+    )
+    if bt_csv_file is not None:
+        try:
+            bt_df = pd.read_csv(bt_csv_file)
+            st.dataframe(bt_df, use_container_width=True, hide_index=True)
+            st.download_button(
+                "✅ 読み込んだデータをCSV保存",
+                data=bt_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name="backtest_results_checked.csv",
+                mime="text/csv",
+                key="bt_csv_export_v12035",
+            )
+        except Exception as bt_csv_exc:
+            st.error(f"CSVを読み込めませんでした：{bt_csv_exc}")
+    else:
+        st.info("最初の段階では、画像OCR結果を確認・修正し、CSVひな形に整理して保存します。複数レースの自動集計は、データ形式を確認してから次の段階で追加します。")
