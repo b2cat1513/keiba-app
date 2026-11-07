@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.35"
+APP_PATCH_VERSION = "Ver1.20.36"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -9836,7 +9836,7 @@ st.info(
 
 
 # ==========================================
-# 📊 バックテスト用画像取り込み（Ver1.20.35）
+# 📊 バックテスト用画像・コピペ取り込み（Ver1.20.36）
 # 既存の予想ロジックには接続せず、画像OCRと確認用データ作成を独立して行う。
 # ==========================================
 st.divider()
@@ -9921,3 +9921,96 @@ with st.expander("📷 レース結果画像を読み込む", expanded=True):
             st.error(f"CSVを読み込めませんでした：{bt_csv_exc}")
     else:
         st.info("最初の段階では、画像OCR結果を確認・修正し、CSVひな形に整理して保存します。複数レースの自動集計は、データ形式を確認してから次の段階で追加します。")
+
+
+# ==========================================
+# 📋 U指数・レース結果のコピペ入力（Ver1.20.36）
+# 既存予想ロジック・学習DBとは独立。確認後CSVとして保存する。
+# ==========================================
+st.divider()
+st.subheader("📋 U指数・レース結果をコピペして入力")
+st.caption("ウマニティの出馬表と、netkeiba等の結果表をそれぞれコピーして貼り付けられます。貼り付けた原文は確認用に保持し、下の一覧表で正しい値を入力・修正してからCSVに保存してください。")
+
+bt_col1, bt_col2 = st.columns(2)
+with bt_col1:
+    bt_clip_u = st.text_area(
+        "① ウマニティ出馬表（U指数）を貼り付け",
+        height=230,
+        placeholder="出馬表の表部分をコピーして貼り付け\n例：馬番・馬名・U指数・予想オッズ・騎手・斤量",
+        key="bt_clip_u_v12036",
+    )
+with bt_col2:
+    bt_clip_result = st.text_area(
+        "② レース結果を貼り付け",
+        height=230,
+        placeholder="結果表の表部分をコピーして貼り付け\n例：着順・馬番・馬名・人気・単勝オッズ・上がり3F",
+        key="bt_clip_result_v12036",
+    )
+
+with st.expander("貼り付けデータの確認（原文）"):
+    if bt_clip_u.strip():
+        st.markdown("**U指数データ**")
+        st.code(bt_clip_u[:12000])
+    if bt_clip_result.strip():
+        st.markdown("**レース結果データ**")
+        st.code(bt_clip_result[:12000])
+    if not bt_clip_u.strip() and not bt_clip_result.strip():
+        st.info("上の欄にコピーした内容を貼り付けると、ここで原文を確認できます。")
+
+st.markdown("#### ③ 照合・修正用データ一覧")
+st.caption("馬番と馬名を照合しながら入力してください。U指数・実着順・オッズは、読み違いがないよう元ページと確認してください。")
+bt_cols = ["開催日", "競馬場", "レース番号", "レース名", "馬番", "馬名", "U指数", "実着順", "人気", "単勝オッズ", "単勝払戻(100円)"]
+bt_seed = pd.DataFrame([{
+    "開催日": bt_race_date if 'bt_race_date' in locals() else "",
+    "競馬場": "", "レース番号": "", "レース名": bt_race_name if 'bt_race_name' in locals() else "",
+    "馬番": None, "馬名": "", "U指数": None, "実着順": None,
+    "人気": None, "単勝オッズ": None, "単勝払戻(100円)": None,
+}], columns=bt_cols)
+
+# CSVを読み込んだ場合は編集表の初期値として利用。入力データは独立して扱う。
+bt_seed_upload = st.file_uploader("④ 以前保存したバックテストCSVを読み込む（任意）", type=["csv"], key="bt_seed_csv_v12036")
+if bt_seed_upload is not None:
+    try:
+        bt_loaded = pd.read_csv(bt_seed_upload)
+        for c in bt_cols:
+            if c not in bt_loaded.columns:
+                bt_loaded[c] = None
+        bt_seed = bt_loaded[bt_cols]
+        st.success(f"CSVを読み込みました（{len(bt_seed)}行）。内容を確認してください。")
+    except Exception as e:
+        st.error(f"CSVを読み込めませんでした：{e}")
+
+bt_edited = st.data_editor(
+    bt_seed,
+    num_rows="dynamic",
+    use_container_width=True,
+    hide_index=True,
+    key="bt_edit_table_v12036",
+    column_config={
+        "開催日": st.column_config.TextColumn(help="例：2026-06-04"),
+        "馬番": st.column_config.NumberColumn(min_value=1, max_value=18, step=1),
+        "U指数": st.column_config.NumberColumn(format="%.1f"),
+        "実着順": st.column_config.NumberColumn(min_value=1, step=1),
+        "人気": st.column_config.NumberColumn(min_value=1, step=1),
+        "単勝オッズ": st.column_config.NumberColumn(format="%.1f"),
+        "単勝払戻(100円)": st.column_config.NumberColumn(min_value=0, step=10),
+    },
+)
+
+bt_valid = bt_edited.copy()
+if "馬番" in bt_valid.columns:
+    bt_valid = bt_valid[bt_valid["馬番"].notna()]
+if len(bt_valid):
+    st.dataframe(bt_valid, use_container_width=True, hide_index=True)
+    st.download_button(
+        "💾 確認済みデータをCSV保存",
+        data=bt_valid.to_csv(index=False).encode("utf-8-sig"),
+        file_name="jenny_backtest_data.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key="bt_export_checked_v12036",
+    )
+else:
+    st.info("まず一覧表に馬番・馬名・U指数・実着順を入力してください。行は表の末尾をクリックして追加できます。")
+
+st.warning("このバージョンでは、貼り付け原文と確認済み一覧を扱う入力画面までを追加しています。原文からの自動項目分け・自動照合・回収率集計は、誤読やデータ混同を防ぐため次段階で実装します。登録データは既存の予想・学習DBには反映しません。")
