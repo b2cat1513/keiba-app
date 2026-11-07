@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.36"
+APP_PATCH_VERSION = "Ver1.20.37"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -9836,181 +9836,170 @@ st.info(
 
 
 # ==========================================
-# 📊 バックテスト用画像・コピペ取り込み（Ver1.20.36）
-# 既存の予想ロジックには接続せず、画像OCRと確認用データ作成を独立して行う。
+# 📊 バックテスト入力（OCR＋コピペ＋確認編集） Ver1.20.37
+# 既存予想ロジック・学習DBとは完全分離
 # ==========================================
 st.divider()
-st.header("📊 バックテスト用データ取り込み")
-st.caption("過去レースの結果画像を読み取り、OCR原文を確認・修正してCSVに保存します。既存の予想ロジックや学習DBは変更しません。")
+st.header("📊 過去レース・バックテストデータ登録")
+st.caption("画像OCRまたは表のコピペで取り込み、確認・修正してからCSV保存します。既存の予想ロジック・学習DBには接続しません。")
 
-with st.expander("📷 レース結果画像を読み込む", expanded=True):
-    bt_images = st.file_uploader(
-        "netkeibaなどのレース結果スクリーンショットを選択（複数可）",
-        type=["png", "jpg", "jpeg", "webp"],
-        accept_multiple_files=True,
-        key="backtest_result_images_v12035",
-        help="まずは着順・馬番・馬名・単勝オッズが見えるレース結果画像を使ってください。",
-    )
-    bt_race_name = st.text_input("レース名", placeholder="例：スプリンターズステークス", key="bt_race_name_v12035")
-    bt_race_date = st.text_input("開催日", placeholder="例：2026-10-04", key="bt_race_date_v12035")
-
-    if bt_images:
-        if not OCR_AVAILABLE:
-            st.error("OCRを利用できません。Tesseract本体・日本語データ(jpn)・Pillow・pytesseractの設定を確認してください。")
-        else:
-            if "bt_ocr_texts_v12035" not in st.session_state:
-                st.session_state["bt_ocr_texts_v12035"] = {}
-            for img_file in bt_images:
-                if img_file.name not in st.session_state["bt_ocr_texts_v12035"]:
-                    try:
-                        img_file.seek(0)
-                        bt_img = Image.open(img_file)
-                        bt_img = ImageOps.exif_transpose(bt_img).convert("RGB")
-                        # 横長の結果表にも対応するため、幅を拡大してOCRする。
-                        if bt_img.width < 1400:
-                            scale = 1400 / max(1, bt_img.width)
-                            bt_img = bt_img.resize((1400, int(bt_img.height * scale)))
-                        try:
-                            bt_text = pytesseract.image_to_string(bt_img, lang="jpn+eng", config="--oem 3 --psm 6", timeout=30)
-                        except Exception:
-                            bt_text = pytesseract.image_to_string(bt_img, lang="eng", config="--oem 3 --psm 6", timeout=30)
-                        st.session_state["bt_ocr_texts_v12035"][img_file.name] = bt_text
-                    except Exception as bt_exc:
-                        st.error(f"{img_file.name} の読み取りに失敗しました：{bt_exc}")
-
-            for img_file in bt_images:
-                st.markdown(f"**📄 {img_file.name}**")
-                st.image(img_file, caption="読み込んだ画像", use_container_width=True)
-                raw_bt_text = st.session_state.get("bt_ocr_texts_v12035", {}).get(img_file.name, "")
-                st.text_area(
-                    "OCR読み取り結果（誤認識があればここで修正できます）",
-                    value=raw_bt_text,
-                    height=220,
-                    key=f"bt_ocr_edit_{img_file.name}_v12035",
-                )
-
-    st.markdown("#### 🧾 登録用データ")
-    st.caption("OCRは画像の文字を読み取る補助機能です。馬番・馬名・着順・オッズは必ず原画像と照合してください。")
-    bt_template = pd.DataFrame([
-        {"開催日": "", "レース名": "", "着順": 1, "馬番": 1, "馬名": "", "単勝オッズ": None, "上がり3F": None, "人気": None},
-    ])
-    st.download_button(
-        "📥 入力用CSVひな形をダウンロード",
-        data=bt_template.to_csv(index=False).encode("utf-8-sig"),
-        file_name="backtest_result_template.csv",
-        mime="text/csv",
-        key="bt_template_download_v12035",
-    )
-    bt_csv_file = st.file_uploader(
-        "確認・整理したCSVを読み込む（任意）",
-        type=["csv"],
-        key="bt_csv_upload_v12035",
-    )
-    if bt_csv_file is not None:
-        try:
-            bt_df = pd.read_csv(bt_csv_file)
-            st.dataframe(bt_df, use_container_width=True, hide_index=True)
-            st.download_button(
-                "✅ 読み込んだデータをCSV保存",
-                data=bt_df.to_csv(index=False).encode("utf-8-sig"),
-                file_name="backtest_results_checked.csv",
-                mime="text/csv",
-                key="bt_csv_export_v12035",
-            )
-        except Exception as bt_csv_exc:
-            st.error(f"CSVを読み込めませんでした：{bt_csv_exc}")
-    else:
-        st.info("最初の段階では、画像OCR結果を確認・修正し、CSVひな形に整理して保存します。複数レースの自動集計は、データ形式を確認してから次の段階で追加します。")
-
-
-# ==========================================
-# 📋 U指数・レース結果のコピペ入力（Ver1.20.36）
-# 既存予想ロジック・学習DBとは独立。確認後CSVとして保存する。
-# ==========================================
-st.divider()
-st.subheader("📋 U指数・レース結果をコピペして入力")
-st.caption("ウマニティの出馬表と、netkeiba等の結果表をそれぞれコピーして貼り付けられます。貼り付けた原文は確認用に保持し、下の一覧表で正しい値を入力・修正してからCSVに保存してください。")
-
-bt_col1, bt_col2 = st.columns(2)
-with bt_col1:
-    bt_clip_u = st.text_area(
-        "① ウマニティ出馬表（U指数）を貼り付け",
-        height=230,
-        placeholder="出馬表の表部分をコピーして貼り付け\n例：馬番・馬名・U指数・予想オッズ・騎手・斤量",
-        key="bt_clip_u_v12036",
-    )
-with bt_col2:
-    bt_clip_result = st.text_area(
-        "② レース結果を貼り付け",
-        height=230,
-        placeholder="結果表の表部分をコピーして貼り付け\n例：着順・馬番・馬名・人気・単勝オッズ・上がり3F",
-        key="bt_clip_result_v12036",
-    )
-
-with st.expander("貼り付けデータの確認（原文）"):
-    if bt_clip_u.strip():
-        st.markdown("**U指数データ**")
-        st.code(bt_clip_u[:12000])
-    if bt_clip_result.strip():
-        st.markdown("**レース結果データ**")
-        st.code(bt_clip_result[:12000])
-    if not bt_clip_u.strip() and not bt_clip_result.strip():
-        st.info("上の欄にコピーした内容を貼り付けると、ここで原文を確認できます。")
-
-st.markdown("#### ③ 照合・修正用データ一覧")
-st.caption("馬番と馬名を照合しながら入力してください。U指数・実着順・オッズは、読み違いがないよう元ページと確認してください。")
-bt_cols = ["開催日", "競馬場", "レース番号", "レース名", "馬番", "馬名", "U指数", "実着順", "人気", "単勝オッズ", "単勝払戻(100円)"]
-bt_seed = pd.DataFrame([{
-    "開催日": bt_race_date if 'bt_race_date' in locals() else "",
-    "競馬場": "", "レース番号": "", "レース名": bt_race_name if 'bt_race_name' in locals() else "",
-    "馬番": None, "馬名": "", "U指数": None, "実着順": None,
-    "人気": None, "単勝オッズ": None, "単勝払戻(100円)": None,
-}], columns=bt_cols)
-
-# CSVを読み込んだ場合は編集表の初期値として利用。入力データは独立して扱う。
-bt_seed_upload = st.file_uploader("④ 以前保存したバックテストCSVを読み込む（任意）", type=["csv"], key="bt_seed_csv_v12036")
-if bt_seed_upload is not None:
+# OCR/TSVの共通取り込み補助。自動抽出できない項目は空欄のまま編集表で補完します。
+def _bt_ocr_image(upload):
+    if not OCR_AVAILABLE:
+        return "", "OCR環境がありません（Pillow・pytesseract・Tesseract日本語データが必要です）。"
     try:
-        bt_loaded = pd.read_csv(bt_seed_upload)
-        for c in bt_cols:
-            if c not in bt_loaded.columns:
-                bt_loaded[c] = None
-        bt_seed = bt_loaded[bt_cols]
-        st.success(f"CSVを読み込みました（{len(bt_seed)}行）。内容を確認してください。")
-    except Exception as e:
-        st.error(f"CSVを読み込めませんでした：{e}")
+        upload.seek(0)
+        im = Image.open(upload)
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        if im.width < 1800:
+            ratio = 1800 / max(1, im.width)
+            im = im.resize((1800, int(im.height * ratio)))
+        # 表の列構造を保ちやすい単一ブロック認識を優先
+        try:
+            txt = pytesseract.image_to_string(im, lang="jpn+eng", config="--oem 3 --psm 6", timeout=45)
+        except Exception:
+            txt = pytesseract.image_to_string(im, lang="eng", config="--oem 3 --psm 6", timeout=45)
+        return txt, ""
+    except Exception as exc:
+        return "", str(exc)
 
-bt_edited = st.data_editor(
-    bt_seed,
-    num_rows="dynamic",
-    use_container_width=True,
-    hide_index=True,
-    key="bt_edit_table_v12036",
-    column_config={
-        "開催日": st.column_config.TextColumn(help="例：2026-06-04"),
-        "馬番": st.column_config.NumberColumn(min_value=1, max_value=18, step=1),
-        "U指数": st.column_config.NumberColumn(format="%.1f"),
-        "実着順": st.column_config.NumberColumn(min_value=1, step=1),
-        "人気": st.column_config.NumberColumn(min_value=1, step=1),
-        "単勝オッズ": st.column_config.NumberColumn(format="%.1f"),
-        "単勝払戻(100円)": st.column_config.NumberColumn(min_value=0, step=10),
-    },
-)
+def _bt_parse_tsv(text, kind):
+    """列見出しが含まれるタブ区切りコピーを優先して列位置で抽出する。"""
+    lines=[line.rstrip("\r") for line in (text or "").splitlines() if "\t" in line]
+    if not lines: return []
+    header_idx=None; header=[]
+    for i,line in enumerate(lines):
+        cells=[c.strip() for c in line.split("\t")]
+        joined=" ".join(cells)
+        if ("馬名" in joined) and ("馬番" in joined or "着順" in joined or "U指数" in joined):
+            header_idx=i; header=cells; break
+    if header_idx is None: return []
+    def col_index(words):
+        for i,h in enumerate(header):
+            if any(w in h for w in words): return i
+        return None
+    ix={
+        "馬番":col_index(["馬番"]), "馬名":col_index(["馬名"]),
+        "U指数":col_index(["U指数"]), "実着順":col_index(["着順","着順"]),
+        "人気":col_index(["人気"]), "単勝オッズ":col_index(["単勝オッズ","単勝"]),
+        "騎手":col_index(["騎手"]), "斤量":col_index(["斤量","負担重量"]),
+    }
+    def get(cells,key):
+        j=ix.get(key)
+        return cells[j].strip() if j is not None and j<len(cells) else ""
+    rows=[]
+    for line in lines[header_idx+1:]:
+        cells=[c.strip() for c in line.split("\t")]
+        no=get(cells,"馬番"); name=get(cells,"馬名")
+        if not re.fullmatch(r"\d{1,2}",no) or not name: continue
+        rec={"馬番":int(no),"馬名":name,"U指数":None,"実着順":None,"人気":None,"単勝オッズ":None,"騎手":get(cells,"騎手"),"斤量":None}
+        for key in ("U指数","実着順","人気","単勝オッズ","斤量"):
+            raw=get(cells,key).replace(",","").replace("倍","").replace("kg","").strip()
+            m=re.search(r"\d+(?:\.\d+)?",raw)
+            if m:
+                try: rec[key]=float(m.group())
+                except Exception: pass
+        rows.append(rec)
+    return rows
 
-bt_valid = bt_edited.copy()
-if "馬番" in bt_valid.columns:
-    bt_valid = bt_valid[bt_valid["馬番"].notna()]
-if len(bt_valid):
-    st.dataframe(bt_valid, use_container_width=True, hide_index=True)
-    st.download_button(
-        "💾 確認済みデータをCSV保存",
-        data=bt_valid.to_csv(index=False).encode("utf-8-sig"),
-        file_name="jenny_backtest_data.csv",
-        mime="text/csv",
-        use_container_width=True,
-        key="bt_export_checked_v12036",
-    )
+bt_cols=["開催日","競馬場","レース番号","レース名","馬番","馬名","U指数","実着順","人気","単勝オッズ","単勝払戻(100円)","騎手","斤量"]
+bt_c1,bt_c2=st.columns(2)
+with bt_c1:
+    bt_date=st.text_input("開催日（例：2026-06-04）",key="bt37_date")
+    bt_track=st.text_input("競馬場（例：阪神）",key="bt37_track")
+with bt_c2:
+    bt_rno=st.text_input("レース番号（例：11R）",key="bt37_rno")
+    bt_name=st.text_input("レース名",key="bt37_name")
+
+st.subheader("① U指数・出馬表")
+u_img=st.file_uploader("ウマニティのU指数画像（複数可）",type=["png","jpg","jpeg","webp"],accept_multiple_files=True,key="bt37_uimg")
+u_clip=st.text_area("または、ウマニティの表をコピーして貼り付け",height=120,key="bt37_uclip",placeholder="表を選択してコピーし、ここに貼り付けてください。タブ区切りのコピーを推奨します。")
+
+st.subheader("② 実際のレース結果・払戻")
+r_img=st.file_uploader("netkeiba等の着順・払戻画像（複数可）",type=["png","jpg","jpeg","webp"],accept_multiple_files=True,key="bt37_rimg")
+r_clip=st.text_area("または、結果表をコピーして貼り付け",height=120,key="bt37_rclip",placeholder="着順・馬番・馬名・人気・単勝オッズなどを貼り付けてください。")
+
+# 画像OCRは各画像の原文を保持し、利用者が内容を目視修正できるようにする。
+ocr_u=[]; ocr_r=[]
+for f in (u_img or []):
+    txt,err=_bt_ocr_image(f)
+    if err: st.error(f"{f.name}: {err}")
+    else:
+        ocr_u.append((f.name,txt))
+for f in (r_img or []):
+    txt,err=_bt_ocr_image(f)
+    if err: st.error(f"{f.name}: {err}")
+    else:
+        ocr_r.append((f.name,txt))
+
+with st.expander("OCRで読み取った原文（誤認識の修正・確認用）",expanded=bool(ocr_u or ocr_r)):
+    for idx,(fname,txt) in enumerate(ocr_u):
+        st.markdown(f"**U指数画像：{fname}**")
+        st.text_area("OCR原文（U指数）",value=txt,height=150,key=f"bt37_ocr_u_{idx}")
+    for idx,(fname,txt) in enumerate(ocr_r):
+        st.markdown(f"**結果画像：{fname}**")
+        st.text_area("OCR原文（結果）",value=txt,height=150,key=f"bt37_ocr_r_{idx}")
+
+# 入力原文を安全にテーブル化。画像OCRは自動確定せず、編集表で必ず確認する。
+all_u_text="\n".join([x[1] for x in ocr_u])
+all_r_text="\n".join([x[1] for x in ocr_r])
+parsed_u=_bt_parse_tsv(u_clip,"u")
+parsed_r=_bt_parse_tsv(r_clip,"r")
+# TSVで抽出できない画像OCRは原文表示にとどめ、誤った列推定をしない。
+parsed=[]
+by_no={}
+for rec in parsed_u:
+    by_no[rec["馬番"]]=rec.copy()
+for rec in parsed_r:
+    base=by_no.setdefault(rec["馬番"],{"馬番":rec["馬番"],"馬名":rec["馬名"]})
+    for k in ("実着順","人気","単勝オッズ"):
+        if rec.get(k) is not None: base[k]=rec[k]
+    if not base.get("馬名") and rec.get("馬名"): base["馬名"]=rec["馬名"]
+for no,rec in sorted(by_no.items()):
+    rec.update({"開催日":bt_date,"競馬場":bt_track,"レース番号":bt_rno,"レース名":bt_name})
+    parsed.append(rec)
+
+st.subheader("③ 照合・修正できる登録一覧")
+st.caption("貼り付けたタブ区切りデータから安全に判定できた項目を仮入力します。OCR画像の項目は原文を確認し、必要な値を下の表へ入力してください。馬番・馬名・指数・着順は登録前に必ず確認してください。")
+if parsed:
+    seed=pd.DataFrame(parsed)
 else:
-    st.info("まず一覧表に馬番・馬名・U指数・実着順を入力してください。行は表の末尾をクリックして追加できます。")
+    seed=pd.DataFrame([{c:(bt_date if c=="開催日" else bt_track if c=="競馬場" else bt_rno if c=="レース番号" else bt_name if c=="レース名" else None if c in ("馬番","U指数","実着順","人気","単勝オッズ","単勝払戻(100円)","斤量") else "") for c in bt_cols}])
+for c in bt_cols:
+    if c not in seed.columns: seed[c]=None
+seed=seed[bt_cols]
+old_csv=st.file_uploader("以前保存したバックテストCSVを読み込む（任意）",type=["csv"],key="bt37_csvin")
+if old_csv is not None:
+    try:
+        loaded=pd.read_csv(old_csv)
+        for c in bt_cols:
+            if c not in loaded.columns: loaded[c]=None
+        seed=loaded[bt_cols]
+        st.success(f"CSVを読み込みました：{len(seed)}行")
+    except Exception as exc: st.error(f"CSV読み込みエラー：{exc}")
 
-st.warning("このバージョンでは、貼り付け原文と確認済み一覧を扱う入力画面までを追加しています。原文からの自動項目分け・自動照合・回収率集計は、誤読やデータ混同を防ぐため次段階で実装します。登録データは既存の予想・学習DBには反映しません。")
+edited=st.data_editor(seed,num_rows="dynamic",use_container_width=True,hide_index=True,key="bt37_editor",column_config={
+    "馬番":st.column_config.NumberColumn(min_value=1,max_value=18,step=1),
+    "U指数":st.column_config.NumberColumn(format="%.1f"),
+    "実着順":st.column_config.NumberColumn(min_value=1,max_value=18,step=1),
+    "人気":st.column_config.NumberColumn(min_value=1,max_value=18,step=1),
+    "単勝オッズ":st.column_config.NumberColumn(min_value=0,format="%.1f"),
+    "単勝払戻(100円)":st.column_config.NumberColumn(min_value=0,step=10),
+    "斤量":st.column_config.NumberColumn(min_value=0,format="%.1f"),
+})
+
+valid=edited.copy()
+valid=valid[valid["馬番"].notna()]
+if len(valid):
+    # 重複馬番・欠損を登録前に警告
+    dup=valid[valid["馬番"].duplicated(keep=False)]["馬番"].astype(int).tolist()
+    if dup: st.warning(f"馬番が重複しています：{sorted(set(dup))}。修正してから保存してください。")
+    missing=valid[valid["馬名"].fillna("").astype(str).str.strip()==""]
+    if len(missing): st.warning(f"馬名未入力が{len(missing)}頭あります。")
+    st.markdown("**登録対象プレビュー**")
+    st.dataframe(valid,use_container_width=True,hide_index=True)
+    st.download_button("💾 確認済みデータをCSV保存",data=valid.to_csv(index=False).encode("utf-8-sig"),file_name="jenny_backtest_data.csv",mime="text/csv",use_container_width=True,key="bt37_csvout")
+else:
+    st.info("データを貼り付けるか、画像を読み込み、一覧表に馬番を入力してください。")
+
+st.info("入力方式の判断：コピペはタブ区切りの列が保たれる場合に優先します。画像しかない場合はOCRを使います。OCR結果は誤認識があり得るため、馬番・馬名・U指数・着順・払戻を原画像と照合してから保存してください。払戻の組み合わせ別自動集計と回収率計算は、データの確定後に追加します。")
