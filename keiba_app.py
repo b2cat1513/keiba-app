@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.38"
+APP_PATCH_VERSION = "Ver1.20.39"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -9836,7 +9836,7 @@ st.info(
 
 
 # ==========================================
-# 📊 バックテスト入力（OCR＋コピペ＋確認編集） Ver1.20.38
+# 📊 バックテスト入力（OCR＋コピペ＋確認編集） Ver1.20.39
 # 既存予想ロジック・学習DBとは完全分離
 # ==========================================
 st.divider()
@@ -9857,20 +9857,24 @@ def _bt_ocr_image(upload):
         if full.width < 2400:
             ratio=2400/max(1,full.width)
             full=full.resize((2400,int(full.height*ratio)))
-        for candidate in (full,):
+        # 全体OCRはページ情報の補助用。表の行解析は中央表のOCRを優先する。
+        for psm in (6, 11, 4):
             try:
-                candidates.append(pytesseract.image_to_string(candidate,lang="jpn+eng",config="--oem 3 --psm 4",timeout=60))
+                candidates.append(pytesseract.image_to_string(full,lang="jpn+eng",config=f"--oem 3 --psm {psm}",timeout=60))
             except Exception:
                 pass
         w,h=im.size
-        # ウマニティ・netkeibaの中央寄りにある出馬表／着順表を対象にする
         if w >= 900 and h >= 500:
-            table=im.crop((int(w*.15),int(h*.12),int(w*.88),int(h*.82)))
-            table=table.resize((table.width*2,table.height*2))
-            try:
-                candidates.append(pytesseract.image_to_string(table,lang="jpn+eng",config="--oem 3 --psm 4",timeout=60))
-            except Exception:
-                pass
+            # ブラウザの左右広告・上下バーを除いた中央コンテンツ領域
+            table=im.crop((int(w*.17),int(h*.16),int(w*.83),int(h*.84)))
+            table=table.resize((table.width*3,table.height*3))
+            gray=ImageOps.grayscale(table)
+            gray=ImageOps.autocontrast(gray)
+            for psm in (6, 11, 4):
+                try:
+                    candidates.append(pytesseract.image_to_string(gray,lang="jpn+eng",config=f"--oem 3 --psm {psm}",timeout=60))
+                except Exception:
+                    pass
         if not candidates:
             return "", "OCRを実行できませんでした。"
         txt=max(candidates,key=lambda x:len(x.strip()))
@@ -9885,47 +9889,113 @@ def _bt_num(v):
     except Exception: return None
 
 def _bt_parse_umanity_ocr(text):
-    """ウマニティOCR行から馬番・U指数・馬名を抽出。曖昧な行は採用しない。"""
+    """ウマニティの行OCRから馬番・U指数・馬名を抽出する。
+
+    ウマニティ表は「枠番 馬番 My予想印 U指数 馬名 性齢…」の列構成。
+    My予想印の文字化けや欠落を許容し、性齢をアンカーに馬名の範囲を決める。
+    曖昧な行や同一馬番の競合は自動確定しない。
+    """
     rows=[]
-    for line in (text or "").splitlines():
-        line=re.sub(r"\s+", " ", line).strip()
-        if not line: continue
-        # 例: 1 1 99.3-B レッドモンレーヴ 牡7 58.0 ...
-        m=re.search(r"^\s*\d{1,2}\s+(\d{1,2})\s+(\d{2,3}\.\d)\s*[-ー―A-Z0-9]*\s+(.+?)\s+(?:牡|牝|セ)\s*\d", line)
-        if not m:
-            # OCRで枠番が欠落した場合の控えめな形式
-            m=re.search(r"^\s*(\d{1,2})\s+(\d{2,3}\.\d)\s*[-ー―A-Z0-9]*\s+(.+?)\s+(?:牡|牝|セ)\s*\d", line)
-        if not m: continue
-        no=int(m.group(1)); u=_bt_num(m.group(2)); name=m.group(3).strip(" |　-_")
-        if not (1 <= no <= 18) or not u or not name: continue
-        # 馬名候補に表見出しや広告が混ざった行は除外
-        if any(x in name for x in ("U指数", "馬名", "出馬表", "レース")): continue
-        rows.append({"馬番":no,"馬名":name,"U指数":u})
-    # 同じ馬番が複数回OCRされた場合は最初の候補を保持
-    out={}
-    for r in rows: out.setdefault(r["馬番"],r)
-    return [out[k] for k in sorted(out)]
+    for raw_line in (text or "").splitlines():
+        line=re.sub(r"\s+", " ", str(raw_line)).strip()
+        if not line:
+            continue
+        # まず、馬名・性齢より前にあるU指数を検出する。
+        sex_match=re.search(r"(?:牡|牝|セ)\s*\d+", line)
+        if not sex_match:
+            continue
+        left=line[:sex_match.start()].strip()
+        # U指数は通常 99.3 / 101.2。OCRが小数点を落とした場合は採用しない。
+        u_matches=list(re.finditer(r"(?<!\d)(\d{2,3})[.．](\d)(?!\d)", left))
+        if not u_matches:
+            continue
+        um=u_matches[-1]
+        u=float(f"{um.group(1)}.{um.group(2)}")
+        # U指数より前の冒頭2つの整数を「枠番・馬番」として読む。
+        prefix=left[:um.start()]
+        nums=re.findall(r"(?<!\d)(\d{1,2})(?!\d)", prefix)
+        if len(nums)<2:
+            # 枠番と馬番のどちらかが欠けた行は誤照合防止のため自動採用しない。
+            continue
+        # 枠番・馬番のうち最後の独立整数を馬番とする。
+        no=int(nums[-1])
+        if not (1<=no<=18):
+            continue
+        # U指数と性齢の間が馬名。先頭の予想印記号・区切り文字だけ除く。
+        name_part=line[um.end():sex_match.start()]
+        name_part=re.sub(r"^[\s|:：=ー―・●◎○▲△☆★A-Z0-9-]+", "", name_part).strip()
+        name_part=re.sub(r"[|｜]+$", "", name_part).strip()
+        if len(name_part)<2 or any(x in name_part for x in ("U指数","馬名","出馬表","レース")):
+            continue
+        rows.append({"馬番":no,"馬名":name_part,"U指数":u})
+    # 重複馬番は同じ候補なら1件にし、異なる候補なら曖昧として除外。
+    grouped={}
+    for r in rows:
+        grouped.setdefault(r["馬番"],[]).append(r)
+    out=[]
+    for no, candidates in sorted(grouped.items()):
+        unique={(c["馬名"],c["U指数"]) for c in candidates}
+        if len(unique)==1:
+            out.append(candidates[0])
+    return out
+
 
 def _bt_parse_result_ocr(text):
-    """netkeiba着順表の行から着順・馬番・馬名・人気・単勝オッズを抽出。"""
+    """netkeiba結果表の行OCRから着順・馬番・馬名・人気・単勝オッズを抽出。
+
+    着順/枠番/馬番/馬名/性齢/斤量/騎手/タイム/着差/人気/単勝オッズの順を想定。
+    OCRで枠番や記号が欠落しても、性齢・タイムを目印に抽出する。
+    """
     rows=[]
-    for line in (text or "").splitlines():
-        line=re.sub(r"\s+", " ", line).strip()
-        if not line: continue
-        # 例: 1 回 16 ピューロマジック 牝5 56.0 ... 9 24.5 35.6
-        m=re.search(r"^\s*(\d{1,2})\s+(?:\S+\s+)?(\d{1,2})\s+(.+?)\s+(?:牡|牝|セ)\s*\d+\s+[\d.]+\s+.*?\d:\d{2}\.\d+\s+(?:\S+\s+)?(\d{1,2})\s+([\d.]+)", line)
-        if not m:
-            # 枠番のOCRが欠けた行（例: 10 3 ママコチャ ...）
-            m=re.search(r"^\s*(\d{1,2})\s+(\d{1,2})\s+(.+?)\s+(?:牡|牝|セ)\s*\d+\s+[\d.]+\s+.*?\d:\d{2}\.\d+\s+(?:\S+\s+)?(\d{1,2})\s+([\d.]+)", line)
-        if not m: continue
-        rank=int(m.group(1)); no=int(m.group(2)); name=m.group(3).strip(" |　-_")
-        pop=_bt_num(m.group(4)); odds=_bt_num(m.group(5))
-        if not (1 <= no <= 18 and 1 <= rank <= 18) or not name: continue
-        if any(x in name for x in ("払戻", "コーナー", "ゴール後")): continue
+    for raw_line in (text or "").splitlines():
+        line=re.sub(r"\s+", " ", str(raw_line)).strip()
+        if not line:
+            continue
+        # 行頭の着順と、性齢の位置を確定する。
+        head=re.match(r"^(\d{1,2})\s+", line)
+        sex=re.search(r"(?:牡|牝|セ)\s*\d+", line)
+        time=re.search(r"\d{1,2}:\d{2}\.\d+", line)
+        if not head or not sex or not time or sex.start()<=head.end():
+            continue
+        rank=int(head.group(1))
+        if not 1<=rank<=18:
+            continue
+        # 性齢より前の範囲から、馬番を抽出。通常は枠番の次の整数。
+        before=line[head.end():sex.start()].strip()
+        nums=re.findall(r"(?<!\d)(\d{1,2})(?!\d)", before)
+        if len(nums)<2:
+            # 枠番または馬番のOCRが欠けた行は推測で登録しない。
+            continue
+        # 着順の後にある枠番・馬番のうち最後を馬番として採用。
+        no=int(nums[-1])
+        if not 1<=no<=18:
+            continue
+        num_matches=list(re.finditer(r"(?<!\d)\d{1,2}(?!\d)", before))
+        name_start=num_matches[-1].end()
+        name=before[name_start:].strip(" |｜:：-_・")
+        name=re.sub(r"^[⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳①②③④⑤⑥⑦⑧⑨⓪]+", "", name).strip()
+        if len(name)<2 or any(x in name for x in ("払戻","コーナー","ゴール後")):
+            continue
+        # タイム直後の着差を飛ばし、人気→単勝オッズを取得する。
+        after=line[time.end():].strip()
+        after=re.sub(r"^(?:クビ|ハナ|アタマ|大差|同着|\d+(?:\.\d+)?/\d+|\d+/\d+)\s*", "", after)
+        tail_nums=re.findall(r"(?<!\d)(\d{1,3}(?:\.\d+)?)(?!\d)", after)
+        pop=odds=None
+        for i, token in enumerate(tail_nums[:-1]):
+            val=_bt_num(token); nxt=_bt_num(tail_nums[i+1])
+            if val is not None and float(val).is_integer() and 1<=val<=18 and nxt is not None and 0<nxt<1000:
+                pop=int(val); odds=float(nxt); break
         rows.append({"馬番":no,"馬名":name,"実着順":rank,"人気":pop,"単勝オッズ":odds})
-    out={}
-    for r in rows: out.setdefault(r["馬番"],r)
-    return [out[k] for k in sorted(out)]
+    # 馬番重複は同一内容のみ統合。競合する場合は除外して手修正を促す。
+    grouped={}
+    for r in rows:
+        grouped.setdefault(r["馬番"],[]).append(r)
+    out=[]
+    for no,candidates in sorted(grouped.items()):
+        unique={(c["実着順"],c["馬名"]) for c in candidates}
+        if len(unique)==1:
+            out.append(candidates[0])
+    return out
 
 def _bt_parse_tsv(text, kind):
     """列見出し付きタブ区切りコピーを列名で抽出。"""
@@ -9958,18 +10028,18 @@ def _bt_parse_tsv(text, kind):
 bt_cols=["開催日","競馬場","レース番号","レース名","馬番","馬名","U指数","実着順","人気","単勝オッズ","単勝払戻(100円)","騎手","斤量"]
 bt_c1,bt_c2=st.columns(2)
 with bt_c1:
-    bt_date=st.text_input("開催日（例：2026-06-04）",key="bt38_date")
-    bt_track=st.text_input("競馬場（例：阪神）",key="bt38_track")
+    bt_date=st.text_input("開催日（例：2026-06-04）",key="bt39_date")
+    bt_track=st.text_input("競馬場（例：阪神）",key="bt39_track")
 with bt_c2:
-    bt_rno=st.text_input("レース番号（例：11R）",key="bt38_rno")
-    bt_name=st.text_input("レース名",key="bt38_name")
+    bt_rno=st.text_input("レース番号（例：11R）",key="bt39_rno")
+    bt_name=st.text_input("レース名",key="bt39_name")
 
 st.subheader("① U指数・出馬表")
-u_img=st.file_uploader("ウマニティのU指数画像（複数可）",type=["png","jpg","jpeg","webp"],accept_multiple_files=True,key="bt38_uimg")
-u_clip=st.text_area("または、ウマニティの表をコピーして貼り付け",height=100,key="bt38_uclip",placeholder="表を選択してコピーし、ここに貼り付けてください。タブ区切りのコピーを推奨します。")
+u_img=st.file_uploader("ウマニティのU指数画像（複数可）",type=["png","jpg","jpeg","webp"],accept_multiple_files=True,key="bt39_uimg")
+u_clip=st.text_area("または、ウマニティの表をコピーして貼り付け",height=100,key="bt39_uclip",placeholder="表を選択してコピーし、ここに貼り付けてください。タブ区切りのコピーを推奨します。")
 st.subheader("② 実際のレース結果・払戻")
-r_img=st.file_uploader("netkeiba等の着順・払戻画像（複数可）",type=["png","jpg","jpeg","webp"],accept_multiple_files=True,key="bt38_rimg")
-r_clip=st.text_area("または、結果表をコピーして貼り付け",height=100,key="bt38_rclip",placeholder="着順・馬番・馬名・人気・単勝オッズなどを貼り付けてください。")
+r_img=st.file_uploader("netkeiba等の着順・払戻画像（複数可）",type=["png","jpg","jpeg","webp"],accept_multiple_files=True,key="bt39_rimg")
+r_clip=st.text_area("または、結果表をコピーして貼り付け",height=100,key="bt39_rclip",placeholder="着順・馬番・馬名・人気・単勝オッズなどを貼り付けてください。")
 
 ocr_u=[]; ocr_r=[]
 for f in (u_img or []):
@@ -9983,10 +10053,10 @@ for f in (r_img or []):
 with st.expander("OCRで読み取った原文（誤認識の確認用）",expanded=bool(ocr_u or ocr_r)):
     for idx,(fname,txt) in enumerate(ocr_u):
         st.markdown(f"**U指数画像：{fname}**")
-        st.text_area("OCR原文（U指数）",value=txt,height=140,key=f"bt38_ocr_u_{idx}")
+        st.text_area("OCR原文（U指数）",value=txt,height=140,key=f"bt39_ocr_u_{idx}")
     for idx,(fname,txt) in enumerate(ocr_r):
         st.markdown(f"**結果画像：{fname}**")
-        st.text_area("OCR原文（結果）",value=txt,height=140,key=f"bt38_ocr_r_{idx}")
+        st.text_area("OCR原文（結果）",value=txt,height=140,key=f"bt39_ocr_r_{idx}")
 
 u_ocr_rows=[]; r_ocr_rows=[]
 for _,txt in ocr_u: u_ocr_rows.extend(_bt_parse_umanity_ocr(txt))
@@ -10007,13 +10077,19 @@ for no,rec in sorted(by_no.items()):
     parsed.append(rec)
 
 st.subheader("③ 照合・修正できる登録一覧")
+if (u_img or r_img) and (len(parsed_u) < 8 or len(parsed_r) < 8):
+    st.warning(
+        f"自動抽出が少数です（U指数：{len(parsed_u)}頭／結果：{len(parsed_r)}頭）。"
+        "枠番・馬番の両方をOCRで確認できない行は、誤った馬番を付けないため自動登録対象から除外しています。"
+        "OCR原文を確認し、コピペまたは一覧表で不足分を補ってください。"
+    )
 st.caption("OCRとコピペから抽出できた馬を自動で一覧化します。抽出できなかった項目は空欄のまま残し、必ず原画像と照合してください。")
 if parsed: seed=pd.DataFrame(parsed)
 else: seed=pd.DataFrame([{c:(bt_date if c=="開催日" else bt_track if c=="競馬場" else bt_rno if c=="レース番号" else bt_name if c=="レース名" else None if c in ("馬番","U指数","実着順","人気","単勝オッズ","単勝払戻(100円)","斤量") else "") for c in bt_cols}])
 for c in bt_cols:
     if c not in seed.columns: seed[c]=None
 seed=seed[bt_cols]
-old_csv=st.file_uploader("以前保存したバックテストCSVを読み込む（任意）",type=["csv"],key="bt38_csvin")
+old_csv=st.file_uploader("以前保存したバックテストCSVを読み込む（任意）",type=["csv"],key="bt39_csvin")
 if old_csv is not None:
     try:
         loaded=pd.read_csv(old_csv)
@@ -10023,7 +10099,7 @@ if old_csv is not None:
         st.success(f"CSVを読み込みました：{len(seed)}行")
     except Exception as exc: st.error(f"CSV読み込みエラー：{exc}")
 
-edited=st.data_editor(seed,num_rows="dynamic",use_container_width=True,hide_index=True,key="bt38_editor",column_config={
+edited=st.data_editor(seed,num_rows="dynamic",use_container_width=True,hide_index=True,key="bt39_editor",column_config={
     "馬番":st.column_config.NumberColumn(min_value=1,max_value=18,step=1),
     "U指数":st.column_config.NumberColumn(format="%.1f"),
     "実着順":st.column_config.NumberColumn(min_value=1,max_value=18,step=1),
@@ -10040,6 +10116,6 @@ if len(valid):
     if len(missing): st.warning(f"馬名未入力が{len(missing)}頭あります。")
     st.success(f"自動抽出：{len(valid)}頭。空欄・読み取り誤りを確認してから保存してください。")
     st.dataframe(valid,use_container_width=True,hide_index=True)
-    st.download_button("💾 確認済みデータをCSV保存",data=valid.to_csv(index=False).encode("utf-8-sig"),file_name="jenny_backtest_data.csv",mime="text/csv",use_container_width=True,key="bt38_csvout")
+    st.download_button("💾 確認済みデータをCSV保存",data=valid.to_csv(index=False).encode("utf-8-sig"),file_name="jenny_backtest_data.csv",mime="text/csv",use_container_width=True,key="bt39_csvout")
 else: st.info("画像を読み込むか、表を貼り付けてください。")
 st.info("OCRは画像内の文字を誤認識することがあります。特にU指数・馬番・着順・払戻は必ず原画像と照合してください。読み取れない項目は手入力できます。バックテスト用データは既存の予想ロジック・学習DBとは分離しています。")
