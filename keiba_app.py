@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.39"
+APP_PATCH_VERSION = "Ver1.20.43"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -9836,7 +9836,7 @@ st.info(
 
 
 # ==========================================
-# 📊 バックテスト入力（OCR＋コピペ＋確認編集） Ver1.20.41
+# 📊 バックテスト入力（OCR＋コピペ＋確認編集） Ver1.20.43
 # 既存予想ロジック・学習DBとは完全分離
 # ==========================================
 st.divider()
@@ -9857,24 +9857,35 @@ def _bt_ocr_image(upload, kind="u"):
         if full.width < 2400:
             ratio=2400/max(1,full.width)
             full=full.resize((2400,int(full.height*ratio)))
-        # 全体OCRに加え、表の端の馬番・馬名が切れないよう広い範囲を切り出す。
+        # 全体OCR。表全体の構造を残した候補を作る。
         for psm in (6, 11, 4):
             try:
                 candidates.append(pytesseract.image_to_string(full,lang="jpn+eng",config=f"--oem 3 --psm {psm}",timeout=60))
             except Exception:
                 pass
         w,h=im.size
-        if w >= 900 and h >= 500:
-            # 左右・上下を狭く切りすぎると1枠目/最終枠や16頭目が欠けるため、広めに取得
-            table=im.crop((int(w*.05),int(h*.08),int(w*.95),int(h*.92)))
+        if w >= 700 and h >= 400:
+            # 表全体を広めに切り出す候補
+            table=im.crop((int(w*.02),int(h*.04),int(w*.98),int(h*.96)))
             table=table.resize((table.width*3,table.height*3))
-            gray=ImageOps.grayscale(table)
-            gray=ImageOps.autocontrast(gray)
+            gray=ImageOps.autocontrast(ImageOps.grayscale(table))
             for psm in (6, 11, 4):
                 try:
                     candidates.append(pytesseract.image_to_string(gray,lang="jpn+eng",config=f"--oem 3 --psm {psm}",timeout=60))
                 except Exception:
                     pass
+            if kind == "u":
+                # ウマニティ出馬表は左側に「枠番・馬番・U指数・馬名・性齢」が並ぶ。
+                # その列を独立して拡大し、右側の近走情報にOCRが引っ張られるのを防ぐ。
+                # 上下端は固定値で切らず、画像全高を使って16頭目を欠落させない。
+                left=im.crop((0, 0, int(w*.48), h))
+                left=left.resize((left.width*4,left.height*4))
+                left=ImageOps.autocontrast(ImageOps.grayscale(left))
+                for psm in (6, 11, 12):
+                    try:
+                        candidates.append(pytesseract.image_to_string(left,lang="jpn+eng",config=f"--oem 3 --psm {psm}",timeout=60))
+                    except Exception:
+                        pass
         if not candidates:
             return "", "OCRを実行できませんでした。"
         # 文字数ではなく、実際に解析できる行数を優先してOCR方式を選ぶ。
@@ -10103,11 +10114,13 @@ for no,rec in sorted(by_no.items()):
     parsed.append(rec)
 
 st.subheader("③ 照合・修正できる登録一覧")
+if u_img or r_img:
+    st.info(f"OCR抽出状況：U指数 {len(parsed_u)}頭／結果 {len(parsed_r)}頭。馬番をキーに照合しています。")
 if (u_img or r_img) and (len(parsed_u) < 8 or len(parsed_r) < 8):
     st.warning(
         f"自動抽出が少数です（U指数：{len(parsed_u)}頭／結果：{len(parsed_r)}頭）。"
-        "馬番・性齢・タイムなどを読み取れない行は、自動登録対象から除外される場合があります。"
-        "OCR原文欄を直接修正すると再解析されます。コピペまたは一覧表でも不足分を補えます。"
+        "U指数画像は表の左側列を拡大して複数方式でOCRします。読み取れない行や曖昧な馬番は自動登録せず、"
+        "OCR原文欄または登録一覧で確認・修正してください。"
     )
 st.caption("OCRとコピペから抽出できた馬を自動で一覧化します。抽出できなかった項目は空欄のまま残し、必ず原画像と照合してください。")
 if parsed: seed=pd.DataFrame(parsed)
