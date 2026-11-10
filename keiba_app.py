@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.43"
+APP_PATCH_VERSION = "Ver1.20.44"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -9836,7 +9836,7 @@ st.info(
 
 
 # ==========================================
-# 📊 バックテスト入力（OCR＋コピペ＋確認編集） Ver1.20.43
+# 📊 バックテスト入力（OCR＋コピペ＋確認編集） Ver1.20.44
 # 既存予想ロジック・学習DBとは完全分離
 # ==========================================
 st.divider()
@@ -9875,9 +9875,9 @@ def _bt_ocr_image(upload, kind="u"):
                 except Exception:
                     pass
             if kind == "u":
-                # ウマニティ出馬表は左側に「枠番・馬番・U指数・馬名・性齢」が並ぶ。
-                # その列を独立して拡大し、右側の近走情報にOCRが引っ張られるのを防ぐ。
-                # 上下端は固定値で切らず、画像全高を使って16頭目を欠落させない。
+                # ウマニティ出馬表は左側に枠番・馬番・U指数・馬名・性齢が並ぶ。
+                # 左側列全体に加え、各馬の行を個別に切り出してOCRする。
+                # 16行を別々に認識することで、表全体OCRで行が連結される問題を軽減する。
                 left=im.crop((0, 0, int(w*.48), h))
                 left=left.resize((left.width*4,left.height*4))
                 left=ImageOps.autocontrast(ImageOps.grayscale(left))
@@ -9886,6 +9886,25 @@ def _bt_ocr_image(upload, kind="u"):
                         candidates.append(pytesseract.image_to_string(left,lang="jpn+eng",config=f"--oem 3 --psm {psm}",timeout=60))
                     except Exception:
                         pass
+                # 拡大して送られたウマニティ表（画面全体に出馬表が表示される形式）向け。
+                # 上部の見出しを避け、出馬表の16行を等分した行別OCR候補を追加する。
+                # 画像の縦横比・行位置が異なる画像では従来の全体OCR候補も残す。
+                if h >= 700 and w >= 1000:
+                    y_top, y_bottom = int(h*.071), int(h*.775)
+                    row_h = (y_bottom-y_top)/16.0
+                    for row_i in range(16):
+                        y0=max(0, int(y_top+row_i*row_h)-3)
+                        y1=min(h, int(y_top+(row_i+1)*row_h)+3)
+                        # 馬番～馬名・性齢までを含む左側の行を切り出す。
+                        row=im.crop((int(w*.01), y0, int(w*.36), y1))
+                        row=row.resize((row.width*5, row.height*5))
+                        row=ImageOps.autocontrast(ImageOps.grayscale(row))
+                        for psm in (7, 6):
+                            try:
+                                line=pytesseract.image_to_string(row,lang="jpn+eng",config=f"--oem 3 --psm {psm}",timeout=20)
+                                if line.strip(): candidates.append(line)
+                            except Exception:
+                                pass
         if not candidates:
             return "", "OCRを実行できませんでした。"
         # 文字数ではなく、実際に解析できる行数を優先してOCR方式を選ぶ。
@@ -9995,10 +10014,11 @@ def _bt_parse_result_ocr(text):
         # 性齢より前の範囲から、馬番を抽出。通常は枠番の次の整数。
         before=line[head.end():sex.start()].strip()
         nums=re.findall(r"(?<!\d)(\d{1,2})(?!\d)", before)
-        if len(nums)<2:
-            # 枠番または馬番のOCRが欠けた行は推測で登録しない。
+        if not nums:
             continue
-        # 着順の後にある枠番・馬番のうち最後を馬番として採用。
+        # 通常は枠番・馬番の2個があるため最後を採用する。
+        # 枠番がOCRで欠落した場合は、着順の後に残った唯一の数字を馬番候補とする。
+        # ただし1～18以外は登録せず、推測で補完しない。
         no=int(nums[-1])
         if not 1<=no<=18:
             continue
