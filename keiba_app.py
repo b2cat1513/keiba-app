@@ -9913,13 +9913,26 @@ def _bt_parse_umanity_ocr(text):
         if not sex_match:
             continue
         left=line[:sex_match.start()].strip()
-        # U指数は通常 99.3 / 101.2。OCRが小数点を落とした場合は採用しない。
+        # U指数は通常 99.3 / 101.2。OCRで小数点が消えた
+        # 993 / 1012 / 980 のような表記も候補として補正する。
         u_matches=list(re.finditer(r"(?<!\d)(\d{2,3})[.．](\d)(?!\d)", left))
-        if not u_matches:
-            continue
-        um=u_matches[-1]
-        u=float(f"{um.group(1)}.{um.group(2)}")
-        # U指数より前の冒頭2つの整数を「枠番・馬番」として読む。
+        if u_matches:
+            um=u_matches[-1]
+            u=float(f"{um.group(1)}.{um.group(2)}")
+        else:
+            # 小数点なしの3桁(993→99.3)・4桁(1012→101.2)を許容。
+            # U指数の妥当範囲を70.0～130.9に制限し、馬番等の誤認を抑える。
+            compact=list(re.finditer(r"(?<!\d)(\d{3,4})(?!\d)", left))
+            compact_values=[]
+            for cm in compact:
+                token=cm.group(1)
+                value=float(token[:-1] + "." + token[-1])
+                if 70.0 <= value <= 130.9:
+                    compact_values.append((cm,value))
+            if not compact_values:
+                continue
+            um,u=compact_values[-1]
+        # U指数より前の整数を「枠番・馬番」として読む。
         prefix=left[:um.start()]
         nums=re.findall(r"(?<!\d)(\d{1,2})(?!\d)", prefix)
         if not nums:
