@@ -9836,14 +9836,14 @@ st.info(
 
 
 # ==========================================
-# 📊 バックテスト入力（OCR＋コピペ＋確認編集） Ver1.20.39
+# 📊 バックテスト入力（OCR＋コピペ＋確認編集） Ver1.20.41
 # 既存予想ロジック・学習DBとは完全分離
 # ==========================================
 st.divider()
 st.header("📊 過去レース・バックテストデータ登録")
 st.caption("画像OCRまたは表のコピペで取り込み、一覧表で確認・修正してからCSV保存します。既存の予想ロジック・学習DBには接続しません。")
 
-def _bt_ocr_image(upload):
+def _bt_ocr_image(upload, kind="u"):
     if not OCR_AVAILABLE:
         return "", "OCR環境がありません（Pillow・pytesseract・Tesseract日本語データが必要です）。"
     try:
@@ -9857,7 +9857,7 @@ def _bt_ocr_image(upload):
         if full.width < 2400:
             ratio=2400/max(1,full.width)
             full=full.resize((2400,int(full.height*ratio)))
-        # 全体OCRはページ情報の補助用。表の行解析は中央表のOCRを優先する。
+        # 全体OCRに加え、表の端の馬番・馬名が切れないよう広い範囲を切り出す。
         for psm in (6, 11, 4):
             try:
                 candidates.append(pytesseract.image_to_string(full,lang="jpn+eng",config=f"--oem 3 --psm {psm}",timeout=60))
@@ -9865,8 +9865,8 @@ def _bt_ocr_image(upload):
                 pass
         w,h=im.size
         if w >= 900 and h >= 500:
-            # ブラウザの左右広告・上下バーを除いた中央コンテンツ領域
-            table=im.crop((int(w*.17),int(h*.16),int(w*.83),int(h*.84)))
+            # 左右・上下を狭く切りすぎると1枠目/最終枠や16頭目が欠けるため、広めに取得
+            table=im.crop((int(w*.05),int(h*.08),int(w*.95),int(h*.92)))
             table=table.resize((table.width*3,table.height*3))
             gray=ImageOps.grayscale(table)
             gray=ImageOps.autocontrast(gray)
@@ -9877,7 +9877,15 @@ def _bt_ocr_image(upload):
                     pass
         if not candidates:
             return "", "OCRを実行できませんでした。"
-        txt=max(candidates,key=lambda x:len(x.strip()))
+        # 文字数ではなく、実際に解析できる行数を優先してOCR方式を選ぶ。
+        # パーサーはこの関数の呼び出し時点で定義済み。
+        def score(candidate):
+            try:
+                count = len(_bt_parse_umanity_ocr(candidate)) if kind == "u" else len(_bt_parse_result_ocr(candidate))
+            except Exception:
+                count = 0
+            return (count, len(candidate.strip()))
+        txt=max(candidates,key=score)
         return txt, ""
     except Exception as exc:
         return "", str(exc)
@@ -9914,10 +9922,10 @@ def _bt_parse_umanity_ocr(text):
         # U指数より前の冒頭2つの整数を「枠番・馬番」として読む。
         prefix=left[:um.start()]
         nums=re.findall(r"(?<!\d)(\d{1,2})(?!\d)", prefix)
-        if len(nums)<2:
-            # 枠番と馬番のどちらかが欠けた行は誤照合防止のため自動採用しない。
+        if not nums:
             continue
-        # 枠番・馬番のうち最後の独立整数を馬番とする。
+        # 枠番・馬番の両方が読めた場合は最後を馬番にする。
+        # OCRで枠番だけ欠け、馬番だけ読めた場合は1個目を馬番として扱う。
         no=int(nums[-1])
         if not (1<=no<=18):
             continue
@@ -10043,11 +10051,11 @@ r_clip=st.text_area("または、結果表をコピーして貼り付け",height
 
 ocr_u=[]; ocr_r=[]
 for f in (u_img or []):
-    txt,err=_bt_ocr_image(f)
+    txt,err=_bt_ocr_image(f, "u")
     if err: st.error(f"{f.name}: {err}")
     else: ocr_u.append((f.name,txt))
 for f in (r_img or []):
-    txt,err=_bt_ocr_image(f)
+    txt,err=_bt_ocr_image(f, "r")
     if err: st.error(f"{f.name}: {err}")
     else: ocr_r.append((f.name,txt))
 with st.expander("OCRで読み取った原文（誤認識の確認用）",expanded=bool(ocr_u or ocr_r)):
@@ -10059,8 +10067,13 @@ with st.expander("OCRで読み取った原文（誤認識の確認用）",expand
         st.text_area("OCR原文（結果）",value=txt,height=140,key=f"bt39_ocr_r_{idx}")
 
 u_ocr_rows=[]; r_ocr_rows=[]
-for _,txt in ocr_u: u_ocr_rows.extend(_bt_parse_umanity_ocr(txt))
-for _,txt in ocr_r: r_ocr_rows.extend(_bt_parse_result_ocr(txt))
+# OCR原文欄でユーザーが修正した内容を、必ず再解析に使用する。
+for idx,(_,txt) in enumerate(ocr_u):
+    corrected=st.session_state.get(f"bt39_ocr_u_{idx}", txt)
+    u_ocr_rows.extend(_bt_parse_umanity_ocr(corrected))
+for idx,(_,txt) in enumerate(ocr_r):
+    corrected=st.session_state.get(f"bt39_ocr_r_{idx}", txt)
+    r_ocr_rows.extend(_bt_parse_result_ocr(corrected))
 parsed_u=_bt_parse_tsv(u_clip,"u") or u_ocr_rows
 parsed_r=_bt_parse_tsv(r_clip,"r") or r_ocr_rows
 by_no={}
@@ -10080,8 +10093,8 @@ st.subheader("③ 照合・修正できる登録一覧")
 if (u_img or r_img) and (len(parsed_u) < 8 or len(parsed_r) < 8):
     st.warning(
         f"自動抽出が少数です（U指数：{len(parsed_u)}頭／結果：{len(parsed_r)}頭）。"
-        "枠番・馬番の両方をOCRで確認できない行は、誤った馬番を付けないため自動登録対象から除外しています。"
-        "OCR原文を確認し、コピペまたは一覧表で不足分を補ってください。"
+        "馬番・性齢・タイムなどを読み取れない行は、自動登録対象から除外される場合があります。"
+        "OCR原文欄を直接修正すると再解析されます。コピペまたは一覧表でも不足分を補えます。"
     )
 st.caption("OCRとコピペから抽出できた馬を自動で一覧化します。抽出できなかった項目は空欄のまま残し、必ず原画像と照合してください。")
 if parsed: seed=pd.DataFrame(parsed)
