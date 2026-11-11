@@ -10012,7 +10012,7 @@ def _bt_parse_umanity_ocr(text):
         line=re.sub(r"\s+", " ", str(raw_line)).strip()
         if not line:
             continue
-        # Ver1.20.48の列・行別OCRが出力する構造化行。
+        # Ver1.20.49の列・行別OCRが出力する構造化行。
         positional = re.search(r"BT_UROW\s+馬番\s*=\s*(\d{1,2})\s+U\s*=\s*(\d{2,3}\.\d)", line, re.I)
         if positional:
             no, u = int(positional.group(1)), float(positional.group(2))
@@ -10073,33 +10073,40 @@ def _bt_parse_umanity_ocr(text):
 
 
 def _bt_parse_result_ocr(text):
-    """netkeiba結果表の行OCRから着順・馬番・馬名・人気・単勝オッズを抽出。
+    """netkeiba結果表のOCRから着順・馬番・馬名・人気・単勝オッズを抽出。
 
-    着順/枠番/馬番/馬名/性齢/斤量/騎手/タイム/着差/人気/単勝オッズの順を想定。
-    OCRで枠番や記号が欠落しても、性齢・タイムを目印に抽出する。
+    性齢または走破タイムの片方がOCRで欠落しても、行頭の着順と
+    馬番・馬名を確認できる場合は候補として残す。曖昧な行は登録しない。
     """
     rows=[]
-    for raw_line in (text or "").splitlines():
-        line=re.sub(r"\s+", " ", str(raw_line)).strip()
-        if not line:
-            continue
-        # 行頭の着順と、性齢の位置を確定する。
+    lines=[re.sub(r"\s+", " ", str(x)).strip() for x in (text or "").splitlines()]
+    lines=[x for x in lines if x]
+
+    # OCRで1頭の情報が2行に分割された場合に備え、隣接行も候補化する。
+    candidates=list(lines)
+    for i in range(len(lines)-1):
+        if re.match(r"^\d{1,2}\s+", lines[i]):
+            candidates.append(lines[i] + " " + lines[i+1])
+
+    for line in candidates:
         head=re.match(r"^(\d{1,2})\s+", line)
-        sex=re.search(r"(?:牡|牝|セ)\s*\d+", line)
-        time=re.search(r"\d{1,2}:\d{2}\.\d+", line)
-        if not head or not sex or not time or sex.start()<=head.end():
+        if not head:
             continue
         rank=int(head.group(1))
         if not 1<=rank<=18:
             continue
-        # 性齢より前の範囲から、馬番を抽出。通常は枠番の次の整数。
-        before=line[head.end():sex.start()].strip()
+
+        sex=re.search(r"(?:牡|牝|セ)\s*\d+", line)
+        time=re.search(r"\d{1,2}:\d{2}\.\d+", line)
+        # 性齢・タイムのどちらかが認識されていれば行として解析する。
+        anchors=[m for m in (sex,time) if m]
+        if not anchors:
+            continue
+        name_end=min(m.start() for m in anchors)
+        before=line[head.end():name_end].strip()
         nums=re.findall(r"(?<!\d)(\d{1,2})(?!\d)", before)
         if not nums:
             continue
-        # 通常は枠番・馬番の2個があるため最後を採用する。
-        # 枠番がOCRで欠落した場合は、着順の後に残った唯一の数字を馬番候補とする。
-        # ただし1～18以外は登録せず、推測で補完しない。
         no=int(nums[-1])
         if not 1<=no<=18:
             continue
@@ -10107,18 +10114,20 @@ def _bt_parse_result_ocr(text):
         name_start=num_matches[-1].end()
         name=before[name_start:].strip(" |｜:：-_・")
         name=re.sub(r"^[⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳①②③④⑤⑥⑦⑧⑨⓪]+", "", name).strip()
-        if len(name)<2 or any(x in name for x in ("払戻","コーナー","ゴール後")):
+        if len(name)<2 or any(x in name for x in ("払戻","コーナー","ゴール後","馬名")):
             continue
-        # タイム直後の着差を飛ばし、人気→単勝オッズを取得する。
-        after=line[time.end():].strip()
+
+        pop=odds=None
+        tail_anchor=time.end() if time else sex.end()
+        after=line[tail_anchor:].strip()
         after=re.sub(r"^(?:クビ|ハナ|アタマ|大差|同着|\d+(?:\.\d+)?/\d+|\d+/\d+)\s*", "", after)
         tail_nums=re.findall(r"(?<!\d)(\d{1,3}(?:\.\d+)?)(?!\d)", after)
-        pop=odds=None
         for i, token in enumerate(tail_nums[:-1]):
             val=_bt_num(token); nxt=_bt_num(tail_nums[i+1])
             if val is not None and float(val).is_integer() and 1<=val<=18 and nxt is not None and 0<nxt<1000:
                 pop=int(val); odds=float(nxt); break
         rows.append({"馬番":no,"馬名":name,"実着順":rank,"人気":pop,"単勝オッズ":odds})
+
     # 馬番重複は同一内容のみ統合。競合する場合は除外して手修正を促す。
     grouped={}
     for r in rows:
@@ -10127,7 +10136,8 @@ def _bt_parse_result_ocr(text):
     for no,candidates in sorted(grouped.items()):
         unique={(c["実着順"],c["馬名"]) for c in candidates}
         if len(unique)==1:
-            out.append(candidates[0])
+            # 同一馬の候補が複数あれば、人気・オッズが埋まった候補を優先。
+            out.append(max(candidates, key=lambda x: (x.get("人気") is not None, x.get("単勝オッズ") is not None)))
     return out
 
 def _bt_parse_tsv(text, kind):
@@ -10221,7 +10231,7 @@ if (u_img or r_img) and (len(parsed_u) < 8 or len(parsed_r) < 8):
     st.warning(
         f"自動抽出が少数です（U指数：{len(parsed_u)}頭／結果：{len(parsed_r)}頭）。"
         "U指数画像は指数列を行ごとに独立してOCRし、馬番順に照合します。読み取れない行や曖昧な数値は自動登録せず、"
-        "OCR原文欄または登録一覧で確認・修正してください。"
+        "結果画像は性齢またはタイムの片方が欠けても候補抽出します。OCR原文欄・登録一覧で馬番と馬名を必ず確認してください。"
     )
 st.caption("OCRとコピペから抽出できた馬を自動で一覧化します。抽出できなかった項目は空欄のまま残し、必ず原画像と照合してください。")
 if parsed: seed=pd.DataFrame(parsed)
