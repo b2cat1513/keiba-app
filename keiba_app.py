@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.48"
+APP_PATCH_VERSION = "Ver1.20.49"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -9836,7 +9836,7 @@ st.info(
 
 
 # ==========================================
-# 📊 バックテスト入力（OCR＋コピペ＋確認編集） Ver1.20.47
+# 📊 バックテスト入力（OCR＋コピペ＋確認編集） Ver1.20.49
 # 既存予想ロジック・学習DBとは完全分離
 # ==========================================
 st.divider()
