@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.44"
+APP_PATCH_VERSION = "Ver1.20.45"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -9836,7 +9836,7 @@ st.info(
 
 
 # ==========================================
-# 📊 バックテスト入力（OCR＋コピペ＋確認編集） Ver1.20.44
+# 📊 バックテスト入力（OCR＋コピペ＋確認編集） Ver1.20.45
 # 既存予想ロジック・学習DBとは完全分離
 # ==========================================
 st.divider()
@@ -9886,25 +9886,59 @@ def _bt_ocr_image(upload, kind="u"):
                         candidates.append(pytesseract.image_to_string(left,lang="jpn+eng",config=f"--oem 3 --psm {psm}",timeout=60))
                     except Exception:
                         pass
-                # 拡大して送られたウマニティ表（画面全体に出馬表が表示される形式）向け。
-                # 上部の見出しを避け、出馬表の16行を等分した行別OCR候補を追加する。
-                # 画像の縦横比・行位置が異なる画像では従来の全体OCR候補も残す。
+                # 拡大して送られたウマニティ表向け。U指数列の位置・上下範囲を
+                # 少しずつ変えた複数の切り出しを試し、馬名や性齢に頼らず数値を読む。
+                # 読み取れた行だけ BT_UROW として保持し、未認識行は推測で埋めない。
                 if h >= 700 and w >= 1000:
-                    y_top, y_bottom = int(h*.071), int(h*.775)
-                    row_h = (y_bottom-y_top)/16.0
-                    for row_i in range(16):
-                        y0=max(0, int(y_top+row_i*row_h)-3)
-                        y1=min(h, int(y_top+(row_i+1)*row_h)+3)
-                        # 馬番～馬名・性齢までを含む左側の行を切り出す。
-                        row=im.crop((int(w*.01), y0, int(w*.36), y1))
-                        row=row.resize((row.width*5, row.height*5))
-                        row=ImageOps.autocontrast(ImageOps.grayscale(row))
-                        for psm in (7, 6):
-                            try:
-                                line=pytesseract.image_to_string(row,lang="jpn+eng",config=f"--oem 3 --psm {psm}",timeout=20)
-                                if line.strip(): candidates.append(line)
-                            except Exception:
-                                pass
+                    positional_candidates = []
+                    # フォトアプリで拡大表示した画像と、ブラウザ画面の画像の
+                    # 両方に対応できるよう、列・行領域を複数パターン試す。
+                    x_ranges = [(0.083, 0.132), (0.080, 0.140)]
+                    y_ranges = [(0.067, 0.780), (0.055, 0.790)]
+                    for x_left, x_right in x_ranges:
+                        for y_top, y_bottom in y_ranges:
+                            row_h = (int(h*y_bottom)-int(h*y_top))/16.0
+                            row_values = {}
+                            for row_i in range(16):
+                                cy0 = int(h*y_top + row_i*row_h)
+                                cy1 = int(h*y_top + (row_i+1)*row_h)
+                                pad = max(4, int(row_h*0.12))
+                                rx0, rx1 = int(w*x_left), int(w*x_right)
+                                ry0, ry1 = max(0,cy0-pad), min(h,cy1+pad)
+                                crop = im.crop((rx0,ry0,rx1,ry1))
+                                crop = crop.resize((max(1,crop.width*7),max(1,crop.height*7)))
+                                gray = ImageOps.autocontrast(ImageOps.grayscale(crop))
+                                tokens=[]
+                                for proc in (gray,):
+                                    for psm in (7,):
+                                        try:
+                                            raw_num = pytesseract.image_to_string(
+                                                proc, lang="eng",
+                                                config=f"--oem 3 --psm {psm} -c tessedit_char_whitelist=0123456789.",
+                                                timeout=8,
+                                            ).strip().replace("\n"," ")
+                                            raw_num=raw_num.replace(",",".").replace("．",".")
+                                            for token in re.findall(r"(?<!\d)(\d{2,3}\.?\d?)(?!\d)",raw_num):
+                                                token=token.rstrip(".")
+                                                if "." not in token and len(token) in (3,4):
+                                                    token=token[:-1]+"."+token[-1]
+                                                try: val=float(token)
+                                                except Exception: continue
+                                                if 70.0<=val<=130.9: tokens.append(val)
+                                        except Exception:
+                                            pass
+                                if tokens:
+                                    counts={}
+                                    for val in tokens: counts[val]=counts.get(val,0)+1
+                                    chosen=sorted(counts.items(),key=lambda kv:(-kv[1],kv[0]))[0][0]
+                                    row_values[row_i+1]=chosen
+                            if row_values:
+                                positional_candidates.append(row_values)
+                    if positional_candidates:
+                        # 最も多くの行が読めた切り出しパターンを優先。
+                        best_rows=max(positional_candidates,key=lambda d:len(d))
+                        positional_lines=[f"BT_UROW 馬番={no} U={val:.1f}" for no,val in sorted(best_rows.items())]
+                        candidates.append("\n".join(positional_lines))
         if not candidates:
             return "", "OCRを実行できませんでした。"
         # 文字数ではなく、実際に解析できる行数を優先してOCR方式を選ぶ。
@@ -9937,6 +9971,13 @@ def _bt_parse_umanity_ocr(text):
     for raw_line in (text or "").splitlines():
         line=re.sub(r"\s+", " ", str(raw_line)).strip()
         if not line:
+            continue
+        # Ver1.20.45の列・行別OCRが出力する構造化行。
+        positional = re.search(r"BT_UROW\s+馬番\s*=\s*(\d{1,2})\s+U\s*=\s*(\d{2,3}\.\d)", line, re.I)
+        if positional:
+            no, u = int(positional.group(1)), float(positional.group(2))
+            if 1 <= no <= 18 and 70.0 <= u <= 130.9:
+                rows.append({"馬番": no, "馬名": "", "U指数": u})
             continue
         # まず、馬名・性齢より前にあるU指数を検出する。
         sex_match=re.search(r"(?:牡|牝|セ)\s*\d+", line)
@@ -10080,18 +10121,18 @@ def _bt_parse_tsv(text, kind):
 bt_cols=["開催日","競馬場","レース番号","レース名","馬番","馬名","U指数","実着順","人気","単勝オッズ","単勝払戻(100円)","騎手","斤量"]
 bt_c1,bt_c2=st.columns(2)
 with bt_c1:
-    bt_date=st.text_input("開催日（例：2026-06-04）",key="bt39_date")
-    bt_track=st.text_input("競馬場（例：阪神）",key="bt39_track")
+    bt_date=st.text_input("開催日（例：2026-06-04）",key="bt45_date")
+    bt_track=st.text_input("競馬場（例：阪神）",key="bt45_track")
 with bt_c2:
-    bt_rno=st.text_input("レース番号（例：11R）",key="bt39_rno")
-    bt_name=st.text_input("レース名",key="bt39_name")
+    bt_rno=st.text_input("レース番号（例：11R）",key="bt45_rno")
+    bt_name=st.text_input("レース名",key="bt45_name")
 
 st.subheader("① U指数・出馬表")
-u_img=st.file_uploader("ウマニティのU指数画像（複数可）",type=["png","jpg","jpeg","webp"],accept_multiple_files=True,key="bt39_uimg")
-u_clip=st.text_area("または、ウマニティの表をコピーして貼り付け",height=100,key="bt39_uclip",placeholder="表を選択してコピーし、ここに貼り付けてください。タブ区切りのコピーを推奨します。")
+u_img=st.file_uploader("ウマニティのU指数画像（複数可）",type=["png","jpg","jpeg","webp"],accept_multiple_files=True,key="bt45_uimg")
+u_clip=st.text_area("または、ウマニティの表をコピーして貼り付け",height=100,key="bt45_uclip",placeholder="表を選択してコピーし、ここに貼り付けてください。タブ区切りのコピーを推奨します。")
 st.subheader("② 実際のレース結果・払戻")
-r_img=st.file_uploader("netkeiba等の着順・払戻画像（複数可）",type=["png","jpg","jpeg","webp"],accept_multiple_files=True,key="bt39_rimg")
-r_clip=st.text_area("または、結果表をコピーして貼り付け",height=100,key="bt39_rclip",placeholder="着順・馬番・馬名・人気・単勝オッズなどを貼り付けてください。")
+r_img=st.file_uploader("netkeiba等の着順・払戻画像（複数可）",type=["png","jpg","jpeg","webp"],accept_multiple_files=True,key="bt45_rimg")
+r_clip=st.text_area("または、結果表をコピーして貼り付け",height=100,key="bt45_rclip",placeholder="着順・馬番・馬名・人気・単勝オッズなどを貼り付けてください。")
 
 ocr_u=[]; ocr_r=[]
 for f in (u_img or []):
@@ -10105,18 +10146,18 @@ for f in (r_img or []):
 with st.expander("OCRで読み取った原文（誤認識の確認用）",expanded=bool(ocr_u or ocr_r)):
     for idx,(fname,txt) in enumerate(ocr_u):
         st.markdown(f"**U指数画像：{fname}**")
-        st.text_area("OCR原文（U指数）",value=txt,height=140,key=f"bt39_ocr_u_{idx}")
+        st.text_area("OCR原文（U指数）",value=txt,height=140,key=f"bt45_ocr_u_{idx}")
     for idx,(fname,txt) in enumerate(ocr_r):
         st.markdown(f"**結果画像：{fname}**")
-        st.text_area("OCR原文（結果）",value=txt,height=140,key=f"bt39_ocr_r_{idx}")
+        st.text_area("OCR原文（結果）",value=txt,height=140,key=f"bt45_ocr_r_{idx}")
 
 u_ocr_rows=[]; r_ocr_rows=[]
 # OCR原文欄でユーザーが修正した内容を、必ず再解析に使用する。
 for idx,(_,txt) in enumerate(ocr_u):
-    corrected=st.session_state.get(f"bt39_ocr_u_{idx}", txt)
+    corrected=st.session_state.get(f"bt45_ocr_u_{idx}", txt)
     u_ocr_rows.extend(_bt_parse_umanity_ocr(corrected))
 for idx,(_,txt) in enumerate(ocr_r):
-    corrected=st.session_state.get(f"bt39_ocr_r_{idx}", txt)
+    corrected=st.session_state.get(f"bt45_ocr_r_{idx}", txt)
     r_ocr_rows.extend(_bt_parse_result_ocr(corrected))
 parsed_u=_bt_parse_tsv(u_clip,"u") or u_ocr_rows
 parsed_r=_bt_parse_tsv(r_clip,"r") or r_ocr_rows
@@ -10139,7 +10180,7 @@ if u_img or r_img:
 if (u_img or r_img) and (len(parsed_u) < 8 or len(parsed_r) < 8):
     st.warning(
         f"自動抽出が少数です（U指数：{len(parsed_u)}頭／結果：{len(parsed_r)}頭）。"
-        "U指数画像は表の左側列を拡大して複数方式でOCRします。読み取れない行や曖昧な馬番は自動登録せず、"
+        "U指数画像は指数列を行ごとに独立してOCRし、馬番順に照合します。読み取れない行や曖昧な数値は自動登録せず、"
         "OCR原文欄または登録一覧で確認・修正してください。"
     )
 st.caption("OCRとコピペから抽出できた馬を自動で一覧化します。抽出できなかった項目は空欄のまま残し、必ず原画像と照合してください。")
@@ -10148,7 +10189,7 @@ else: seed=pd.DataFrame([{c:(bt_date if c=="開催日" else bt_track if c=="競�
 for c in bt_cols:
     if c not in seed.columns: seed[c]=None
 seed=seed[bt_cols]
-old_csv=st.file_uploader("以前保存したバックテストCSVを読み込む（任意）",type=["csv"],key="bt39_csvin")
+old_csv=st.file_uploader("以前保存したバックテストCSVを読み込む（任意）",type=["csv"],key="bt45_csvin")
 if old_csv is not None:
     try:
         loaded=pd.read_csv(old_csv)
@@ -10158,7 +10199,7 @@ if old_csv is not None:
         st.success(f"CSVを読み込みました：{len(seed)}行")
     except Exception as exc: st.error(f"CSV読み込みエラー：{exc}")
 
-edited=st.data_editor(seed,num_rows="dynamic",use_container_width=True,hide_index=True,key="bt39_editor",column_config={
+edited=st.data_editor(seed,num_rows="dynamic",use_container_width=True,hide_index=True,key="bt45_editor",column_config={
     "馬番":st.column_config.NumberColumn(min_value=1,max_value=18,step=1),
     "U指数":st.column_config.NumberColumn(format="%.1f"),
     "実着順":st.column_config.NumberColumn(min_value=1,max_value=18,step=1),
@@ -10175,6 +10216,6 @@ if len(valid):
     if len(missing): st.warning(f"馬名未入力が{len(missing)}頭あります。")
     st.success(f"自動抽出：{len(valid)}頭。空欄・読み取り誤りを確認してから保存してください。")
     st.dataframe(valid,use_container_width=True,hide_index=True)
-    st.download_button("💾 確認済みデータをCSV保存",data=valid.to_csv(index=False).encode("utf-8-sig"),file_name="jenny_backtest_data.csv",mime="text/csv",use_container_width=True,key="bt39_csvout")
+    st.download_button("💾 確認済みデータをCSV保存",data=valid.to_csv(index=False).encode("utf-8-sig"),file_name="jenny_backtest_data.csv",mime="text/csv",use_container_width=True,key="bt45_csvout")
 else: st.info("画像を読み込むか、表を貼り付けてください。")
 st.info("OCRは画像内の文字を誤認識することがあります。特にU指数・馬番・着順・払戻は必ず原画像と照合してください。読み取れない項目は手入力できます。バックテスト用データは既存の予想ロジック・学習DBとは分離しています。")
