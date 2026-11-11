@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.47"
+APP_PATCH_VERSION = "Ver1.20.48"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -9978,7 +9978,7 @@ def _bt_ocr_image(upload, kind="u"):
                             if value is not None and 70.0 <= value <= 130.9:
                                 positional_lines.append(f"BT_UROW 馬番={row_i} U={value:.1f}")
                         if positional_lines:
-                            candidates.append("\\n".join(positional_lines))
+                            candidates.append("\n".join(positional_lines))
         if not candidates:
             return "", "OCRを実行できませんでした。"
         # 文字数ではなく、実際に解析できる行数を優先してOCR方式を選ぶ。
@@ -10012,7 +10012,7 @@ def _bt_parse_umanity_ocr(text):
         line=re.sub(r"\s+", " ", str(raw_line)).strip()
         if not line:
             continue
-        # Ver1.20.47の列・行別OCRが出力する構造化行。
+        # Ver1.20.48の列・行別OCRが出力する構造化行。
         positional = re.search(r"BT_UROW\s+馬番\s*=\s*(\d{1,2})\s+U\s*=\s*(\d{2,3}\.\d)", line, re.I)
         if positional:
             no, u = int(positional.group(1)), float(positional.group(2))
