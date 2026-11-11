@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.49"
+APP_PATCH_VERSION = "Ver1.20.50"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -9836,7 +9836,7 @@ st.info(
 
 
 # ==========================================
-# 📊 バックテスト入力（OCR＋コピペ＋確認編集） Ver1.20.49
+# 📊 バックテスト入力（OCR＋コピペ＋手入力補完） Ver1.20.50
 # 既存予想ロジック・学習DBとは完全分離
 # ==========================================
 st.divider()
@@ -10211,11 +10211,16 @@ for idx,(_,txt) in enumerate(ocr_r):
     r_ocr_rows.extend(_bt_parse_result_ocr(corrected))
 parsed_u=_bt_parse_tsv(u_clip,"u") or u_ocr_rows
 parsed_r=_bt_parse_tsv(r_clip,"r") or r_ocr_rows
-by_no={}
+# 1～18番を先に用意し、OCRで拾えなかった馬も一覧上で手入力できるようにする。
+# 実際の出走頭数に合わせて、不要な行はデータエディタから削除可能。
+by_no={no:{"馬番":no,"馬名":"","U指数":None,"実着順":None,"人気":None,"単勝オッズ":None,"騎手":"","斤量":None} for no in range(1,19)}
 for rec in parsed_u:
-    no=int(rec["馬番"]); by_no[no]={"馬番":no,"馬名":rec.get("馬名", ""),"U指数":rec.get("U指数"),"実着順":None,"人気":None,"単勝オッズ":None,"騎手":rec.get("騎手", ""),"斤量":rec.get("斤量")}
+    no=int(rec["馬番"]); base=by_no.setdefault(no,{"馬番":no,"馬名":"","U指数":None,"実着順":None,"人気":None,"単勝オッズ":None,"騎手":"","斤量":None})
+    for k in ("馬名","U指数","騎手","斤量"):
+        if rec.get(k) not in (None, ""):
+            base[k]=rec[k]
 for rec in parsed_r:
-    no=int(rec["馬番"]); base=by_no.setdefault(no,{"馬番":no,"馬名":rec.get("馬名", ""),"U指数":None,"実着順":None,"人気":None,"単勝オッズ":None,"騎手":"","斤量":None})
+    no=int(rec["馬番"]); base=by_no.setdefault(no,{"馬番":no,"馬名":"","U指数":None,"実着順":None,"人気":None,"単勝オッズ":None,"騎手":"","斤量":None})
     if rec.get("馬名") and not base.get("馬名"): base["馬名"]=rec["馬名"]
     for k in ("実着順","人気","単勝オッズ"):
         if rec.get(k) is not None: base[k]=rec[k]
@@ -10233,7 +10238,7 @@ if (u_img or r_img) and (len(parsed_u) < 8 or len(parsed_r) < 8):
         "U指数画像は指数列を行ごとに独立してOCRし、馬番順に照合します。読み取れない行や曖昧な数値は自動登録せず、"
         "結果画像は性齢またはタイムの片方が欠けても候補抽出します。OCR原文欄・登録一覧で馬番と馬名を必ず確認してください。"
     )
-st.caption("OCRとコピペから抽出できた馬を自動で一覧化します。抽出できなかった項目は空欄のまま残し、必ず原画像と照合してください。")
+st.caption("馬番1～18の入力行を用意し、OCR・コピペで読めた項目は自動入力します。読み取れなかった馬名・着順・人気・オッズ・騎手・斤量などは、この一覧を直接編集して手入力できます。実際に出走していない馬番の行は削除してください。")
 if parsed: seed=pd.DataFrame(parsed)
 else: seed=pd.DataFrame([{c:(bt_date if c=="開催日" else bt_track if c=="競馬場" else bt_rno if c=="レース番号" else bt_name if c=="レース名" else None if c in ("馬番","U指数","実着順","人気","単勝オッズ","単勝払戻(100円)","斤量") else "") for c in bt_cols}])
 for c in bt_cols:
@@ -10264,7 +10269,7 @@ if len(valid):
     if dup: st.warning(f"馬番が重複しています：{sorted(set(dup))}。修正してから保存してください。")
     missing=valid[valid["馬名"].fillna("").astype(str).str.strip()==""]
     if len(missing): st.warning(f"馬名未入力が{len(missing)}頭あります。")
-    st.success(f"自動抽出：{len(valid)}頭。空欄・読み取り誤りを確認してから保存してください。")
+    st.success(f"入力行：{len(valid)}頭。OCRで埋まらなかった項目は一覧をクリックして手入力できます。空欄・読み取り誤りを確認してから保存してください。")
     st.dataframe(valid,use_container_width=True,hide_index=True)
     st.download_button("💾 確認済みデータをCSV保存",data=valid.to_csv(index=False).encode("utf-8-sig"),file_name="jenny_backtest_data.csv",mime="text/csv",use_container_width=True,key="bt47_csvout")
 else: st.info("画像を読み込むか、表を貼り付けてください。")
