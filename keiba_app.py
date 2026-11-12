@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.50"
+APP_PATCH_VERSION = "Ver1.20.51"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -9836,12 +9836,12 @@ st.info(
 
 
 # ==========================================
-# 📊 バックテスト入力（OCR＋コピペ＋手入力補完） Ver1.20.50
+# 📊 バックテスト入力（OCR＋コピペ＋手入力補完＋成績分析） Ver1.20.51
 # 既存予想ロジック・学習DBとは完全分離
 # ==========================================
 st.divider()
 st.header("📊 過去レース・バックテストデータ登録")
-st.caption("画像OCRまたは表のコピペで取り込み、一覧表で確認・修正してからCSV保存します。既存の予想ロジック・学習DBには接続しません。")
+st.caption("画像OCRまたは表のコピペで取り込み、一覧表で確認・修正してCSV保存。U指数順位と実着順を比較し、単勝1点・上位3頭買いの成績を分析します。既存の予想ロジック・学習DBには接続しません。")
 
 def _bt_ocr_image(upload, kind="u"):
     if not OCR_AVAILABLE:
@@ -10272,5 +10272,84 @@ if len(valid):
     st.success(f"入力行：{len(valid)}頭。OCRで埋まらなかった項目は一覧をクリックして手入力できます。空欄・読み取り誤りを確認してから保存してください。")
     st.dataframe(valid,use_container_width=True,hide_index=True)
     st.download_button("💾 確認済みデータをCSV保存",data=valid.to_csv(index=False).encode("utf-8-sig"),file_name="jenny_backtest_data.csv",mime="text/csv",use_container_width=True,key="bt47_csvout")
+    # ------------------------------------------
+    # Ver1.20.51 バックテスト集計
+    # U指数は高い順。馬番で照合し、レース単位で評価する。
+    # ------------------------------------------
+    st.divider()
+    st.subheader("④ バックテスト分析")
+    st.caption("U指数の高い順を予想順位として実着順と比較します。上位1頭を100円、上位3頭を各100円購入した想定です。")
+    bt_work = valid.copy()
+    for col in ("U指数", "実着順", "単勝払戻(100円)", "馬番"):
+        bt_work[col] = pd.to_numeric(bt_work[col], errors="coerce")
+    race_keys = [c for c in ("開催日", "競馬場", "レース番号") if c in bt_work.columns]
+    if not race_keys:
+        race_keys = ["レース名"]
+    for col in race_keys:
+        bt_work[col] = bt_work[col].fillna("").astype(str).str.strip()
+    bt_work["_race_key"] = bt_work[race_keys].agg(" | ".join, axis=1)
+    bt_work = bt_work[(bt_work["馬名"].fillna("").astype(str).str.strip() != "") & bt_work["U指数"].notna()]
+    race_summaries = []
+    for race_key, race_df in bt_work.groupby("_race_key", dropna=False):
+        race_df = race_df.dropna(subset=["実着順", "馬番"]).copy()
+        if race_df.empty:
+            continue
+        race_df = race_df.sort_values(["U指数", "馬番"], ascending=[False, True])
+        top1 = race_df.iloc[0]
+        top3 = race_df.head(3)
+        winner_rows = race_df[race_df["実着順"] == 1]
+        if winner_rows.empty:
+            continue
+        winner = winner_rows.sort_values("馬番").iloc[0]
+        top1_hit = bool(int(top1["馬番"]) == int(winner["馬番"]))
+        top3_hit = bool((top3["馬番"] == winner["馬番"]).any())
+        payout = winner.get("単勝払戻(100円)")
+        payout = float(payout) if pd.notna(payout) and float(payout) >= 0 else None
+        race_summaries.append({
+            "レース": race_key, "出走頭数": int(len(race_df)),
+            "U指数1位": str(top1.get("馬名", "")), "U指数1位馬番": int(top1["馬番"]),
+            "実際の1着": str(winner.get("馬名", "")), "実際の1着馬番": int(winner["馬番"]),
+            "U指数1位的中": top1_hit, "U指数上位3頭に勝ち馬": top3_hit,
+            "勝ち馬払戻": payout,
+        })
+    if not race_summaries:
+        st.info("分析には、馬名・U指数・実着順が入力された馬が必要です。出走していない行は削除し、着順とU指数を確認してください。")
+    else:
+        summary_df = pd.DataFrame(race_summaries)
+        total_races = len(summary_df)
+        hit1 = int(summary_df["U指数1位的中"].sum())
+        hit3 = int(summary_df["U指数上位3頭に勝ち馬"].sum())
+        m1, m2, m3 = st.columns(3)
+        m1.metric("分析レース数", f"{total_races}レース")
+        m2.metric("U指数1位の勝率", f"{hit1 / total_races * 100:.1f}%", f"{hit1}/{total_races}レース")
+        m3.metric("上位3頭の勝ち馬カバー率", f"{hit3 / total_races * 100:.1f}%", f"{hit3}/{total_races}レース")
+        payout_known = summary_df["勝ち馬払戻"].notna()
+        known_count = int(payout_known.sum())
+        if known_count:
+            measured = summary_df.loc[payout_known].copy()
+            one_return = float(measured.apply(lambda r: r["勝ち馬払戻"] if r["U指数1位的中"] else 0.0, axis=1).sum())
+            three_return = float(measured.apply(lambda r: r["勝ち馬払戻"] if r["U指数上位3頭に勝ち馬"] else 0.0, axis=1).sum())
+            one_stake, three_stake = known_count * 100, known_count * 300
+            st.markdown("**払戻金が入力されたレースの回収率**")
+            r1, r2, r3 = st.columns(3)
+            r1.metric("払戻入力済み", f"{known_count}/{total_races}レース")
+            r2.metric("U指数1位・単勝1点", f"{one_return / one_stake * 100:.1f}%", f"収支 {one_return-one_stake:+,.0f}円")
+            r3.metric("U指数上位3頭・単勝", f"{three_return / three_stake * 100:.1f}%", f"収支 {three_return-three_stake:+,.0f}円")
+            st.caption("回収率＝払戻合計÷購入金額。上位3頭買いは1レース300円。払戻未入力レースは回収率から除外し、的中率には含めます。")
+        else:
+            st.warning("勝ち馬の単勝払戻が未入力のため、回収率は計算できません。")
+        st.markdown("**レース別の照合結果**")
+        st.dataframe(summary_df, use_container_width=True, hide_index=True)
+        rank_rows = []
+        for _, race_df in bt_work.groupby("_race_key", dropna=False):
+            race_df = race_df.dropna(subset=["実着順"]).sort_values(["U指数", "馬番"], ascending=[False, True]).copy()
+            race_df["U指数順位"] = range(1, len(race_df) + 1)
+            rank_rows.append(race_df[["U指数順位", "実着順"]])
+        if rank_rows:
+            rank_df = pd.concat(rank_rows, ignore_index=True)
+            rank_stats = rank_df.groupby("U指数順位")["実着順"].agg(平均着順="mean", 対象頭数="count").reset_index()
+            st.markdown("**U指数順位別・平均実着順**")
+            st.dataframe(rank_stats.round({"平均着順": 2}), use_container_width=True, hide_index=True)
+        st.download_button("📥 バックテスト分析結果をCSV保存", data=summary_df.to_csv(index=False).encode("utf-8-sig"), file_name="jenny_backtest_summary.csv", mime="text/csv", key="bt51_summary_csv")
 else: st.info("画像を読み込むか、表を貼り付けてください。")
 st.info("OCRは画像内の文字を誤認識することがあります。特にU指数・馬番・着順・払戻は必ず原画像と照合してください。読み取れない項目は手入力できます。バックテスト用データは既存の予想ロジック・学習DBとは分離しています。")
