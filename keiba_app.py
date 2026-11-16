@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.53"
+APP_PATCH_VERSION = "Ver1.20.54"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -80,14 +80,38 @@ div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
 
 # 🛠️ スマホ向け：データを極限まで縮小・Base64圧縮する関数
 def encode_for_mobile(data_dict):
-    """JSONデータをスマホで扱いやすい短い英数字(Base64)に変換"""
+    """JSONデータをスマホで扱いやすいBase64に変換。Pandas/NumPy/日時型も安全に処理する。"""
+    def _json_safe(value):
+        # pandas / numpy の欠損値・スカラーを標準Python型へ変換
+        try:
+            if pd is not None and pd.isna(value):
+                return None
+        except Exception:
+            pass
+        if hasattr(value, "item") and callable(getattr(value, "item")):
+            try:
+                return _json_safe(value.item())
+            except Exception:
+                pass
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, dict):
+            return {str(k): _json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [_json_safe(v) for v in value]
+        if value is None or isinstance(value, (str, int, float, bool)):
+            if isinstance(value, float) and not math.isfinite(value):
+                return None
+            return value
+        return str(value)
+
     try:
-        json_str = json.dumps(data_dict, ensure_ascii=False)
-        b_data = json_str.encode('utf-8')
-        base64_str = base64.b64encode(b_data).decode('utf-8')
-        return base64_str
-    except Exception:
-        return ""
+        json_str = json.dumps(_json_safe(data_dict), ensure_ascii=False, separators=(",", ":"))
+        return base64.b64encode(json_str.encode("utf-8")).decode("ascii")
+    except Exception as exc:
+        raise ValueError(f"JSON変換に失敗しました: {exc}") from exc
 
 def decode_for_mobile(encoded_str):
     """圧縮された文字列を元のデータ(辞書型)に復元（破損補正・従来形式との互換付き）"""
@@ -237,7 +261,9 @@ with st.sidebar:
             st.error(f"セーブコードの作成に失敗しました: {exc}")
     generated_code = st.session_state.get("generated_mobile_save_code", "")
     if generated_code:
-        st.text_area("作成されたセーブコード（全体をコピー）", value=generated_code, height=140, key="generated_mobile_save_code_display_v12029")
+        # 前回表示したテキストエリアの値が残っていても、今回生成したコードを優先して表示する。
+        st.session_state["generated_mobile_save_code_display_v12029"] = generated_code
+        st.text_area("作成されたセーブコード（全体をコピー）", height=140, key="generated_mobile_save_code_display_v12029")
         st.download_button(
             "⬇️ セーブコードをテキスト保存",
             data=generated_code,
