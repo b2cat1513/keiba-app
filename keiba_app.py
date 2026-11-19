@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.20.54"
+APP_PATCH_VERSION = "Ver1.21.01"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -7545,7 +7545,7 @@ if not mobile_mode:
 
             c = st.columns(2)
             _auto_frame = calculate_frame_position(safe_int_convert(num, i), _frame_field_size)
-            sel_frame = c[0].selectbox("枠有利（自動判定）", frame_options, index=_safe_select_index(frame_options, st.session_state.get(f"frame_{i}", _auto_frame)), key=f"frame_{i}")
+            sel_frame = c[0].selectbox("枠有利（自動判定）", frame_options, key=f"frame_{i}")
             sel_dist_change = c[1].selectbox("前走距離", distance_options, index=_safe_select_index(distance_options, s_row.get("sel_dist_change", "同距離")), key=f"dist_change_{i}")
             score_cell = st.empty()
 
@@ -7658,7 +7658,11 @@ else:
         c1, c2 = st.columns(2)
         num_int = safe_int_convert(num, i)
         _auto_frame = calculate_frame_position(num_int, _frame_field_size)
-        sel_frame = c1.selectbox("枠有利（自動判定）", frame_options, index=_safe_select_index(frame_options, st.session_state.get(f"frame_{i}", s_row.get("sel_frame", _auto_frame))), key=f"frame_{i}")
+        _frame_key = f"frame_{i}"
+        if _frame_key not in st.session_state:
+            _saved_frame = s_row.get("sel_frame", _auto_frame)
+            st.session_state[_frame_key] = _saved_frame if _saved_frame in frame_options else _auto_frame
+        sel_frame = c1.selectbox("枠有利（自動判定）", frame_options, key=_frame_key)
         sel_dist_change = c2.selectbox("前走距離", distance_options, index=_safe_select_index(distance_options, s_row.get("sel_dist_change", "同距離")), key=f"dist_change_{i}")
 
         has_heavy_record = st.checkbox("道悪実績あり", value=s_row.get("heavy_record", False), key=f"rec_{i}")
@@ -10194,7 +10198,43 @@ def _bt_parse_tsv(text, kind):
         rows.append(rec)
     return rows
 
-bt_cols=["開催日","競馬場","レース番号","レース名","馬番","馬名","U指数","実着順","人気","単勝オッズ","単勝払戻(100円)","騎手","騎手リーディング順位","斤量"]
+def _bt_trio_axis_backtest(race_df, payout_col="3連複払戻(100円)"):
+    """U指数順位1-2/1-3/2-3の2頭軸総流しを1レース分検証する。"""
+    required = {"馬番", "U指数", "実着順"}
+    if race_df is None or race_df.empty or not required.issubset(race_df.columns):
+        return []
+    work = race_df.copy()
+    for col in ("馬番", "U指数", "実着順"):
+        work[col] = pd.to_numeric(work[col], errors="coerce")
+    work = work.dropna(subset=["馬番", "U指数", "実着順"])
+    work = work.sort_values(["U指数", "馬番"], ascending=[False, True]).reset_index(drop=True)
+    starters = len(work)
+    if starters < 3:
+        return []
+    actual_top3 = set(work.nsmallest(3, "実着順")["馬番"].astype(int).tolist())
+    payout = None
+    if payout_col in work.columns:
+        vals = pd.to_numeric(work[payout_col], errors="coerce").dropna()
+        if len(vals):
+            payout = float(vals.iloc[0])
+    patterns = [("U指数1位＋2位", 0, 1), ("U指数1位＋3位", 0, 2), ("U指数2位＋3位", 1, 2)]
+    rows = []
+    for label, i, j in patterns:
+        a, b = int(work.iloc[i]["馬番"]), int(work.iloc[j]["馬番"])
+        hit = a in actual_top3 and b in actual_top3
+        tickets = starters - 2
+        stake = tickets * 100
+        returned = payout if hit and payout is not None else 0.0
+        rows.append({
+            "軸パターン": label, "軸馬番": f"{a}-{b}", "出走頭数": starters,
+            "買い目点数": tickets, "購入金額": stake, "的中": bool(hit),
+            "払戻入力済み": payout is not None, "払戻金額": returned,
+            "収支": returned - stake,
+        })
+    return rows
+
+
+bt_cols=["開催日","競馬場","レース番号","レース名","馬番","馬名","U指数","実着順","人気","単勝オッズ","単勝払戻(100円)","3連複払戻(100円)","騎手","騎手リーディング順位","斤量"]
 bt_c1,bt_c2=st.columns(2)
 with bt_c1:
     bt_date=st.text_input("開催日（例：2026-06-04）",key="bt47_date")
@@ -10266,7 +10306,7 @@ if (u_img or r_img) and (len(parsed_u) < 8 or len(parsed_r) < 8):
     )
 st.caption("馬番1～18の入力行を用意し、OCR・コピペで読めた項目は自動入力します。読み取れなかった馬名・着順・人気・オッズ・騎手・斤量などは、この一覧を直接編集して手入力できます。実際に出走していない馬番の行は削除してください。")
 if parsed: seed=pd.DataFrame(parsed)
-else: seed=pd.DataFrame([{c:(bt_date if c=="開催日" else bt_track if c=="競馬場" else bt_rno if c=="レース番号" else bt_name if c=="レース名" else None if c in ("馬番","U指数","実着順","人気","単勝オッズ","単勝払戻(100円)","騎手リーディング順位","斤量") else "") for c in bt_cols}])
+else: seed=pd.DataFrame([{c:(bt_date if c=="開催日" else bt_track if c=="競馬場" else bt_rno if c=="レース番号" else bt_name if c=="レース名" else None if c in ("馬番","U指数","実着順","人気","単勝オッズ","単勝払戻(100円)","3連複払戻(100円)","騎手リーディング順位","斤量") else "") for c in bt_cols}])
 for c in bt_cols:
     if c not in seed.columns: seed[c]=None
 seed=seed[bt_cols]
@@ -10287,6 +10327,7 @@ edited=st.data_editor(seed,num_rows="dynamic",use_container_width=True,hide_inde
     "人気":st.column_config.NumberColumn(min_value=1,max_value=18,step=1),
     "単勝オッズ":st.column_config.NumberColumn(min_value=0,format="%.1f"),
     "単勝払戻(100円)":st.column_config.NumberColumn(min_value=0,step=10),
+    "3連複払戻(100円)":st.column_config.NumberColumn(label="3連複払戻(100円)",min_value=0,step=10),
     "斤量":st.column_config.NumberColumn(min_value=0,format="%.1f"),
     "騎手リーディング順位":st.column_config.NumberColumn(label="騎手リーディング順位",min_value=1,max_value=200,step=1),
 })
@@ -10367,6 +10408,55 @@ if len(valid):
             st.warning("勝ち馬の単勝払戻が未入力のため、回収率は計算できません。")
         st.markdown("**レース別の照合結果**")
         st.dataframe(summary_df, use_container_width=True, hide_index=True)
+        # 3連複2頭軸総流し：3パターン比較
+        st.divider()
+        st.markdown("### 🎯 3連複2頭軸総流し・3パターン比較")
+        st.caption(
+            "U指数順位の1-2位、1-3位、2-3位をそれぞれ軸にして、残り全頭へ各100円で総流しします。"
+            "実際の3連複払戻（100円あたり）を登録一覧の専用列に入力してください。"
+            "払戻未入力レースは的中率には含め、回収率の購入金額からは除外します。"
+        )
+        trio_rows = []
+        for _race_key, _race_df in bt_work.groupby("_race_key", dropna=False):
+            trio_rows.extend(_bt_trio_axis_backtest(_race_df))
+        if trio_rows:
+            trio_df = pd.DataFrame(trio_rows)
+            trio_df["払戻確認済み購入金額"] = trio_df.apply(
+                lambda r: r["購入金額"] if r["払戻入力済み"] else 0, axis=1
+            )
+            trio_df["払戻確認済み払戻"] = trio_df.apply(
+                lambda r: r["払戻金額"] if r["払戻入力済み"] else 0, axis=1
+            )
+            trio_summary = trio_df.groupby("軸パターン", sort=False).agg(
+                対象レース数=("的中", "count"), 的中レース数=("的中", "sum"),
+                払戻入力済みレース数=("払戻入力済み", "sum"),
+                購入金額=("払戻確認済み購入金額", "sum"),
+                払戻合計=("払戻確認済み払戻", "sum"),
+                総購入点数=("買い目点数", "sum"),
+            ).reset_index()
+            trio_summary["的中率"] = (
+                trio_summary["的中レース数"] / trio_summary["対象レース数"] * 100
+            ).round(1).astype(str) + "%"
+            trio_summary["回収率"] = trio_summary.apply(
+                lambda r: f"{r['払戻合計'] / r['購入金額'] * 100:.1f}%"
+                if r["購入金額"] > 0 else "払戻未入力", axis=1
+            )
+            trio_summary["収支"] = trio_summary.apply(
+                lambda r: f"{r['払戻合計'] - r['購入金額']:+,.0f}円"
+                if r["購入金額"] > 0 else "未算出", axis=1
+            )
+            st.dataframe(trio_summary, use_container_width=True, hide_index=True)
+            st.markdown("**レース別・軸パターン別の結果**")
+            st.dataframe(trio_df, use_container_width=True, hide_index=True)
+            st.download_button(
+                "📥 3連複3パターン比較をCSV保存",
+                data=trio_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name="jenny_trio_axis_backtest.csv", mime="text/csv",
+                key="bt_trio_axis_csv",
+            )
+        else:
+            st.info("3連複分析には、各レースで馬番・U指数・実着順が3頭以上必要です。")
+
         # 馬ごとの順位を付与し、順位帯・人気・オッズ・騎手リーディングを比較
         detail_parts = []
         for _, race_df in bt_work.groupby("_race_key", dropna=False):
