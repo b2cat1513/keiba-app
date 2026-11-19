@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.21.00"
+APP_PATCH_VERSION = "Ver1.21.01"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -7545,7 +7545,7 @@ if not mobile_mode:
 
             c = st.columns(2)
             _auto_frame = calculate_frame_position(safe_int_convert(num, i), _frame_field_size)
-            sel_frame = c[0].selectbox("枠有利（自動判定）", frame_options, index=_safe_select_index(frame_options, st.session_state.get(f"frame_{i}", _auto_frame)), key=f"frame_{i}")
+            sel_frame = c[0].selectbox("枠有利（自動判定）", frame_options, key=f"frame_{i}")
             sel_dist_change = c[1].selectbox("前走距離", distance_options, index=_safe_select_index(distance_options, s_row.get("sel_dist_change", "同距離")), key=f"dist_change_{i}")
             score_cell = st.empty()
 
@@ -7658,7 +7658,11 @@ else:
         c1, c2 = st.columns(2)
         num_int = safe_int_convert(num, i)
         _auto_frame = calculate_frame_position(num_int, _frame_field_size)
-        sel_frame = c1.selectbox("枠有利（自動判定）", frame_options, index=_safe_select_index(frame_options, st.session_state.get(f"frame_{i}", s_row.get("sel_frame", _auto_frame))), key=f"frame_{i}")
+        _frame_key = f"frame_{i}"
+        if _frame_key not in st.session_state:
+            _saved_frame = s_row.get("sel_frame", _auto_frame)
+            st.session_state[_frame_key] = _saved_frame if _saved_frame in frame_options else _auto_frame
+        sel_frame = c1.selectbox("枠有利（自動判定）", frame_options, key=_frame_key)
         sel_dist_change = c2.selectbox("前走距離", distance_options, index=_safe_select_index(distance_options, s_row.get("sel_dist_change", "同距離")), key=f"dist_change_{i}")
 
         has_heavy_record = st.checkbox("道悪実績あり", value=s_row.get("heavy_record", False), key=f"rec_{i}")
