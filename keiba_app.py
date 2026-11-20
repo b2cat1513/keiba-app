@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.21.04"
+APP_PATCH_VERSION = "Ver1.21.05"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -9866,7 +9866,7 @@ st.info(
 
 
 # ==========================================
-# 📊 バックテスト入力（OCR＋コピペ＋手入力補完＋成績分析） Ver1.21.04
+# 📊 バックテスト入力（OCR＋コピペ＋手入力補完＋成績分析） Ver1.21.05
 # 既存予想ロジック・学習DBとは完全分離
 # ==========================================
 st.divider()
@@ -10021,7 +10021,7 @@ def _bt_ocr_image(upload, kind="u"):
                                 positional_lines.append(f"BT_UROW 馬番={row_i} U={value:.1f}")
                         if positional_lines:
                             candidates.append("\n".join(positional_lines))
-        # Ver1.21.04: U指数画像の馬名列を横罫線で1頭ずつ切り出す。
+        # Ver1.21.05: U指数画像の馬名列を横罫線で1頭ずつ切り出す。
         # U指数値は既存の色別・行別OCR結果を優先し、馬名だけを馬番順に補完する。
         if kind == "u" and im.width >= 700 and im.height >= 400:
             try:
@@ -10063,6 +10063,81 @@ def _bt_ocr_image(upload, kind="u"):
             except Exception:
                 pass
 
+        # Ver1.21.05: 添付されたウマニティ／結果表の列位置に合わせた行単位OCR。
+        # 横罫線から実データ行を検出し、馬番・馬名・数値列を別々に認識する。
+        if kind in ("u", "r") and w >= 1400 and h >= 800:
+            try:
+                arr = np.asarray(im.convert("RGB"))
+                # 表全幅に近い範囲で青い水平罫線を検出。行背景色は判定に使わない。
+                xa, xb = int(w * 0.045), int(w * 0.955)
+                sub = arr[:, xa:xb, :]
+                blue = (sub[:, :, 2] > 105) & (sub[:, :, 0] < 150) & (sub[:, :, 1] < 195)
+                density = blue.mean(axis=1)
+                ys = np.where(density > 0.28)[0].tolist()
+                groups=[]
+                for yy in ys:
+                    if not groups or yy > groups[-1][-1] + 2:
+                        groups.append([yy])
+                    else:
+                        groups[-1].append(yy)
+                bounds=[int(round(sum(g)/len(g))) for g in groups if len(g)>=1]
+                # ヘッダー下の行だけを採用。16頭の画像では通常17本の境界。
+                pairs=[(a,b) for a,b in zip(bounds,bounds[1:]) if 22 <= b-a <= 70]
+                if 8 <= len(pairs) <= 18:
+                    structured=[]
+                    def row_text(box, lang="jpn+eng", psm=7, whitelist=None):
+                        x0,y0,x1,y1=box
+                        crop=im.crop((max(0,x0),max(0,y0),min(w,x1),min(h,y1)))
+                        if crop.width < 5 or crop.height < 5: return ""
+                        crop=crop.resize((crop.width*5,crop.height*5))
+                        crop=ImageOps.autocontrast(ImageOps.grayscale(crop))
+                        cfg=f"--oem 3 --psm {psm}"
+                        if whitelist: cfg += f" -c tessedit_char_whitelist={whitelist}"
+                        try: return pytesseract.image_to_string(crop,lang=lang,config=cfg,timeout=8).strip()
+                        except Exception: return ""
+                    for row_i,(yt,yb) in enumerate(pairs, start=1):
+                        pad=max(2,int((yb-yt)*0.12)); top=yt+pad; bot=yb-pad
+                        if kind == "u":
+                            # ウマニティ表：馬番 x=約5.7～7.1%、U指数=10.5～14.4%、馬名=14.4～28.0%。
+                            no_txt=row_text((int(w*.055),top,int(w*.075),bot),"eng",7,"0123456789")
+                            u_txt=row_text((int(w*.103),top,int(w*.146),bot),"eng",7,"0123456789.")
+                            name_txt=row_text((int(w*.142),top,int(w*.281),bot),"jpn",7)
+                            no_m=re.search(r"\d{1,2}",no_txt)
+                            u_token=re.sub(r"[^0-9.]","",u_txt)
+                            if "." not in u_token and len(u_token) in (3,4): u_token=u_token[:-1]+"."+u_token[-1]
+                            try: u_val=float(u_token)
+                            except Exception: u_val=None
+                            name=re.sub(r"[\s|｜:：]+","",name_txt)
+                            name=re.sub(r"[^一-龥々ぁ-んァ-ヶー]","",name)
+                            if no_m and 1<=int(no_m.group())<=18:
+                                fields=[f"BT_UROW 馬番={int(no_m.group())}"]
+                                if u_val is not None and 70<=u_val<=130.9: fields.append(f"U={u_val:.1f}")
+                                if len(name)>=2: fields.append(f"馬名={name}")
+                                structured.append(" ".join(fields))
+                        else:
+                            # 結果表：着順・馬番・馬名を個別列で読み、列の混線を防ぐ。
+                            rank_txt=row_text((int(w*.057),top,int(w*.085),bot),"eng",7,"0123456789")
+                            no_txt=row_text((int(w*.097),top,int(w*.116),bot),"eng",7,"0123456789")
+                            name_txt=row_text((int(w*.115),top,int(w*.239),bot),"jpn",7)
+                            time_txt=row_text((int(w*.556),top,int(w*.594),bot),"eng",7,"0123456789.:")
+                            margin_txt=row_text((int(w*.594),top,int(w*.624),bot),"jpn+eng",7)
+                            threef_txt=row_text((int(w*.624),top,int(w*.655),bot),"eng",7,"0123456789.")
+                            rank_m=re.search(r"\d{1,2}",rank_txt); no_m=re.search(r"\d{1,2}",no_txt)
+                            name=re.sub(r"[\s|｜:：]+","",name_txt)
+                            name=re.sub(r"[^一-龥々ぁ-んァ-ヶー]","",name)
+                            if rank_m and no_m and len(name)>=2:
+                                rank=int(rank_m.group()); no=int(no_m.group())
+                                if 1<=rank<=18 and 1<=no<=18:
+                                    time_digits=re.sub(r"\D","",time_txt)
+                                    time_val=""
+                                    if len(time_digits)==4: time_val=f"{time_digits[0]}.{time_digits[1:3]}.{time_digits[3]}"
+                                    elif len(time_digits)==5: time_val=f"{time_digits[0]}.{time_digits[1:3]}.{time_digits[3:]}"
+                                    tf=_bt_num(threef_txt)
+                                    structured.append(f"BT_RROW 馬番={no} 着順={rank} 馬名={name} タイム={time_val} 着差={margin_txt} 上がり3F={tf if tf is not None and 20<=tf<=50 else ''}")
+                    if len(structured)>=8:
+                        candidates.append("\n".join(structured))
+            except Exception:
+                pass
         if not candidates:
             return "", "OCRを実行できませんでした。"
         # 文字数ではなく、実際に解析できる行数を優先してOCR方式を選ぶ。
@@ -10115,13 +10190,20 @@ def _bt_parse_umanity_ocr(text):
         line=re.sub(r"\s+", " ", str(raw_line)).strip()
         if not line:
             continue
-        # Ver1.21.04: 馬名列だけを行単位で読んだ補完データ。
+        # Ver1.21.05: 馬名列だけを行単位で読んだ補完データ。
         name_match = re.search(r"BT_UNAME\s+馬番\s*=\s*(\d{1,2})\s+馬名\s*=\s*(.+)", line, re.I)
         if name_match:
             name_no = int(name_match.group(1))
             name_val = name_match.group(2).strip()
             if 1 <= name_no <= 18 and len(name_val) >= 3:
                 name_only[name_no] = name_val
+            continue
+        # Ver1.21.05: 列ごとに独立認識した構造化行。
+        structured_u = re.search(r"BT_UROW\s+馬番\s*=\s*(\d{1,2})(?:\s+U\s*=\s*(\d{2,3}\.\d))?(?:\s+馬名\s*=\s*(.*))?", line, re.I)
+        if structured_u:
+            no=int(structured_u.group(1)); uv=_bt_num(structured_u.group(2)); nm=(structured_u.group(3) or "").strip()
+            if 1<=no<=18 and (uv is None or 70<=uv<=130.9):
+                rows.append({"馬番":no,"馬名":nm,"U指数":uv})
             continue
         # Ver1.20.49の列・行別OCRが出力する構造化行。
         positional = re.search(r"BT_UROW\s+馬番\s*=\s*(\d{1,2})\s+U\s*=\s*(\d{2,3}\.\d)(?:\s+馬名\s*=\s*(.*))?", line, re.I)
@@ -10205,6 +10287,14 @@ def _bt_parse_result_ocr(text):
             candidates.append(lines[i] + " " + lines[i+1])
 
     for line in candidates:
+        structured = re.search(r"BT_RROW\s+馬番\s*=\s*(\d{1,2})\s+着順\s*=\s*(\d{1,2})\s+馬名\s*=\s*(.+?)\s+タイム\s*=\s*(.*?)\s+着差\s*=\s*(.*?)\s+上がり3F\s*=\s*(.*)$", line, re.I)
+        if structured:
+            no, rank = int(structured.group(1)), int(structured.group(2))
+            name=structured.group(3).strip(); tm=structured.group(4).strip(); margin=structured.group(5).strip(); tf=_bt_num(structured.group(6))
+            if 1<=no<=18 and 1<=rank<=18 and len(name)>=2:
+                rows.append({"馬番":no,"馬名":name,"実着順":rank,"人気":None,"単勝オッズ":None,
+                             "走破タイム":tm,"着差":margin,"上がり3F":tf if tf is not None and 20<=tf<=50 else None,"通過順":""})
+            continue
         head=re.match(r"^(\d{1,2})\s+", line)
         if not head:
             continue
@@ -10424,7 +10514,7 @@ def _bt_trio_axis_backtest(race_df, payout_col="3連複払戻(100円)"):
     return rows
 
 
-bt_cols=["開催日","競馬場","レース番号","レース名","馬番","馬名","U指数","実着順","人気","単勝オッズ","走破タイム","着差","上がり3F","通過順","単勝払戻(100円)","3連複払戻(100円)","騎手","騎手リーディング順位","斤量"]
+bt_cols=["開催日","競馬場","レース番号","レース名","馬番","馬名","U指数","実着順","人気","単勝オッズ","走破タイム","着差","上がり3F","通過順","単勝払戻(100円)","3連複組合せ","3連複払戻(100円)","騎手","騎手リーディング順位","斤量"]
 bt_c1,bt_c2=st.columns(2)
 with bt_c1:
     bt_date=st.text_input("開催日（例：2026-06-04）",key="bt47_date")
@@ -10503,6 +10593,7 @@ for no,rec in sorted(by_no.items()):
         # 組合せの先頭馬番の行だけに保持する（組合せ自体は払戻画像原文で確認）。
         combo_nums = [int(x) for x in re.findall(r"\d+", str(payout_data.get("3連複組合せ", "")))]
         if combo_nums and no == combo_nums[0]:
+            rec["3連複組合せ"] = payout_data.get("3連複組合せ", "")
             rec["3連複払戻(100円)"] = payout_data["3連複払戻(100円)"]
     if payout_data.get("単勝払戻(100円)") is not None and no == payout_data.get("単勝馬番"):
         rec["単勝払戻(100円)"] = payout_data["単勝払戻(100円)"]
@@ -10533,13 +10624,14 @@ if old_csv is not None:
         st.success(f"CSVを読み込みました：{len(seed)}行")
     except Exception as exc: st.error(f"CSV読み込みエラー：{exc}")
 
-edited=st.data_editor(seed,num_rows="dynamic",use_container_width=True,hide_index=True,key="bt47_editor",column_config={
+edited=st.data_editor(seed,num_rows="dynamic",use_container_width=True,hide_index=True,key="bt47_editor_v12105",column_config={
     "馬番":st.column_config.NumberColumn(min_value=1,max_value=18,step=1),
     "U指数":st.column_config.NumberColumn(format="%.1f"),
     "実着順":st.column_config.NumberColumn(min_value=1,max_value=18,step=1),
     "人気":st.column_config.NumberColumn(min_value=1,max_value=18,step=1),
     "単勝オッズ":st.column_config.NumberColumn(min_value=0,format="%.1f"),
     "単勝払戻(100円)":st.column_config.NumberColumn(min_value=0,step=10),
+    "3連複組合せ":st.column_config.TextColumn(label="3連複組合せ（馬番）"),
     "3連複払戻(100円)":st.column_config.NumberColumn(label="3連複払戻(100円)",min_value=0,step=10),
     "斤量":st.column_config.NumberColumn(min_value=0,format="%.1f"),
     "騎手リーディング順位":st.column_config.NumberColumn(label="騎手リーディング順位",min_value=1,max_value=200,step=1),
