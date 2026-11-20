@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.21.06"
+APP_PATCH_VERSION = "Ver1.21.07"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -10103,7 +10103,14 @@ def _bt_ocr_image(upload, kind="u"):
                             # 小さな馬番セルのOCR誤認による+2ずれを防止。
                             row_horse_no = row_i
                             u_txt=row_text((int(w*.103),top,int(w*.146),bot),"eng",7,"0123456789.")
-                            name_txt=row_text((int(w*.142),top,int(w*.281),bot),"jpn",7)
+                            name_box=(int(w*.142),top,int(w*.281),bot)
+                            name_txt=row_text(name_box,"jpn",7)
+                            # 1回目で空欄・短縮された場合は、少し広い範囲を別PSMで再認識する。
+                            # U指数列は含めず、馬名列から性齢欄の手前までを対象にする。
+                            if len(re.sub(r"[^一-龥々ぁ-んァ-ヶー]","",name_txt)) < 3:
+                                name_txt_alt=row_text((int(w*.142),top,int(w*.315),bot),"jpn",6)
+                                if len(re.sub(r"[^一-龥々ぁ-んァ-ヶー]","",name_txt_alt)) > len(re.sub(r"[^一-龥々ぁ-んァ-ヶー]","",name_txt)):
+                                    name_txt=name_txt_alt
                             u_token=re.sub(r"[^0-9.]","",u_txt)
                             if "." not in u_token and len(u_token) in (3,4): u_token=u_token[:-1]+"."+u_token[-1]
                             try: u_val=float(u_token)
@@ -10625,7 +10632,8 @@ if old_csv is not None:
         st.success(f"CSVを読み込みました：{len(seed)}行")
     except Exception as exc: st.error(f"CSV読み込みエラー：{exc}")
 
-edited=st.data_editor(seed,num_rows="dynamic",use_container_width=True,hide_index=True,key="bt47_editor_v12105",column_config={
+edited=st.data_editor(seed,num_rows="dynamic",use_container_width=True,hide_index=True,key="bt47_editor_v12107",column_config={
+    "馬名":st.column_config.TextColumn(label="馬名",width="large"),
     "馬番":st.column_config.NumberColumn(min_value=1,max_value=18,step=1),
     "U指数":st.column_config.NumberColumn(format="%.1f"),
     "実着順":st.column_config.NumberColumn(min_value=1,max_value=18,step=1),
