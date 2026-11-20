@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.21.02"
+APP_PATCH_VERSION = "Ver1.21.03"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -9866,7 +9866,7 @@ st.info(
 
 
 # ==========================================
-# 📊 バックテスト入力（OCR＋コピペ＋手入力補完＋成績分析） Ver1.21.02
+# 📊 バックテスト入力（OCR＋コピペ＋手入力補完＋成績分析） Ver1.21.03
 # 既存予想ロジック・学習DBとは完全分離
 # ==========================================
 st.divider()
@@ -9963,62 +9963,61 @@ def _bt_ocr_image(upload, kind="u"):
                     row_count = len(boundaries) - 1
                     if 8 <= row_count <= 18:
                         positional_lines = []
-                        x0, x1 = int(w * 0.078) + 1, int(w * 0.145) + 1
-                        for row_i, (top_y, bottom_y) in enumerate(zip(boundaries[:-1], boundaries[1:]), start=1):
+                        # ウマニティ画面は先頭にヘッダー行があるため、最初の境界ペアを除外。
+                        # U指数列は馬番/My予想印の右側（画像幅の約9.4～15.1%）。
+                        x0, x1 = int(w * 0.094), int(w * 0.151)
+                        data_pairs = list(zip(boundaries[1:-1], boundaries[2:]))
+                        for row_i, (top_y, bottom_y) in enumerate(data_pairs, start=1):
                             row_h = bottom_y - top_y
                             if row_h < 12:
                                 continue
-                            # 横罫線を除外し、U指数の数字が左端にかかる赤字も残す。
-                            pad = max(3, int(row_h * 0.06))
+                            pad = max(3, int(row_h * 0.07))
                             crop = im.crop((x0, top_y + pad, x1, bottom_y - pad))
                             if crop.width < 10 or crop.height < 8:
                                 continue
-                            crop = crop.resize((crop.width * 6, crop.height * 6))
+                            # 赤字・青字の数字だけを残し、青い罫線や背景を除去する。
                             pix = crop.load()
-                            red_mask = Image.new("L", crop.size, 255)
-                            mask_px = red_mask.load()
-                            red_count = 0
+                            color_mask = Image.new("L", crop.size, 255)
+                            mask_px = color_mask.load()
                             for yy in range(crop.height):
                                 for xx in range(crop.width):
                                     rr, gg, bb = pix[xx, yy]
-                                    # 赤字U指数だけを抽出。青い罫線・青字は除外。
-                                    is_red = rr > 140 and gg < 150 and bb < 160
-                                    if is_red:
+                                    is_red = rr > 130 and (rr - gg) > 40 and (rr - bb) > 40
+                                    is_blue = bb > 100 and (bb - rr) > 30 and (bb - gg) > 10
+                                    if is_red or is_blue:
                                         mask_px[xx, yy] = 0
-                                        red_count += 1
-
-                            try:
-                                if red_count > 20:
-                                    # 101.2 / 102.5 など赤字の指数は赤色成分を優先。
-                                    raw_num = pytesseract.image_to_string(
-                                        red_mask, lang="eng",
-                                        config="--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789.",
-                                        timeout=8,
-                                    ).strip()
-                                else:
-                                    # 青字指数はグレースケール＋単語認識で小数点欠落も許容。
-                                    gray = ImageOps.autocontrast(ImageOps.grayscale(crop))
-                                    raw_num = pytesseract.image_to_string(
-                                        gray, lang="eng",
-                                        config="--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789.",
-                                        timeout=8,
-                                    ).strip()
-                            except Exception:
-                                raw_num = ""
-
-                            token = re.sub(r"[^0-9.]", "", raw_num)
-                            if "." not in token and len(token) in (3, 4):
-                                token = token[:-1] + "." + token[-1]
-                            elif "." not in token and len(token) == 2:
-                                # 94 / 98 のように末尾の .0 がOCRで省略された値。
-                                token = token + ".0"
-                            # 先頭の1が罫線等で欠けたケースを、値の範囲から補完しない。
-                            # OCRが70.0～130.9の指数として読めた場合だけ採用する。
-                            try:
-                                value = round(float(token), 1) if token else None
-                            except Exception:
-                                value = None
-                            if value is not None and 70.0 <= value <= 130.9:
+                            color_mask = color_mask.resize((color_mask.width * 7, color_mask.height * 7))
+                            gray = ImageOps.autocontrast(ImageOps.grayscale(crop).resize((crop.width * 7, crop.height * 7)))
+                            raw_options = []
+                            for candidate_img in (color_mask,):
+                                for psm in (7, 8):
+                                    try:
+                                        raw_options.append(pytesseract.image_to_string(
+                                            candidate_img, lang="eng",
+                                            config=f"--oem 3 --psm {psm} -c tessedit_char_whitelist=0123456789.",
+                                            timeout=8,
+                                        ).strip())
+                                    except Exception:
+                                        pass
+                            parsed_values = []
+                            for raw_num in raw_options:
+                                token = re.sub(r"[^0-9.]", "", raw_num)
+                                # 赤字100.x/101.xの先頭「1」が落ちたOCRを補正。
+                                if token.startswith("00.") or token.startswith("01."):
+                                    token = "1" + token
+                                if "." not in token and len(token) in (3, 4):
+                                    token = token[:-1] + "." + token[-1]
+                                try:
+                                    value = round(float(token), 1) if token else None
+                                except Exception:
+                                    value = None
+                                if value is not None and 70.0 <= value <= 130.9:
+                                    parsed_values.append(value)
+                            # 同じ値が複数方式で読めた場合を優先。競合時は無理に平均せず先頭候補。
+                            if parsed_values:
+                                from collections import Counter
+                                counts = Counter(parsed_values)
+                                value = sorted(counts.items(), key=lambda z: (-z[1], parsed_values.index(z[0])))[0][0]
                                 positional_lines.append(f"BT_UROW 馬番={row_i} U={value:.1f}")
                         if positional_lines:
                             candidates.append("\n".join(positional_lines))
@@ -10182,6 +10181,59 @@ def _bt_parse_result_ocr(text):
         rows.append({"馬番":no,"馬名":name,"実着順":rank,"人気":pop,"単勝オッズ":odds,
                      "走破タイム":time_text,"着差":margin,"上がり3F":threef,"通過順":""})
 
+    # PSM 4 OCRでは、性齢やタイムの区切り記号が欠けても
+    # 「着順 馬番 馬名 ... 1354 352」のような行が得られる。
+    # その形式を補助解析し、馬番と馬名を優先して拾う。
+    fallback_rows = []
+    if lines:
+        for line in lines:
+            head = re.match(r"^\s*(\d{1,2})\s+(.+)$", line)
+            if not head:
+                continue
+            rank = int(head.group(1))
+            if not 1 <= rank <= 18:
+                continue
+            tail = head.group(2).strip()
+            # 馬名より前の数字だけを馬番候補にする（性齢・斤量の数字を混ぜない）。
+            name_match = re.search(r"[一-龯々ぁ-んァ-ヶー]{2,}", tail)
+            if not name_match:
+                continue
+            prefix = tail[:name_match.start()]
+            leading_nums = list(re.finditer(r"(?<!\d)(\d{1,2})(?!\d)", prefix))
+            if not leading_nums:
+                continue
+            # 枠番と馬番が両方あれば末尾が馬番。馬番だけならその1個を使う。
+            no = int(leading_nums[-1].group(1))
+            if not 1 <= no <= 18:
+                continue
+            name = name_match.group(0).strip()
+            rest = tail[name_match.end():]
+            # 走破タイムは 1.35.4 / 1.354 / 1354 の各OCR表記を許容。
+            tm = re.search(r"(?<!\d)(1[.:]?\d{2}[.:]?\d)(?!\d)", rest)
+            time_text = ""
+            if tm:
+                digits = re.sub(r"\D", "", tm.group(1))
+                if len(digits) == 4:
+                    time_text = f"{digits[0]}.{digits[1:3]}.{digits[3]}"
+                elif len(digits) == 5:
+                    time_text = f"{digits[0]}.{digits[1:3]}.{digits[3:]}"
+                else:
+                    time_text = tm.group(1)
+            # オッズは「3.4 (2)」など、括弧内人気と隣接する値から取得。
+            odds = pop = None
+            om = re.search(r"(\d{1,3}(?:[.]\d)?)\s*[（(](\d{1,2})[）)]", rest)
+            if om:
+                odds = _bt_num(om.group(1)); pop = int(om.group(2))
+            # 同一馬番の既存候補がなければ補助行を採用。誤読の競合は後段で除外。
+            fallback_rows.append({"馬番": no, "馬名": name, "実着順": rank, "人気": pop,
+                                  "単勝オッズ": odds, "走破タイム": time_text,
+                                  "着差": "", "上がり3F": None, "通過順": ""})
+        # PSM4形式の補助抽出が十分な頭数を取れた場合は、列ずれした旧候補を使わない。
+        if len(fallback_rows) >= 8:
+            rows = fallback_rows
+        else:
+            rows.extend(fallback_rows)
+
     # 馬番重複は同一内容のみ統合。競合する場合は除外して手修正を促す。
     grouped={}
     for r in rows:
@@ -10197,6 +10249,7 @@ def _bt_parse_result_ocr(text):
 def _bt_parse_payout_ocr(text):
     """払戻画像から単勝・3連複の100円払戻を抽出する。曖昧な場合は空欄のままにする。"""
     raw = re.sub(r"\s+", " ", str(text or "")).replace(",", "")
+    raw = re.sub(r"(?<=\d)[.．](?=\d{3}\s*円)", "", raw)
     result = {"単勝払戻(100円)": None, "3連複払戻(100円)": None,
               "単勝馬番": None, "3連複組合せ": ""}
     m = re.search(r"単勝[^0-9]{0,12}(\d{1,2})[^0-9]{0,8}(\d{2,6})\s*円?", raw)
@@ -10212,6 +10265,26 @@ def _bt_parse_payout_ocr(text):
         if all(1 <= n <= 18 for n in nums) and 50 <= amount <= 10000000:
             result["3連複組合せ"] = "-".join(map(str, nums))
             result["3連複払戻(100円)"] = amount
+    # OCRが「3連複」などの券種ラベルを落とした場合の救済。
+    # 3頭組合せ＋直後の金額を探し、3連単（3頭組合せの後に別金額）と混同しないよう
+    # 3連複の一般的な金額レンジと画像中の先行候補を確認する。
+    if result["3連複払戻(100円)"] is None:
+        triples = list(re.finditer(r"(?<!\d)(\d{1,2})\s*[-ー－]\s*(\d{1,2})\s*[-ー－]\s*(\d{1,2})\s+(\d{2,7})\s*円?", raw))
+        for tm in triples:
+            nums = [int(tm.group(i)) for i in (1, 2, 3)]
+            amount = int(tm.group(4))
+            if all(1 <= n <= 18 for n in nums) and 50 <= amount <= 1000000:
+                result["3連複組合せ"] = "-".join(map(str, nums))
+                result["3連複払戻(100円)"] = amount
+                break
+    if result["単勝払戻(100円)"] is None:
+        # 券種名が欠落したOCRテキストでは、最初の「馬番 金額円」を単勝候補として保持。
+        first = re.search(r"(?<!\d)(\d{1,2})\s+(\d{2,6})\s*円", raw)
+        if first:
+            no, amount = int(first.group(1)), int(first.group(2))
+            if 1 <= no <= 18 and 50 <= amount <= 1000000:
+                result["単勝馬番"] = no
+                result["単勝払戻(100円)"] = amount
     return result
 
 
