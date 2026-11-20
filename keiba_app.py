@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.21.03"
+APP_PATCH_VERSION = "Ver1.21.04"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -9866,7 +9866,7 @@ st.info(
 
 
 # ==========================================
-# 📊 バックテスト入力（OCR＋コピペ＋手入力補完＋成績分析） Ver1.21.03
+# 📊 バックテスト入力（OCR＋コピペ＋手入力補完＋成績分析） Ver1.21.04
 # 既存予想ロジック・学習DBとは完全分離
 # ==========================================
 st.divider()
@@ -10021,6 +10021,48 @@ def _bt_ocr_image(upload, kind="u"):
                                 positional_lines.append(f"BT_UROW 馬番={row_i} U={value:.1f}")
                         if positional_lines:
                             candidates.append("\n".join(positional_lines))
+        # Ver1.21.04: U指数画像の馬名列を横罫線で1頭ずつ切り出す。
+        # U指数値は既存の色別・行別OCR結果を優先し、馬名だけを馬番順に補完する。
+        if kind == "u" and im.width >= 700 and im.height >= 400:
+            try:
+                rgb_arr = np.array(im.convert("RGB"))
+                region = rgb_arr[:, int(im.width * 0.04):int(im.width * 0.94), :]
+                blue_rows = ((region[:, :, 2] > 100) &
+                             (region[:, :, 0] < 125) &
+                             (region[:, :, 1] < 185)).mean(axis=1)
+                raw_ys = np.where(blue_rows > 0.25)[0].tolist()
+                groups = []
+                for yy in raw_ys:
+                    if not groups or yy > groups[-1][-1] + 2:
+                        groups.append([int(yy)])
+                    else:
+                        groups[-1].append(int(yy))
+                bounds = [int(round(sum(g) / len(g))) for g in groups if g]
+                # 上部のヘッダー罫線を除き、データ行が8～18頭ある場合のみ採用。
+                if 8 <= len(bounds) - 2 <= 18:
+                    name_lines = []
+                    data_bounds = bounds[2:]
+                    for row_no, (yt, yb) in enumerate(zip(data_bounds, data_bounds[1:]), start=1):
+                        if yb - yt < 18:
+                            continue
+                        pad = max(2, int((yb - yt) * 0.08))
+                        ncrop = im.crop((int(im.width * 0.17), yt + pad,
+                                         int(im.width * 0.33), yb - pad))
+                        ncrop = ImageOps.autocontrast(ImageOps.grayscale(ncrop.resize(
+                            (max(1, ncrop.width * 5), max(1, ncrop.height * 5)))))
+                        ntext = pytesseract.image_to_string(
+                            ncrop, lang="jpn+eng", config="--oem 3 --psm 7",
+                            timeout=8).strip()
+                        name = re.sub(r"[\s|｜「」『』:：]+", "", ntext)
+                        name = re.sub(r"^[^一-龥々ぁ-んァ-ヶー]+", "", name)
+                        name = re.sub(r"[^一-龥々ぁ-んァ-ヶー]+$", "", name)
+                        if len(name) >= 3:
+                            name_lines.append(f"BT_UNAME 馬番={row_no} 馬名={name}")
+                    if name_lines:
+                        candidates.append("\n".join(name_lines))
+            except Exception:
+                pass
+
         if not candidates:
             return "", "OCRを実行できませんでした。"
         # 文字数ではなく、実際に解析できる行数を優先してOCR方式を選ぶ。
@@ -10034,6 +10076,22 @@ def _bt_ocr_image(upload, kind="u"):
                 count = 0
             return (count, len(candidate.strip()))
         txt=max(candidates,key=score)
+        if kind == "u":
+            # U指数の最良候補を維持しつつ、別候補で取得した行別馬名を合成する。
+            extra_names = []
+            for candidate in candidates:
+                extra_names.extend(
+                    line for line in candidate.splitlines()
+                    if re.search(r"BT_UNAME\s+馬番\s*=\s*\d{1,2}\s+馬名\s*=", line)
+                )
+            if extra_names:
+                existing = {re.search(r"馬番\s*=\s*(\d{1,2})", line).group(1)
+                            for line in txt.splitlines()
+                            if "BT_UNAME" in line and re.search(r"馬番\s*=\s*(\d{1,2})", line)}
+                txt += "\n" + "\n".join(
+                    line for line in extra_names
+                    if re.search(r"馬番\s*=\s*(\d{1,2})", line).group(1) not in existing
+                )
         return txt, ""
     except Exception as exc:
         return "", str(exc)
@@ -10052,16 +10110,26 @@ def _bt_parse_umanity_ocr(text):
     曖昧な行や同一馬番の競合は自動確定しない。
     """
     rows=[]
+    name_only = {}
     for raw_line in (text or "").splitlines():
         line=re.sub(r"\s+", " ", str(raw_line)).strip()
         if not line:
             continue
+        # Ver1.21.04: 馬名列だけを行単位で読んだ補完データ。
+        name_match = re.search(r"BT_UNAME\s+馬番\s*=\s*(\d{1,2})\s+馬名\s*=\s*(.+)", line, re.I)
+        if name_match:
+            name_no = int(name_match.group(1))
+            name_val = name_match.group(2).strip()
+            if 1 <= name_no <= 18 and len(name_val) >= 3:
+                name_only[name_no] = name_val
+            continue
         # Ver1.20.49の列・行別OCRが出力する構造化行。
-        positional = re.search(r"BT_UROW\s+馬番\s*=\s*(\d{1,2})\s+U\s*=\s*(\d{2,3}\.\d)", line, re.I)
+        positional = re.search(r"BT_UROW\s+馬番\s*=\s*(\d{1,2})\s+U\s*=\s*(\d{2,3}\.\d)(?:\s+馬名\s*=\s*(.*))?", line, re.I)
         if positional:
             no, u = int(positional.group(1)), float(positional.group(2))
+            pname = (positional.group(3) or "").strip()
             if 1 <= no <= 18 and 70.0 <= u <= 130.9:
-                rows.append({"馬番": no, "馬名": "", "U指数": u})
+                rows.append({"馬番": no, "馬名": pname, "U指数": u})
             continue
         # まず、馬名・性齢より前にあるU指数を検出する。
         sex_match=re.search(r"(?:牡|牝|セ)\s*\d+", line)
@@ -10113,6 +10181,10 @@ def _bt_parse_umanity_ocr(text):
         unique={(c["馬名"],c["U指数"]) for c in candidates}
         if len(unique)==1:
             out.append(candidates[0])
+    # 行順で抽出した馬名を、同じ馬番のU指数行に補完する。
+    for rec in out:
+        if not rec.get("馬名") and rec.get("馬番") in name_only:
+            rec["馬名"] = name_only[rec["馬番"]]
     return out
 
 
@@ -10427,7 +10499,11 @@ parsed=[]
 for no,rec in sorted(by_no.items()):
     rec.update({"開催日":bt_date,"競馬場":bt_track,"レース番号":bt_rno,"レース名":bt_name})
     if payout_data.get("3連複払戻(100円)") is not None:
-        rec["3連複払戻(100円)"] = payout_data["3連複払戻(100円)"]
+        # 3連複はレース単位の払戻。全馬行への重複コピーを避け、
+        # 組合せの先頭馬番の行だけに保持する（組合せ自体は払戻画像原文で確認）。
+        combo_nums = [int(x) for x in re.findall(r"\d+", str(payout_data.get("3連複組合せ", "")))]
+        if combo_nums and no == combo_nums[0]:
+            rec["3連複払戻(100円)"] = payout_data["3連複払戻(100円)"]
     if payout_data.get("単勝払戻(100円)") is not None and no == payout_data.get("単勝馬番"):
         rec["単勝払戻(100円)"] = payout_data["単勝払戻(100円)"]
     parsed.append(rec)
