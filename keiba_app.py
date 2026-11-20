@@ -12,9 +12,12 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.21.07"
+APP_PATCH_VERSION = "Ver1.21.08"
 
-np = None  # Ver1.18.24: NumPy不要
+try:
+    import numpy as np
+except Exception:
+    np = None  # NumPyがない環境では従来OCRへフォールバック
 from datetime import datetime, date
 from pathlib import Path
 from streamlit.components.v1 import html
@@ -10102,13 +10105,13 @@ def _bt_ocr_image(upload, kind="u"):
                             # 横罫線で分割した出馬表の行順を馬番として使用する。
                             # 小さな馬番セルのOCR誤認による+2ずれを防止。
                             row_horse_no = row_i
-                            u_txt=row_text((int(w*.103),top,int(w*.146),bot),"eng",7,"0123456789.")
-                            name_box=(int(w*.142),top,int(w*.281),bot)
+                            u_txt=row_text((int(w*.123),top,int(w*.167),bot),"eng",7,"0123456789.")
+                            name_box=(int(w*.167),top,int(w*.326),bot)
                             name_txt=row_text(name_box,"jpn",7)
                             # 1回目で空欄・短縮された場合は、少し広い範囲を別PSMで再認識する。
                             # U指数列は含めず、馬名列から性齢欄の手前までを対象にする。
                             if len(re.sub(r"[^一-龥々ぁ-んァ-ヶー]","",name_txt)) < 3:
-                                name_txt_alt=row_text((int(w*.142),top,int(w*.315),bot),"jpn",6)
+                                name_txt_alt=row_text((int(w*.167),top,int(w*.345),bot),"jpn",6)
                                 if len(re.sub(r"[^一-龥々ぁ-んァ-ヶー]","",name_txt_alt)) > len(re.sub(r"[^一-龥々ぁ-んァ-ヶー]","",name_txt)):
                                     name_txt=name_txt_alt
                             u_token=re.sub(r"[^0-9.]","",u_txt)
@@ -10124,12 +10127,12 @@ def _bt_ocr_image(upload, kind="u"):
                                 structured.append(" ".join(fields))
                         else:
                             # 結果表：着順・馬番・馬名を個別列で読み、列の混線を防ぐ。
-                            rank_txt=row_text((int(w*.057),top,int(w*.085),bot),"eng",7,"0123456789")
-                            no_txt=row_text((int(w*.097),top,int(w*.116),bot),"eng",7,"0123456789")
-                            name_txt=row_text((int(w*.115),top,int(w*.239),bot),"jpn",7)
-                            time_txt=row_text((int(w*.556),top,int(w*.594),bot),"eng",7,"0123456789.:")
-                            margin_txt=row_text((int(w*.594),top,int(w*.624),bot),"jpn+eng",7)
-                            threef_txt=row_text((int(w*.624),top,int(w*.655),bot),"eng",7,"0123456789.")
+                            rank_txt=row_text((int(w*.066),top,int(w*.099),bot),"eng",7,"0123456789")
+                            no_txt=row_text((int(w*.113),top,int(w*.132),bot),"eng",7,"0123456789")
+                            name_txt=row_text((int(w*.132),top,int(w*.279),bot),"jpn",7)
+                            time_txt=row_text((int(w*.647),top,int(w*.692),bot),"eng",7,"0123456789.:")
+                            margin_txt=row_text((int(w*.692),top,int(w*.726),bot),"jpn+eng",7)
+                            threef_txt=row_text((int(w*.726),top,int(w*.762),bot),"eng",7,"0123456789.")
                             rank_m=re.search(r"\d{1,2}",rank_txt); no_m=re.search(r"\d{1,2}",no_txt)
                             name=re.sub(r"[\s|｜:：]+","",name_txt)
                             name=re.sub(r"[^一-龥々ぁ-んァ-ヶー]","",name)
