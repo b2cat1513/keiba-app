@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.21.05"
+APP_PATCH_VERSION = "Ver1.21.06"
 
 np = None  # Ver1.18.24: NumPy不要
 from datetime import datetime, date
@@ -10046,8 +10046,8 @@ def _bt_ocr_image(upload, kind="u"):
                         if yb - yt < 18:
                             continue
                         pad = max(2, int((yb - yt) * 0.08))
-                        ncrop = im.crop((int(im.width * 0.17), yt + pad,
-                                         int(im.width * 0.33), yb - pad))
+                        ncrop = im.crop((int(im.width * 0.142), yt + pad,
+                                         int(im.width * 0.281), yb - pad))
                         ncrop = ImageOps.autocontrast(ImageOps.grayscale(ncrop.resize(
                             (max(1, ncrop.width * 5), max(1, ncrop.height * 5)))))
                         ntext = pytesseract.image_to_string(
@@ -10099,18 +10099,19 @@ def _bt_ocr_image(upload, kind="u"):
                         pad=max(2,int((yb-yt)*0.12)); top=yt+pad; bot=yb-pad
                         if kind == "u":
                             # ウマニティ表：馬番 x=約5.7～7.1%、U指数=10.5～14.4%、馬名=14.4～28.0%。
-                            no_txt=row_text((int(w*.055),top,int(w*.075),bot),"eng",7,"0123456789")
+                            # 横罫線で分割した出馬表の行順を馬番として使用する。
+                            # 小さな馬番セルのOCR誤認による+2ずれを防止。
+                            row_horse_no = row_i
                             u_txt=row_text((int(w*.103),top,int(w*.146),bot),"eng",7,"0123456789.")
                             name_txt=row_text((int(w*.142),top,int(w*.281),bot),"jpn",7)
-                            no_m=re.search(r"\d{1,2}",no_txt)
                             u_token=re.sub(r"[^0-9.]","",u_txt)
                             if "." not in u_token and len(u_token) in (3,4): u_token=u_token[:-1]+"."+u_token[-1]
                             try: u_val=float(u_token)
                             except Exception: u_val=None
                             name=re.sub(r"[\s|｜:：]+","",name_txt)
                             name=re.sub(r"[^一-龥々ぁ-んァ-ヶー]","",name)
-                            if no_m and 1<=int(no_m.group())<=18:
-                                fields=[f"BT_UROW 馬番={int(no_m.group())}"]
+                            if 1<=row_horse_no<=18:
+                                fields=[f"BT_UROW 馬番={row_horse_no}"]
                                 if u_val is not None and 70<=u_val<=130.9: fields.append(f"U={u_val:.1f}")
                                 if len(name)>=2: fields.append(f"馬名={name}")
                                 structured.append(" ".join(fields))
@@ -10125,7 +10126,7 @@ def _bt_ocr_image(upload, kind="u"):
                             rank_m=re.search(r"\d{1,2}",rank_txt); no_m=re.search(r"\d{1,2}",no_txt)
                             name=re.sub(r"[\s|｜:：]+","",name_txt)
                             name=re.sub(r"[^一-龥々ぁ-んァ-ヶー]","",name)
-                            if rank_m and no_m and len(name)>=2:
+                            if rank_m and no_m:
                                 rank=int(rank_m.group()); no=int(no_m.group())
                                 if 1<=rank<=18 and 1<=no<=18:
                                     time_digits=re.sub(r"\D","",time_txt)
@@ -10287,11 +10288,11 @@ def _bt_parse_result_ocr(text):
             candidates.append(lines[i] + " " + lines[i+1])
 
     for line in candidates:
-        structured = re.search(r"BT_RROW\s+馬番\s*=\s*(\d{1,2})\s+着順\s*=\s*(\d{1,2})\s+馬名\s*=\s*(.+?)\s+タイム\s*=\s*(.*?)\s+着差\s*=\s*(.*?)\s+上がり3F\s*=\s*(.*)$", line, re.I)
+        structured = re.search(r"BT_RROW\s+馬番\s*=\s*(\d{1,2})\s+着順\s*=\s*(\d{1,2})\s+馬名\s*=\s*(.*?)\s+タイム\s*=\s*(.*?)\s+着差\s*=\s*(.*?)\s+上がり3F\s*=\s*(.*)$", line, re.I)
         if structured:
             no, rank = int(structured.group(1)), int(structured.group(2))
             name=structured.group(3).strip(); tm=structured.group(4).strip(); margin=structured.group(5).strip(); tf=_bt_num(structured.group(6))
-            if 1<=no<=18 and 1<=rank<=18 and len(name)>=2:
+            if 1<=no<=18 and 1<=rank<=18:
                 rows.append({"馬番":no,"馬名":name,"実着順":rank,"人気":None,"単勝オッズ":None,
                              "走破タイム":tm,"着差":margin,"上がり3F":tf if tf is not None and 20<=tf<=50 else None,"通過順":""})
             continue
