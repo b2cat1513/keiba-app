@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.21.08"
+APP_PATCH_VERSION = "Ver1.21.09"
 
 try:
     import numpy as np
@@ -8179,11 +8179,58 @@ for _k, _r in st.session_state.get("loaded_data", {}).get("rows", {}).items():
 # ==========================================
 # 📊 スコア計算ロジック
 # ==========================================
+# Ver1.21.09: U指数を取得できない馬（主に外国馬）は0点扱いにせず、
+# 同一レース内で実際に取得できたU指数の中央値を「中立値」として
+# 指数スコア計算にだけ使用する。元のU指数データは書き換えない。
+_race_valid_u_indices = []
+for _item in row_tmp_data:
+    try:
+        _u = float(_item[4])
+        if math.isfinite(_u) and _u > 0:
+            _race_valid_u_indices.append(_u)
+    except (TypeError, ValueError, IndexError):
+        pass
+_race_valid_u_indices.sort()
+if _race_valid_u_indices:
+    _mid = len(_race_valid_u_indices) // 2
+    _race_u_neutral = (
+        _race_valid_u_indices[_mid]
+        if len(_race_valid_u_indices) % 2
+        else (_race_valid_u_indices[_mid - 1] + _race_valid_u_indices[_mid]) / 2.0
+    )
+else:
+    _race_u_neutral = None
+
 calculated_results = []
 for item in row_tmp_data:
     num, name, pop, win_odds, idx, wgt, wgh, l3f, sire, has_heavy_record, jock, previous_jockey, trainer, owner, custom_note, sel_track, sel_style, sel_frame, sel_dist_change, score_cell = item
     sex_age, sex, age, body_change = extract_sex_age_and_change(custom_note)
-    
+
+    # U指数欠損は実指数として保存せず、同レース中央値を中立補完値として
+    # スコア計算にのみ利用する。中央値が算出できない場合は従来どおり0。
+    _u_index_missing = False
+    try:
+        _u_original = float(idx)
+        if not math.isfinite(_u_original) or _u_original <= 0:
+            _u_index_missing = True
+    except (TypeError, ValueError):
+        _u_original = 0.0
+        _u_index_missing = True
+    _u_scoring_value = (
+        float(_race_u_neutral)
+        if _u_index_missing and _race_u_neutral is not None
+        else (0.0 if _u_index_missing else _u_original)
+    )
+    if _u_index_missing and _race_u_neutral is not None:
+        evaluation_note_u = (
+            f"U指数欠損のため同レース中央値{_race_u_neutral:.1f}を中立補完 "
+            "（実測U指数ではなく、指数点の不利益を避けるための計算上の代替値）"
+        )
+    elif _u_index_missing:
+        evaluation_note_u = "U指数欠損（比較可能な同レース指数がないため中立値0で計算）"
+    else:
+        evaluation_note_u = ""
+
     score = 0.0
     final_apt = "C"
     score_breakdown = {
@@ -8257,10 +8304,15 @@ for item in row_tmp_data:
         
         # 🌟 指数ベース補正 (ウマニティ Ｕ指数 基準化スケーリング)
         # 旧仕様の70.0/70.1付近の不連続を解消し、同じ変換式を一貫適用。
-        scaled_index_score = scale_u_index(idx)
+        scaled_index_score = scale_u_index(_u_scoring_value)
+        if _u_index_missing:
+            score_breakdown["指数"] = round(scaled_index_score, 2)
+            evaluation_reasons.append(evaluation_note_u)
+        else:
+            score_breakdown["指数"] = round(scaled_index_score, 2)
 
         base_jockey_rate = j_data["base"] + max(min(jockey_modifier, 0.20), -0.20)
-        if idx < 45.0:
+        if _u_scoring_value < 45.0:
             mitigated_jockey_rate_without_leading = 1.0 + (base_jockey_rate - 1.0) * 0.40
             mitigated_jockey_rate = 1.0 + (final_jockey_rate - 1.0) * 0.40
         else:
@@ -8269,7 +8321,7 @@ for item in row_tmp_data:
         
         horse_base_score = scaled_index_score
         score_breakdown["指数"] = round(scaled_index_score, 2)
-        if idx > 0:
+        if idx > 0 and not _u_index_missing:
             evaluation_reasons.append(f"U指数・基礎指数 {idx:.1f}を反映")
         
         # 斤量補正
@@ -8416,7 +8468,7 @@ for item in row_tmp_data:
                 evaluation_reasons.append("距離延長条件に合致して +3.0")
                 
             if is_upper_class_race:
-                if idx >= 65.0 or idx >= 88.0:
+                if _u_scoring_value >= 65.0 or _u_scoring_value >= 88.0:
                     horse_base_score += 2.0
                     score_breakdown["血統・コース"] += 2.0
                     evaluation_reasons.append("上級条件で指数水準を評価 +2.0")
@@ -8551,6 +8603,8 @@ for item in row_tmp_data:
             "厩舎": trainer, "馬主": owner,
             "戦略メモ": j_data.get("note", "") if jock != "(未選択)" else "",
             "評価理由": evaluation_reasons,
+            "U指数欠損": bool(_u_index_missing),
+            "U指数計算用中立値": (round(_race_u_neutral, 1) if _u_index_missing and _race_u_neutral is not None else None),
             "得点内訳": score_breakdown,
             "学習補正": learning_adjustment if name.strip() and jock != "(未選択)" else 0.0,
             "適用学習倍率": applied_weights if name.strip() and jock != "(未選択)" else {}
