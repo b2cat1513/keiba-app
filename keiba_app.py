@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.21.10"
+APP_PATCH_VERSION = "Ver1.21.11"
 
 try:
     import numpy as np
@@ -9928,7 +9928,7 @@ st.info(
 # ==========================================
 st.divider()
 st.header("📊 過去レース・バックテストデータ登録")
-st.caption("スマホは画像7枚をまとめて選択、PCは従来どおり種類別アップロードも可能。OCRまたは表のコピペで取り込み、一覧表で確認・修正してCSV保存します。既存の予想ロジック・学習DBとは分離しています。")
+st.caption("スマホは画像まとめて登録に加え、出馬表・結果・払戻をそれぞれコピー＆ペーストで一括解析できます。OCRまたはコピペで取り込み、一覧表で確認・修正してCSV保存します。既存の予想ロジック・学習DBとは分離しています。")
 
 def _bt_ocr_image(upload, kind="u"):
     if not OCR_AVAILABLE:
@@ -10515,6 +10515,144 @@ def _bt_parse_payout_ocr(text):
     return result
 
 
+
+def _bt_parse_free_u_text(text):
+    """スマホからコピーしたウマニティの縦長テキストを解析する。"""
+    lines=[re.sub(r"\s+"," ",str(x)).strip() for x in (text or "").splitlines()]
+    lines=[x for x in lines if x]
+    starts=[]
+    for i,line in enumerate(lines):
+        m=re.search(r"^(.+?)\s+(牡|牝|セ)\s*\d+",line)
+        if m and len(re.sub(r"[^一-龯々ぁ-んァ-ヶー]","",m.group(1)))>=2:
+            starts.append((i,m.group(1).strip()))
+    out=[]
+    for j,(idx,name) in enumerate(starts):
+        end=starts[j+1][0] if j+1<len(starts) else len(lines)
+        block=lines[idx:end]
+        uval=None; no=None; jockey=""; weight=None; weight_token=None
+        for line in block:
+            um=re.search(r"(?<!\d)(\d{2,3})[.．](\d)",line)
+            if um:
+                v=float(um.group(1)+'.'+um.group(2))
+                if 70<=v<=130.9: uval=v
+            # 斤量と騎手が同じ行にあることが多い
+            wm=re.search(r"(?<!\d)(5[0-9](?:\.\d)?)(?!\d)",line)
+            if wm:
+                weight=float(wm.group(1)); weight_token=wm.group(1)
+                jm=re.search(r"([A-ZＡ-Ｚ][.．]?[A-Za-zＡ-Ｚａ-ｚー]+|[一-龯々ぁ-んァ-ヶー]{2,4})\s*"+re.escape(weight_token),line)
+                if jm: jockey=jm.group(1)
+        # U指数の後ろに置かれた独立行の馬番を優先
+        for line in reversed(block):
+            if re.fullmatch(r"\d{1,2}",line):
+                v=int(line)
+                if 1<=v<=18: no=v; break
+        if no is None:
+            # 同じ行に馬番が付く形式への補助
+            nm=re.search(r"(?:^|\s)(\d{1,2})\s*$",block[-1]) if block else None
+            if nm: no=int(nm.group(1))
+        if no is not None:
+            out.append({"馬番":no,"馬名":name,"U指数":uval,"騎手":jockey,"斤量":weight})
+    # 馬番の重複は最後の候補で上書きせず、同一内容だけを残す
+    unique={}
+    for r in out:
+        if r['馬番'] not in unique: unique[r['馬番']]=r
+        elif unique[r['馬番']]['馬名']==r['馬名']:
+            unique[r['馬番']].update({k:v for k,v in r.items() if v not in (None,'')})
+    return list(unique.values())
+
+
+def _bt_parse_free_result_text(text, u_rows=None):
+    """スマホでコピーした着順表を、馬名行ごとのブロックとして解析する。"""
+    lines=[re.sub(r"\s+"," ",str(x)).strip() for x in (text or "").splitlines()]
+    lines=[x for x in lines if x]
+    starts=[]
+    for i,line in enumerate(lines):
+        m=re.search(r"^(.+?)\s+(牡|牝|セ)\s*\d+",line)
+        if m and len(re.sub(r"[^一-龯々ぁ-んァ-ヶー]","",m.group(1)))>=2:
+            starts.append((i,m.group(1).strip()))
+    no_by_name={str(r.get('馬名','')).replace(' ',''):int(r['馬番']) for r in (u_rows or []) if r.get('馬名') and r.get('馬番')}
+    out=[]
+    for j,(idx,name) in enumerate(starts):
+        end=starts[j+1][0] if j+1<len(starts) else len(lines)
+        block=lines[idx:end]
+        joined=' '.join(block)
+        tm=re.search(r"(?<!\d)(1[:.]\d{2}[.]\d|1\.\d{2}\.\d|1[:.]\d{2}\.\d)",joined)
+        time_text=tm.group(1).replace(':','.') if tm else ''
+        # タイム後の着差・上がり3F
+        margin=''
+        if tm:
+            after=joined[tm.end():]
+            mm=re.search(r"(クビ|ハナ|アタマ|大差|同着|\d+(?:\.\d+)?/\d+|\d+/\d+)",after)
+            if mm: margin=mm.group(1)
+        threef=None
+        for line in block:
+            # 走破タイムの「1.35.4」末尾を上がり3Fと誤認しない
+            if re.search(r"1[:.]\d{2}[.]\d", line):
+                continue
+            for token in re.findall(r"(?<!\d)(\d{2}\.\d)(?!\d)",line):
+                v=float(token)
+                if 20<=v<=50: threef=v
+        # タイムが出た後に並ぶ独立数字を着順・馬番として取得
+        nums=[]
+        if tm:
+            tail=' '.join(block)
+            tail=tail[tm.end():]
+            for ln in tail.split():
+                m=re.fullmatch(r"[Il|]?([0-9]{1,2})[.]?",ln)
+                if m:
+                    v=int(m.group(1))
+                    if 1<=v<=18: nums.append(v)
+        rank=nums[0] if len(nums)>=2 else (j+1)
+        no=nums[1] if len(nums)>=2 else no_by_name.get(name.replace(' ',''))
+        # 貼り付け形式によってはタイム行より前に着順・馬番があるため名前対応も利用
+        if no is None: no=no_by_name.get(name.replace(' ',''))
+        odds=None; pop=None
+        om=re.search(r"(\d{1,3}(?:\.\d)?)\s*[（(]?([1-9]|1[0-8])[）)]",joined)
+        if om: odds=float(om.group(1)); pop=int(om.group(2))
+        if no is not None and 1<=int(no)<=18:
+            out.append({"馬番":int(no),"馬名":name,"実着順":int(rank),"人気":pop,"単勝オッズ":odds,
+                        "走破タイム":time_text,"着差":margin,"上がり3F":threef,"通過順":""})
+    # 馬番が一意の候補だけ採用
+    seen={}
+    for r in out:
+        if r['馬番'] not in seen: seen[r['馬番']]=r
+    return list(seen.values())
+
+
+def _bt_parse_free_payout_text(text):
+    """券種ラベル付きの払戻コピペを解析。曖昧な券種は原文も保持する。"""
+    raw=re.sub(r"[\s　]+"," ",str(text or "")).replace(',','')
+    result={"単勝払戻(100円)":None,"単勝馬番":None,"3連複組合せ":"","3連複払戻(100円)":None,
+            "馬連組合せ":"","馬連払戻(100円)":None,"馬単組合せ":"","馬単払戻(100円)":None,
+            "3連単組合せ":"","3連単払戻(100円)":None,"枠連組合せ":"","枠連払戻(100円)":None,
+            "ワイド払戻データ":"","複勝払戻データ":"","その他払戻原文":str(text or "").strip()}
+    def pair(label, key_combo, key_pay):
+        m=re.search(label+r"\s*(\d{1,2})\s*[-ー－]\s*(\d{1,2})\s*(\d{2,7})\s*円",raw)
+        if m:
+            result[key_combo]=m.group(1)+'-'+m.group(2); result[key_pay]=int(m.group(3))
+    m=re.search(r"単勝\s*(\d{1,2})\s*(\d{2,7})\s*円",raw)
+    if m: result['単勝馬番']=int(m.group(1)); result['単勝払戻(100円)']=int(m.group(2))
+    pair(r"枠連\s*",'枠連組合せ','枠連払戻(100円)')
+    pair(r"馬連\s*",'馬連組合せ','馬連払戻(100円)')
+    pair(r"馬単\s*",'馬単組合せ','馬単払戻(100円)')
+    m=re.search(r"3\s*連\s*複\s*(\d{1,2})\s*[-ー－]\s*(\d{1,2})\s*[-ー－]\s*(\d{1,2})\s*(\d{2,7})\s*円",raw)
+    if m: result['3連複組合せ']='-'.join(m.group(i) for i in (1,2,3)); result['3連複払戻(100円)']=int(m.group(4))
+    m=re.search(r"3\s*連\s*単\s*(\d{1,2})\s*[-ー－]\s*(\d{1,2})\s*[-ー－]\s*(\d{1,2})\s*(\d{2,7})\s*円",raw)
+    if m: result['3連単組合せ']='-'.join(m.group(i) for i in (1,2,3)); result['3連単払戻(100円)']=int(m.group(4))
+    # ワイド・複勝は複数組をまとめて保存（各組合せと金額の対応を失わない）
+    wide=[]
+    wide_section = raw.split("ワイド", 1)[1].split("馬単", 1)[0] if "ワイド" in raw else ""
+    for m in re.finditer(r"(\d{1,2})\s*[-ー－]\s*(\d{1,2})\s*(\d{2,7})\s*円",wide_section):
+        wide.append(f"{m.group(1)}-{m.group(2)}:{m.group(3)}")
+    result['ワイド払戻データ']='; '.join(wide)
+    place=[]
+    place_section = raw.split("複勝", 1)[1].split("枠連", 1)[0] if "複勝" in raw else ""
+    for m in re.finditer(r"(\d{1,2})\s*(\d{2,7})\s*円",place_section):
+        place.append(f"{m.group(1)}:{m.group(2)}")
+    result['複勝払戻データ']='; '.join(place)
+    return result
+
+
 def _bt_parse_tsv(text, kind):
     """列見出し付きタブ区切りコピーを列名で抽出。"""
     lines=[line.rstrip("\r") for line in (text or "").splitlines() if "\t" in line]
@@ -10579,7 +10717,7 @@ def _bt_trio_axis_backtest(race_df, payout_col="3連複払戻(100円)"):
     return rows
 
 
-bt_cols=["開催日","競馬場","レース番号","レース名","馬番","馬名","U指数","実着順","人気","単勝オッズ","走破タイム","着差","上がり3F","通過順","単勝払戻(100円)","3連複組合せ","3連複払戻(100円)","騎手","騎手リーディング順位","斤量"]
+bt_cols=["開催日","競馬場","レース番号","レース名","馬番","馬名","U指数","実着順","人気","単勝オッズ","走破タイム","着差","上がり3F","通過順","単勝払戻(100円)","複勝払戻データ","枠連組合せ","枠連払戻(100円)","馬連組合せ","馬連払戻(100円)","ワイド払戻データ","馬単組合せ","馬単払戻(100円)","3連複組合せ","3連複払戻(100円)","3連単組合せ","3連単払戻(100円)","その他払戻原文","騎手","騎手リーディング順位","斤量"]
 bt_c1,bt_c2=st.columns(2)
 with bt_c1:
     bt_date=st.text_input("開催日（例：2026-06-04）",key="bt47_date")
@@ -10618,6 +10756,7 @@ r_img=st.file_uploader("netkeiba等の着順・払戻画像（複数可）",type
 r_clip=st.text_area("または、結果表をコピーして貼り付け",height=100,key="bt47_rclip",placeholder="着順・馬番・馬名・人気・単勝オッズなどを貼り付けてください。")
 st.subheader("③ 払戻・ラップ・コーナー通過順")
 p_img=st.file_uploader("払戻金・ラップタイム・コーナー通過順の画像（複数可）",type=["png","jpg","jpeg","webp"],accept_multiple_files=True,key="bt47_pimg")
+p_clip=st.text_area("または、払戻表をコピーして貼り付け",height=110,key="bt47_pclip",placeholder="単勝・複勝・枠連・馬連・ワイド・馬単・3連複・3連単をまとめて貼り付け")
 
 ocr_u=[]; ocr_r=[]; ocr_p=[]
 # スマホ一括アップロード分を、選択した画像種類に応じて既存OCRへ渡す。
@@ -10670,8 +10809,13 @@ for idx,(_,txt) in enumerate(ocr_p):
     for key, value in candidate.items():
         if value not in (None, ""):
             payout_data[key]=value
-parsed_u=_bt_parse_tsv(u_clip,"u") or u_ocr_rows
-parsed_r=_bt_parse_tsv(r_clip,"r") or r_ocr_rows
+parsed_u=_bt_parse_tsv(u_clip,"u") or _bt_parse_free_u_text(u_clip) or u_ocr_rows
+parsed_r=_bt_parse_tsv(r_clip,"r") or _bt_parse_free_result_text(r_clip, parsed_u) or r_ocr_rows
+if p_clip.strip():
+    pasted_payout = _bt_parse_free_payout_text(p_clip)
+    for key, value in pasted_payout.items():
+        if value not in (None, ""):
+            payout_data[key] = value
 # 1～18番を先に用意し、OCRで拾えなかった馬も一覧上で手入力できるようにする。
 # 実際の出走頭数に合わせて、不要な行はデータエディタから削除可能。
 by_no={no:{"馬番":no,"馬名":"","U指数":None,"実着順":None,"人気":None,"単勝オッズ":None,"騎手":"","騎手リーディング順位":None,"斤量":None} for no in range(1,19)}
@@ -10697,6 +10841,12 @@ for no,rec in sorted(by_no.items()):
             rec["3連複払戻(100円)"] = payout_data["3連複払戻(100円)"]
     if payout_data.get("単勝払戻(100円)") is not None and no == payout_data.get("単勝馬番"):
         rec["単勝払戻(100円)"] = payout_data["単勝払戻(100円)"]
+    # その他の払戻はレース単位の情報として先頭の出走馬行に1回だけ保存
+    if no == min(by_no) if by_no else False:
+        for payout_key in ("複勝払戻データ", "枠連組合せ", "枠連払戻(100円)", "馬連組合せ", "馬連払戻(100円)",
+                           "ワイド払戻データ", "馬単組合せ", "馬単払戻(100円)", "3連単組合せ", "3連単払戻(100円)", "その他払戻原文"):
+            if payout_data.get(payout_key) not in (None, ""):
+                rec[payout_key] = payout_data[payout_key]
     parsed.append(rec)
 
 st.subheader("④ 照合・修正できる登録一覧")
@@ -10724,7 +10874,7 @@ if old_csv is not None:
         st.success(f"CSVを読み込みました：{len(seed)}行")
     except Exception as exc: st.error(f"CSV読み込みエラー：{exc}")
 
-edited=st.data_editor(seed,num_rows="dynamic",use_container_width=True,hide_index=True,key="bt47_editor_v12110",column_config={
+edited=st.data_editor(seed,num_rows="dynamic",use_container_width=True,hide_index=True,key="bt47_editor_v12111",column_config={
     "馬名":st.column_config.TextColumn(label="馬名",width="large"),
     "馬番":st.column_config.NumberColumn(min_value=1,max_value=18,step=1),
     "U指数":st.column_config.NumberColumn(format="%.1f"),
