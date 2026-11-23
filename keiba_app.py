@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.21.09"
+APP_PATCH_VERSION = "Ver1.21.10"
 
 try:
     import numpy as np
@@ -9923,12 +9923,12 @@ st.info(
 
 
 # ==========================================
-# 📊 バックテスト入力（OCR＋コピペ＋手入力補完＋成績分析） Ver1.21.05
+# 📊 バックテスト入力（スマホ一括画像登録対応） Ver1.21.10
 # 既存予想ロジック・学習DBとは完全分離
 # ==========================================
 st.divider()
 st.header("📊 過去レース・バックテストデータ登録")
-st.caption("U指数・着順・払戻の画像OCRまたは表のコピペで取り込み、一覧表で確認・修正してCSV保存。U指数順位と実着順を比較し、単勝1点・上位3頭買いの成績を分析します。既存の予想ロジック・学習DBには接続しません。")
+st.caption("スマホは画像7枚をまとめて選択、PCは従来どおり種類別アップロードも可能。OCRまたは表のコピペで取り込み、一覧表で確認・修正してCSV保存します。既存の予想ロジック・学習DBとは分離しています。")
 
 def _bt_ocr_image(upload, kind="u"):
     if not OCR_AVAILABLE:
@@ -10588,7 +10588,29 @@ with bt_c2:
     bt_rno=st.text_input("レース番号（例：11R）",key="bt47_rno")
     bt_name=st.text_input("レース名",key="bt47_name")
 
-st.subheader("① U指数・出馬表")
+st.subheader("📱 スマホから画像をまとめて登録")
+st.caption("スマホでは、画像7枚を一度に選択できます。今回のように『最初の3枚＝出馬表・U指数、次の3枚＝レース結果、最後の1枚＝払戻』の順で選択してください。選択後に画像ごとの種類を確認・変更できます。")
+mobile_imgs = st.file_uploader(
+    "スマホ用：画像をまとめて選択（複数可）",
+    type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True,
+    key="bt47_mobile_images",
+    help="画像の選択順は、出馬表・U指数 → 結果 → 払戻にしてください。"
+)
+mobile_kind_options = ["出馬表・U指数", "レース結果", "払戻"]
+mobile_kind_map = {}
+if mobile_imgs:
+    st.write("**選択した画像の種類を確認してください**")
+    for i, f in enumerate(mobile_imgs):
+        # 今回の7枚構成を初期値にする。枚数が違う場合も手動変更可能。
+        default_idx = 0 if i < 3 else (1 if i < 6 else 2)
+        chosen = st.selectbox(
+            f"{i+1}枚目：{f.name}", mobile_kind_options,
+            index=default_idx, key=f"bt47_mobile_kind_{i}"
+        )
+        mobile_kind_map[i] = chosen
+    st.caption("※画像の並びが異なる場合は、上の選択欄で種類を変更してください。")
+
+st.subheader("① U指数・出馬表（従来のPC別入力も利用できます）")
 u_img=st.file_uploader("ウマニティのU指数画像（複数可）",type=["png","jpg","jpeg","webp"],accept_multiple_files=True,key="bt47_uimg")
 u_clip=st.text_area("または、ウマニティの表をコピーして貼り付け",height=100,key="bt47_uclip",placeholder="表を選択してコピーし、ここに貼り付けてください。タブ区切りのコピーを推奨します。")
 st.subheader("② 実際のレース結果・払戻")
@@ -10598,6 +10620,19 @@ st.subheader("③ 払戻・ラップ・コーナー通過順")
 p_img=st.file_uploader("払戻金・ラップタイム・コーナー通過順の画像（複数可）",type=["png","jpg","jpeg","webp"],accept_multiple_files=True,key="bt47_pimg")
 
 ocr_u=[]; ocr_r=[]; ocr_p=[]
+# スマホ一括アップロード分を、選択した画像種類に応じて既存OCRへ渡す。
+for mobile_i, f in enumerate(mobile_imgs or []):
+    kind_label = mobile_kind_map.get(mobile_i, "出馬表・U指数")
+    kind = "u" if kind_label == "出馬表・U指数" else ("r" if kind_label == "レース結果" else "p")
+    txt, err = _bt_ocr_image(f, kind)
+    if err:
+        st.error(f"{f.name}: {err}")
+    elif kind == "u":
+        ocr_u.append((f.name, txt))
+    elif kind == "r":
+        ocr_r.append((f.name, txt))
+    else:
+        ocr_p.append((f.name, txt))
 for f in (u_img or []):
     txt,err=_bt_ocr_image(f, "u")
     if err: st.error(f"{f.name}: {err}")
@@ -10689,7 +10724,7 @@ if old_csv is not None:
         st.success(f"CSVを読み込みました：{len(seed)}行")
     except Exception as exc: st.error(f"CSV読み込みエラー：{exc}")
 
-edited=st.data_editor(seed,num_rows="dynamic",use_container_width=True,hide_index=True,key="bt47_editor_v12107",column_config={
+edited=st.data_editor(seed,num_rows="dynamic",use_container_width=True,hide_index=True,key="bt47_editor_v12110",column_config={
     "馬名":st.column_config.TextColumn(label="馬名",width="large"),
     "馬番":st.column_config.NumberColumn(min_value=1,max_value=18,step=1),
     "U指数":st.column_config.NumberColumn(format="%.1f"),
