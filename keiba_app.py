@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.21.12"
+APP_PATCH_VERSION = "Ver1.21.13"
 
 try:
     import numpy as np
@@ -10448,7 +10448,7 @@ def _bt_parse_result_ocr(text):
                     time_text = tm.group(1)
             # オッズは「3.4 (2)」など、括弧内人気と隣接する値から取得。
             odds = pop = None
-            om = re.search(r"(\d{1,3}(?:[.]\d)?)\s*[（(](\d{1,2})[）)]", rest)
+            om = re.search(r"(\d{1,3}(?:[.]\d)?)\s*倍\s*[（(]?(\d{1,2})[）)]?", rest)
             if om:
                 odds = _bt_num(om.group(1)); pop = int(om.group(2))
             # 同一馬番の既存候補がなければ補助行を採用。誤読の競合は後段で除外。
@@ -10606,7 +10606,10 @@ def _bt_parse_free_result_text(text, u_rows=None):
             if near: no=name_to_no[near[0]]
         # 結果テキストは通常1着から順に並ぶ。数字OCRの誤認で着順がずれないようブロック順を採用。
         odds=None; pop=None
-        om=re.search(r"(\d{1,3}(?:\.\d)?)\s*[（(]?([1-9]|1[0-8])[）)]",joined)
+        # オッズ・人気は「3.4倍(2)」「98.1倍14」のように「倍」が
+        # 明示された場合だけ取得する。上がり3F(例:39.5)や通過順(例:4-5)を
+        # 人気・オッズと誤認しない。
+        om=re.search(r"(\d{1,3}(?:\.\d)?)\s*倍\s*[（(]?([1-9]|1[0-8])[）)]?",joined)
         if om: odds=float(om.group(1)); pop=int(om.group(2))
         if no is not None and 1<=int(no)<=18:
             out.append({"馬番":int(no),"馬名":name,"実着順":j+1,"人気":pop,"単勝オッズ":odds,
@@ -10625,7 +10628,7 @@ def _bt_parse_free_payout_text(text):
             "3連単組合せ":"","3連単払戻(100円)":None,"枠連組合せ":"","枠連払戻(100円)":None,
             "ワイド払戻データ":"","複勝払戻データ":"","その他払戻原文":str(text or "").strip()}
     def pair(label, key_combo, key_pay):
-        m=re.search(label+r"\s*(\d{1,2})\s*[-ー－]\s*(\d{1,2})\s*(\d{2,7})\s*円",raw)
+        m=re.search(label+r"\s*(\d{1,2})\s*[-ー－]\s*(\d{1,2})\s+(\d{2,7})\s*円",raw)
         if m:
             result[key_combo]=m.group(1)+'-'+m.group(2); result[key_pay]=int(m.group(3))
     m=re.search(r"単勝\s*(\d{1,2})\s*(\d{2,7})\s*円",raw)
@@ -10633,9 +10636,9 @@ def _bt_parse_free_payout_text(text):
     pair(r"枠連\s*",'枠連組合せ','枠連払戻(100円)')
     pair(r"馬連\s*",'馬連組合せ','馬連払戻(100円)')
     pair(r"馬単\s*",'馬単組合せ','馬単払戻(100円)')
-    m=re.search(r"3\s*連\s*複\s*(\d{1,2})\s*[-ー－]\s*(\d{1,2})\s*[-ー－]\s*(\d{1,2})\s*(\d{2,7})\s*円",raw)
+    m=re.search(r"3\s*連\s*複\s*(\d{1,2})\s*[-ー－]\s*(\d{1,2})\s*[-ー－]\s*(\d{1,2})\s+(\d{2,7})\s*円",raw)
     if m: result['3連複組合せ']='-'.join(m.group(i) for i in (1,2,3)); result['3連複払戻(100円)']=int(m.group(4))
-    m=re.search(r"3\s*連\s*単\s*(\d{1,2})\s*[-ー－]\s*(\d{1,2})\s*[-ー－]\s*(\d{1,2})\s*(\d{2,7})\s*円",raw)
+    m=re.search(r"3\s*連\s*単\s*(\d{1,2})\s*[-ー－]\s*(\d{1,2})\s*[-ー－]\s*(\d{1,2})\s+(\d{2,7})\s*円",raw)
     if m: result['3連単組合せ']='-'.join(m.group(i) for i in (1,2,3)); result['3連単払戻(100円)']=int(m.group(4))
     # ワイド・複勝は複数組をまとめて保存（各組合せと金額の対応を失わない）
     wide=[]
