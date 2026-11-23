@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.21.11"
+APP_PATCH_VERSION = "Ver1.21.12"
 
 try:
     import numpy as np
@@ -10562,23 +10562,28 @@ def _bt_parse_free_u_text(text):
 
 
 def _bt_parse_free_result_text(text, u_rows=None):
-    """スマホでコピーした着順表を、馬名行ごとのブロックとして解析する。"""
+    """スマホの縦長コピペ結果を解析。結果表は着順順に並ぶため、ブロック順を着順とし、馬名でU表の馬番に照合する。"""
+    import difflib
     lines=[re.sub(r"\s+"," ",str(x)).strip() for x in (text or "").splitlines()]
     lines=[x for x in lines if x]
     starts=[]
     for i,line in enumerate(lines):
         m=re.search(r"^(.+?)\s+(牡|牝|セ)\s*\d+",line)
-        if m and len(re.sub(r"[^一-龯々ぁ-んァ-ヶー]","",m.group(1)))>=2:
-            starts.append((i,m.group(1).strip()))
-    no_by_name={str(r.get('馬名','')).replace(' ',''):int(r['馬番']) for r in (u_rows or []) if r.get('馬名') and r.get('馬番')}
+        if m:
+            name=m.group(1).strip()
+            if len(re.sub(r"[^一-龯々ぁ-んァ-ヶー]","",name))>=2:
+                starts.append((i,name))
+    def norm(v):
+        return re.sub(r"[\s　・･]", "", str(v or "")).replace("ー", "")
+    name_to_no={norm(r.get('馬名')):int(r['馬番']) for r in (u_rows or []) if r.get('馬名') and r.get('馬番')}
+    known_names=list(name_to_no)
     out=[]
     for j,(idx,name) in enumerate(starts):
         end=starts[j+1][0] if j+1<len(starts) else len(lines)
         block=lines[idx:end]
         joined=' '.join(block)
-        tm=re.search(r"(?<!\d)(1[:.]\d{2}[.]\d|1\.\d{2}\.\d|1[:.]\d{2}\.\d)",joined)
+        tm=re.search(r"(?<!\d)(1[:.]\d{2}[.]\d|1\.\d{2}\.\d)",joined)
         time_text=tm.group(1).replace(':','.') if tm else ''
-        # タイム後の着差・上がり3F
         margin=''
         if tm:
             after=joined[tm.end():]
@@ -10586,37 +10591,30 @@ def _bt_parse_free_result_text(text, u_rows=None):
             if mm: margin=mm.group(1)
         threef=None
         for line in block:
-            # 走破タイムの「1.35.4」末尾を上がり3Fと誤認しない
             if re.search(r"1[:.]\d{2}[.]\d", line):
                 continue
-            for token in re.findall(r"(?<!\d)(\d{2}\.\d)(?!\d)",line):
-                v=float(token)
-                if 20<=v<=50: threef=v
-        # タイムが出た後に並ぶ独立数字を着順・馬番として取得
-        nums=[]
-        if tm:
-            tail=' '.join(block)
-            tail=tail[tm.end():]
-            for ln in tail.split():
-                m=re.fullmatch(r"[Il|]?([0-9]{1,2})[.]?",ln)
-                if m:
-                    v=int(m.group(1))
-                    if 1<=v<=18: nums.append(v)
-        rank=nums[0] if len(nums)>=2 else (j+1)
-        no=nums[1] if len(nums)>=2 else no_by_name.get(name.replace(' ',''))
-        # 貼り付け形式によってはタイム行より前に着順・馬番があるため名前対応も利用
-        if no is None: no=no_by_name.get(name.replace(' ',''))
+            vals=[float(x) for x in re.findall(r"(?<!\d)(\d{2}\.\d)(?!\d)",line)]
+            vals=[v for v in vals if 20<=v<=50]
+            if vals:
+                threef=vals[0]
+                break
+        # 馬番は結果ブロック内の数字列から推測しない。出馬表の馬名と照合する。
+        key=norm(name)
+        no=name_to_no.get(key)
+        if no is None and known_names:
+            near=difflib.get_close_matches(key, known_names, n=1, cutoff=0.78)
+            if near: no=name_to_no[near[0]]
+        # 結果テキストは通常1着から順に並ぶ。数字OCRの誤認で着順がずれないようブロック順を採用。
         odds=None; pop=None
         om=re.search(r"(\d{1,3}(?:\.\d)?)\s*[（(]?([1-9]|1[0-8])[）)]",joined)
         if om: odds=float(om.group(1)); pop=int(om.group(2))
         if no is not None and 1<=int(no)<=18:
-            out.append({"馬番":int(no),"馬名":name,"実着順":int(rank),"人気":pop,"単勝オッズ":odds,
+            out.append({"馬番":int(no),"馬名":name,"実着順":j+1,"人気":pop,"単勝オッズ":odds,
                         "走破タイム":time_text,"着差":margin,"上がり3F":threef,"通過順":""})
-    # 馬番が一意の候補だけ採用
-    seen={}
-    for r in out:
-        if r['馬番'] not in seen: seen[r['馬番']]=r
-    return list(seen.values())
+    # 重複馬番や同一着順が発生した場合は採用せず、下流で警告できるよう一意行のみ返す。
+    counts={}
+    for r in out: counts[r['馬番']]=counts.get(r['馬番'],0)+1
+    return [r for r in out if counts[r['馬番']]==1]
 
 
 def _bt_parse_free_payout_text(text):
@@ -10811,6 +10809,14 @@ for idx,(_,txt) in enumerate(ocr_p):
             payout_data[key]=value
 parsed_u=_bt_parse_tsv(u_clip,"u") or _bt_parse_free_u_text(u_clip) or u_ocr_rows
 parsed_r=_bt_parse_tsv(r_clip,"r") or _bt_parse_free_result_text(r_clip, parsed_u) or r_ocr_rows
+if r_clip.strip() and parsed_u:
+    expected_nos={int(x["馬番"]) for x in parsed_u if x.get("馬番")}
+    result_nos={int(x["馬番"]) for x in parsed_r if x.get("馬番")}
+    missing=sorted(expected_nos-result_nos)
+    if missing:
+        st.warning("レース結果で馬番を照合できなかった馬があります："+", ".join(map(str,missing))+"番。結果テキストの馬名・並びを確認してください。")
+    if len(parsed_r) and sorted(int(x["実着順"]) for x in parsed_r if x.get("実着順")) != list(range(1,len(parsed_r)+1)):
+        st.warning("着順に重複または欠番があります。登録前に一覧を確認してください。")
 if p_clip.strip():
     pasted_payout = _bt_parse_free_payout_text(p_clip)
     for key, value in pasted_payout.items():
@@ -10818,7 +10824,8 @@ if p_clip.strip():
             payout_data[key] = value
 # 1～18番を先に用意し、OCRで拾えなかった馬も一覧上で手入力できるようにする。
 # 実際の出走頭数に合わせて、不要な行はデータエディタから削除可能。
-by_no={no:{"馬番":no,"馬名":"","U指数":None,"実着順":None,"人気":None,"単勝オッズ":None,"騎手":"","騎手リーディング順位":None,"斤量":None} for no in range(1,19)}
+starter_nos=sorted({int(r["馬番"]) for r in parsed_u if r.get("馬番")})
+by_no={no:{"馬番":no,"馬名":"","U指数":None,"実着順":None,"人気":None,"単勝オッズ":None,"騎手":"","騎手リーディング順位":None,"斤量":None} for no in (starter_nos or list(range(1,19)))}
 for rec in parsed_u:
     no=int(rec["馬番"]); base=by_no.setdefault(no,{"馬番":no,"馬名":"","U指数":None,"実着順":None,"人気":None,"単勝オッズ":None,"騎手":"","騎手リーディング順位":None,"斤量":None})
     for k in ("馬名","U指数","騎手","騎手リーディング順位","斤量"):
