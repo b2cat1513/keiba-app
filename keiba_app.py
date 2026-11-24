@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.21.13"
+APP_PATCH_VERSION = "Ver1.21.14"
 
 try:
     import numpy as np
@@ -10609,8 +10609,13 @@ def _bt_parse_free_result_text(text, u_rows=None):
         # オッズ・人気は「3.4倍(2)」「98.1倍14」のように「倍」が
         # 明示された場合だけ取得する。上がり3F(例:39.5)や通過順(例:4-5)を
         # 人気・オッズと誤認しない。
-        om=re.search(r"(\d{1,3}(?:\.\d)?)\s*倍\s*[（(]?([1-9]|1[0-8])[）)]?",joined)
-        if om: odds=float(om.group(1)); pop=int(om.group(2))
+        # 人気はオッズ直後の括弧内、または区切りなしで続く整数だけを採用。
+        # 「98.1倍 39.5」のように後ろに上がり3Fが続く場合、39.5の先頭を
+        # 人気3と誤認しないよう、空白を挟んだ裸の数字は人気として扱わない。
+        om=re.search(r"(\d{1,3}(?:\.\d)?)\s*倍(?:\s*[（(]\s*(1[0-8]|[1-9])\s*[）)]|(?<!\d)(1[0-8]|[1-9])(?![.\d]))",joined)
+        if om:
+            odds=float(om.group(1))
+            pop=int(om.group(2) or om.group(3))
         if no is not None and 1<=int(no)<=18:
             out.append({"馬番":int(no),"馬名":name,"実着順":j+1,"人気":pop,"単勝オッズ":odds,
                         "走破タイム":time_text,"着差":margin,"上がり3F":threef,"通過順":""})
