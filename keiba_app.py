@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.21.14"
+APP_PATCH_VERSION = "Ver1.21.15"
 
 try:
     import numpy as np
@@ -9923,12 +9923,12 @@ st.info(
 
 
 # ==========================================
-# 📊 バックテスト入力（スマホ一括画像登録対応） Ver1.21.10
+# 📊 バックテスト入力（基本項目を簡素化・騎手順位任意） Ver1.21.15
 # 既存予想ロジック・学習DBとは完全分離
 # ==========================================
 st.divider()
 st.header("📊 過去レース・バックテストデータ登録")
-st.caption("スマホは画像まとめて登録に加え、出馬表・結果・払戻をそれぞれコピー＆ペーストで一括解析できます。OCRまたはコピペで取り込み、一覧表で確認・修正してCSV保存します。既存の予想ロジック・学習DBとは分離しています。")
+st.caption("まず必要なのは開催日・競馬場・レース番号・馬番・馬名・U指数・実着順です。人気・単勝オッズは回収率分析用、払戻は券種別の回収率分析用です。騎手リーディング順位は任意で、空欄のままで問題ありません。")
 
 def _bt_ocr_image(upload, kind="u"):
     if not OCR_AVAILABLE:
@@ -10873,7 +10873,7 @@ if (u_img or r_img) and (len(parsed_u) < 8 or len(parsed_r) < 8):
         "U指数画像は指数列を行ごとに独立してOCRし、馬番順に照合します。読み取れない行や曖昧な数値は自動登録せず、"
         "結果画像は性齢またはタイムの片方が欠けても候補抽出します。OCR原文欄・登録一覧で馬番と馬名を必ず確認してください。"
     )
-st.caption("馬番1～18の入力行を用意し、OCR・コピペで読めた項目は自動入力します。読み取れなかった馬名・着順・人気・オッズ・騎手・斤量などは、この一覧を直接編集して手入力できます。実際に出走していない馬番の行は削除してください。")
+st.caption("通常は基本項目だけを表示します。払戻・騎手・斤量などを確認／修正したい場合は『詳細項目も表示』をオンにしてください。実際に出走していない馬番の行は削除してください。")
 if parsed: seed=pd.DataFrame(parsed)
 else: seed=pd.DataFrame([{c:(bt_date if c=="開催日" else bt_track if c=="競馬場" else bt_rno if c=="レース番号" else bt_name if c=="レース名" else None if c in ("馬番","U指数","実着順","人気","単勝オッズ","単勝払戻(100円)","3連複払戻(100円)","騎手リーディング順位","斤量") else "") for c in bt_cols}])
 for c in bt_cols:
@@ -10889,7 +10889,12 @@ if old_csv is not None:
         st.success(f"CSVを読み込みました：{len(seed)}行")
     except Exception as exc: st.error(f"CSV読み込みエラー：{exc}")
 
-edited=st.data_editor(seed,num_rows="dynamic",use_container_width=True,hide_index=True,key="bt47_editor_v12111",column_config={
+show_bt_details = st.checkbox("詳細項目（払戻・騎手・斤量・通過順など）も表示する", value=False, key="bt47_show_details_v12115")
+bt_basic_cols = ["開催日", "競馬場", "レース番号", "レース名", "馬番", "馬名", "U指数", "実着順", "人気", "単勝オッズ"]
+bt_display_cols = bt_cols if show_bt_details else bt_basic_cols
+if not show_bt_details:
+    st.info("基本表示：レース識別・馬の識別・U指数・実着順・人気・単勝オッズ。リーディング順位は入力不要です。")
+edited=st.data_editor(seed,num_rows="dynamic",use_container_width=True,hide_index=True,column_order=bt_display_cols,key="bt47_editor_v12115",column_config={
     "馬名":st.column_config.TextColumn(label="馬名",width="large"),
     "馬番":st.column_config.NumberColumn(min_value=1,max_value=18,step=1),
     "U指数":st.column_config.NumberColumn(format="%.1f"),
@@ -11049,37 +11054,42 @@ if len(valid):
             st.markdown("**① U指数順位別の勝率・複勝率・平均着順**")
             st.dataframe(rank_stats.round({"平均実着順": 2}), use_container_width=True, hide_index=True)
 
-            st.markdown("**② U指数単独と、騎手リーディング加味モデルの比較**")
-            lead_weight = st.slider("騎手リーディングの加味率（U指数との相対ウェイト）", 0, 50, 20, 5, key="bt52_lead_weight")
-            combined_races = []
+            # 過去時点の順位が全出走馬分そろったレースだけで参考比較する。
+            # 一部の馬だけ順位があるレースは、比較対象から外して偏りを防ぐ。
+            complete_lead_races = []
             for race_key, race_df in detail_df.groupby("_race_key", dropna=False):
-                race_df = race_df.copy()
-                u_sd = race_df["U指数"].std(ddof=0)
-                race_df["U標準化"] = (race_df["U指数"] - race_df["U指数"].mean()) / (u_sd if pd.notna(u_sd) and u_sd > 0 else 1.0)
-                lead_rank = pd.to_numeric(race_df["騎手リーディング順位"], errors="coerce")
-                lead_valid = lead_rank.notna()
-                race_df["騎手標準化"] = 0.0
-                if int(lead_valid.sum()) >= 2:
-                    lead_strength = -lead_rank[lead_valid]
+                lead_values = pd.to_numeric(race_df["騎手リーディング順位"], errors="coerce")
+                if len(race_df) > 0 and lead_values.notna().all():
+                    complete_lead_races.append((race_key, race_df.copy(), lead_values))
+            if complete_lead_races:
+                st.markdown("**② 騎手リーディング順位を入力したレースだけの参考比較**")
+                st.caption("順位が全出走馬分そろったレースだけを対象にします。過去の開催日時点の順位が確認できない場合は、空欄のままで構いません。現在の順位を過去レースに入力しないでください。")
+                lead_weight = st.slider("騎手リーディングの加味率（参考値）", 0, 50, 20, 5, key="bt52_lead_weight_v12115")
+                combined_races = []
+                for race_key, race_df, lead_rank in complete_lead_races:
+                    u_sd = race_df["U指数"].std(ddof=0)
+                    u_standard = (race_df["U指数"] - race_df["U指数"].mean()) / (u_sd if pd.notna(u_sd) and u_sd > 0 else 1.0)
+                    lead_strength = -lead_rank
                     lead_sd = lead_strength.std(ddof=0)
-                    if pd.notna(lead_sd) and lead_sd > 0:
-                        race_df.loc[lead_valid, "騎手標準化"] = (lead_strength - lead_strength.mean()) / lead_sd
-                race_df["複合スコア"] = race_df["U標準化"] + (lead_weight / 100.0) * race_df["騎手標準化"]
-                race_df = race_df.sort_values(["複合スコア", "U指数", "馬番"], ascending=[False, False, True])
-                winner_rows = race_df[race_df["実着順"] == 1]
-                if winner_rows.empty:
-                    continue
-                winner_no = int(winner_rows.iloc[0]["馬番"])
-                combined_races.append({"レース": race_key, "複合1位馬番": int(race_df.iloc[0]["馬番"]), "複合1位的中": int(race_df.iloc[0]["馬番"]) == winner_no, "複合上位3頭的中": bool(race_df.head(3)["馬番"].eq(winner_no).any())})
-            if combined_races:
-                combined_df = pd.DataFrame(combined_races)
-                combined_hit1 = int(combined_df["複合1位的中"].sum())
-                combined_hit3 = int(combined_df["複合上位3頭的中"].sum())
-                cmp1, cmp2, cmp3 = st.columns(3)
-                cmp1.metric("複合モデル1位の勝率", f"{combined_hit1 / len(combined_df) * 100:.1f}%", f"{combined_hit1}/{len(combined_df)}レース")
-                cmp2.metric("複合モデル上位3頭カバー率", f"{combined_hit3 / len(combined_df) * 100:.1f}%", f"{combined_hit3}/{len(combined_df)}レース")
-                cmp3.metric("騎手順位ウェイト", f"{lead_weight}%")
-                st.caption("各レース内でU指数と騎手順位を標準化し、複合スコア＝U指数標準値＋騎手標準値×加味率で比較します。騎手順位未入力馬は騎手補正0（中立）です。これは検証用の仮説モデルで、実運用の予想ロジックは変更しません。")
+                    lead_standard = (lead_strength - lead_strength.mean()) / (lead_sd if pd.notna(lead_sd) and lead_sd > 0 else 1.0)
+                    race_df["複合スコア"] = u_standard + (lead_weight / 100.0) * lead_standard
+                    race_df = race_df.sort_values(["複合スコア", "U指数", "馬番"], ascending=[False, False, True])
+                    winner_rows = race_df[race_df["実着順"] == 1]
+                    if winner_rows.empty:
+                        continue
+                    winner_no = int(winner_rows.iloc[0]["馬番"])
+                    combined_races.append({"レース": race_key, "複合1位馬番": int(race_df.iloc[0]["馬番"]), "複合1位的中": int(race_df.iloc[0]["馬番"]) == winner_no, "複合上位3頭的中": bool(race_df.head(3)["馬番"].eq(winner_no).any())})
+                if combined_races:
+                    combined_df = pd.DataFrame(combined_races)
+                    combined_hit1 = int(combined_df["複合1位的中"].sum())
+                    combined_hit3 = int(combined_df["複合上位3頭的中"].sum())
+                    cmp1, cmp2, cmp3 = st.columns(3)
+                    cmp1.metric("複合モデル1位の勝率", f"{combined_hit1 / len(combined_df) * 100:.1f}%", f"{combined_hit1}/{len(combined_df)}レース")
+                    cmp2.metric("複合モデル上位3頭カバー率", f"{combined_hit3 / len(combined_df) * 100:.1f}%", f"{combined_hit3}/{len(combined_df)}レース")
+                    cmp3.metric("対象レース数", f"{len(combined_df)}レース")
+                    st.caption("これは過去時点の順位が全馬分そろったレースだけを使う参考検証です。実運用の予想ロジックは変更しません。")
+            else:
+                st.caption("騎手リーディング順位の参考比較はスキップしました。過去時点の順位を全出走馬分入力できるレースがある場合だけ表示します。順位は無理に入力する必要はありません。")
 
             def show_group_stats(title, source_col, bins=None, labels=None):
                 tmp = detail_df.dropna(subset=[source_col]).copy()
@@ -11109,10 +11119,10 @@ if len(valid):
                 lead_stats["勝率"]=(lead_stats["勝率"]*100).round(1).astype(str)+"%"
                 lead_stats["複勝率"]=(lead_stats["複勝率"]*100).round(1).astype(str)+"%"
                 lead_stats["平均着順"]=lead_stats["平均着順"].round(2)
-                st.markdown("**⑤ 騎手リーディング順位別の成績（順位を手入力した馬のみ）**")
+                st.markdown("**⑤ 騎手リーディング順位別の参考成績（過去時点の順位を入力した馬のみ）**")
                 st.dataframe(lead_stats,use_container_width=True,hide_index=True)
             else:
-                st.info("騎手リーディング順位は、登録一覧の『騎手リーディング順位』列に入力すると成績を比較できます。未入力の騎手順位は推測しません。")
+                st.info("騎手リーディング順位は任意項目です。過去レース開催日時点の順位を確認できる場合だけ詳細項目に入力してください。確認できない場合は空欄で問題ありません。現在の順位で代用しないでください。")
 
             st.markdown("**⑥ U指数上位5頭を各100円購入した場合**")
             roi_rows=[]
@@ -11140,7 +11150,7 @@ if len(valid):
                         known_return+=float(pay)
                 roi_rows.append({"U指数順位":f"{rank}位","購入対象レース":bought,"勝ち数":hit,"勝率":f"{(hit/bought*100):.1f}%" if bought else "-","払戻確認済み購入数":known_bought,"回収率":f"{(known_return/(known_bought*100)*100):.1f}%" if known_bought else "未算出","収支":f"{known_return-known_bought*100:+,.0f}円" if known_bought else "未算出"})
             st.dataframe(pd.DataFrame(roi_rows),use_container_width=True,hide_index=True)
-            st.caption("複勝率は3着以内。騎手リーディング順位は各馬の騎手の順位を登録一覧で手入力してください。データが未入力の項目は分析対象から除外します。1～5位の回収率は各順位を単勝100円で買う想定です。")
+            st.caption("複勝率は3着以内。騎手リーディング順位は任意項目で、過去時点の順位が確認できる場合だけ参考分析に使います。1～5位の回収率は各順位を単勝100円で買う想定です。")
         st.download_button("📥 バックテスト分析結果をCSV保存", data=summary_df.to_csv(index=False).encode("utf-8-sig"), file_name="jenny_backtest_summary.csv", mime="text/csv", key="bt52_summary_csv")
 else: st.info("U指数画像・着順画像・払戻画像を読み込むか、表を貼り付けてください。")
 st.info("OCRは画像内の文字を誤認識することがあります。特にU指数・馬番・着順・払戻は必ず原画像と照合してください。読み取れない項目は手入力できます。バックテスト用データは既存の予想ロジック・学習DBとは分離しています。")
