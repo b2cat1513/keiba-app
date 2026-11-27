@@ -12,7 +12,7 @@ import io
 import difflib
 import shutil
 
-APP_PATCH_VERSION = "Ver1.21.15"
+APP_PATCH_VERSION = "Ver1.21.16"
 
 try:
     import numpy as np
@@ -10724,6 +10724,56 @@ def _bt_trio_axis_backtest(race_df, payout_col="3連複払戻(100円)"):
 
 
 bt_cols=["開催日","競馬場","レース番号","レース名","馬番","馬名","U指数","実着順","人気","単勝オッズ","走破タイム","着差","上がり3F","通過順","単勝払戻(100円)","複勝払戻データ","枠連組合せ","枠連払戻(100円)","馬連組合せ","馬連払戻(100円)","ワイド払戻データ","馬単組合せ","馬単払戻(100円)","3連複組合せ","3連複払戻(100円)","3連単組合せ","3連単払戻(100円)","その他払戻原文","騎手","騎手リーディング順位","斤量"]
+
+# バックテスト専用の永続SQLite。予想ロジック・学習DBとは分離する。
+BT_DB_PATH = Path(__file__).with_name("jenny_backtest.db")
+def _bt_db_init():
+    with sqlite3.connect(str(BT_DB_PATH), timeout=20) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS backtest_records (race_key TEXT NOT NULL, horse_no INTEGER NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (race_key, horse_no))")
+        conn.commit()
+
+def _bt_db_load():
+    _bt_db_init()
+    with sqlite3.connect(str(BT_DB_PATH), timeout=20) as conn:
+        rows = conn.execute("SELECT payload FROM backtest_records ORDER BY race_key, horse_no").fetchall()
+    records=[]
+    for (payload,) in rows:
+        try:
+            item=json.loads(payload)
+            records.append({c:item.get(c) for c in bt_cols})
+        except Exception:
+            continue
+    return pd.DataFrame(records, columns=bt_cols)
+
+def _bt_db_save(df):
+    _bt_db_init()
+    saved=0
+    with sqlite3.connect(str(BT_DB_PATH), timeout=20) as conn:
+        for _, row in df.iterrows():
+            item={}
+            for c in bt_cols:
+                value=row.get(c)
+                try:
+                    if pd.isna(value): value=None
+                except Exception:
+                    pass
+                if hasattr(value, "item"):
+                    try: value=value.item()
+                    except Exception: pass
+                item[c]=value
+            race_parts=[str(item.get(k) or "").strip() for k in ("開催日","競馬場","レース番号")]
+            horse_no=item.get("馬番")
+            if not all(race_parts) or horse_no in (None, ""):
+                continue
+            try: horse_no=int(float(horse_no))
+            except Exception: continue
+            race_key="|".join(race_parts)
+            conn.execute("INSERT INTO backtest_records(race_key,horse_no,payload,updated_at) VALUES(?,?,?,?) ON CONFLICT(race_key,horse_no) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at",
+                         (race_key, horse_no, json.dumps(item, ensure_ascii=False, default=str), datetime.now().isoformat(timespec="seconds")))
+            saved += 1
+        conn.commit()
+    return saved
+
 bt_c1,bt_c2=st.columns(2)
 with bt_c1:
     bt_date=st.text_input("開催日（例：2026-06-04）",key="bt47_date")
@@ -10916,6 +10966,27 @@ if len(valid):
     st.success(f"入力行：{len(valid)}頭。OCRで埋まらなかった項目は一覧をクリックして手入力できます。空欄・読み取り誤りを確認してから保存してください。")
     st.dataframe(valid,use_container_width=True,hide_index=True)
     st.download_button("💾 確認済みデータをCSV保存",data=valid.to_csv(index=False).encode("utf-8-sig"),file_name="jenny_backtest_data.csv",mime="text/csv",use_container_width=True,key="bt47_csvout")
+    # SQLiteへレース単位・馬番単位で蓄積。再保存時は同じレース・馬番を更新し、重複行を作らない。
+    try:
+        _bt_saved_before = _bt_db_load()
+        _bt_saved_races = _bt_saved_before[["開催日", "競馬場", "レース番号"]].drop_duplicates().shape[0] if len(_bt_saved_before) else 0
+        st.caption(f"蓄積済みバックテスト：{len(_bt_saved_before)}頭分／{_bt_saved_races}レース")
+    except Exception as _bt_db_err:
+        _bt_saved_before = pd.DataFrame(columns=bt_cols)
+        st.warning(f"蓄積データベースを読み込めませんでした：{_bt_db_err}")
+    if st.button("🗃️ このレースを蓄積データに保存・更新", use_container_width=True, key="bt47_db_save_v12116"):
+        try:
+            n_saved = _bt_db_save(valid)
+            st.success(f"{n_saved}頭分を蓄積データに保存しました。同じレースを再保存すると内容を更新します。")
+            st.rerun()
+        except Exception as _bt_save_err:
+            st.error(f"データベース保存に失敗しました：{_bt_save_err}")
+    try:
+        _bt_accumulated_now = _bt_db_load()
+        if len(_bt_accumulated_now):
+            st.download_button("📥 蓄積済み全レースをCSVバックアップ", data=_bt_accumulated_now.to_csv(index=False).encode("utf-8-sig"), file_name="jenny_backtest_all_races.csv", mime="text/csv", use_container_width=True, key="bt47_db_export_v12116")
+    except Exception:
+        _bt_accumulated_now = pd.DataFrame(columns=bt_cols)
     # ------------------------------------------
     # Ver1.20.52 バックテスト分析拡張
     # U指数は高い順。馬番で照合し、レース単位で評価する。
@@ -10923,7 +10994,19 @@ if len(valid):
     st.divider()
     st.subheader("④ バックテスト分析")
     st.caption("U指数の高い順を予想順位として実着順と比較します。上位1頭を100円、上位3頭を各100円購入した想定です。")
-    bt_work = valid.copy()
+    # 蓄積DBの過去レースを分析対象に含め、画面上の編集中データで同一キーを上書きする。
+    try:
+        _bt_hist = _bt_db_load()
+    except Exception:
+        _bt_hist = pd.DataFrame(columns=bt_cols)
+    _bt_current = valid.copy()
+    _bt_all = pd.concat([_bt_hist, _bt_current], ignore_index=True)
+    if len(_bt_all):
+        _bt_all["_merge_race_key"] = _bt_all[["開催日","競馬場","レース番号"]].fillna("").astype(str).agg("|".join, axis=1)
+        _bt_all["_merge_horse_no"] = pd.to_numeric(_bt_all["馬番"], errors="coerce")
+        _bt_all = _bt_all.drop_duplicates(subset=["_merge_race_key","_merge_horse_no"], keep="last").drop(columns=["_merge_race_key","_merge_horse_no"])
+    bt_work = _bt_all.copy()
+    st.caption(f"分析対象：蓄積済みデータを含む {len(bt_work)}頭分")
     for col in ("U指数", "実着順", "単勝払戻(100円)", "馬番", "人気", "単勝オッズ", "騎手リーディング順位"):
         bt_work[col] = pd.to_numeric(bt_work[col], errors="coerce")
     race_keys = [c for c in ("開催日", "競馬場", "レース番号") if c in bt_work.columns]
@@ -11153,4 +11236,4 @@ if len(valid):
             st.caption("複勝率は3着以内。騎手リーディング順位は任意項目で、過去時点の順位が確認できる場合だけ参考分析に使います。1～5位の回収率は各順位を単勝100円で買う想定です。")
         st.download_button("📥 バックテスト分析結果をCSV保存", data=summary_df.to_csv(index=False).encode("utf-8-sig"), file_name="jenny_backtest_summary.csv", mime="text/csv", key="bt52_summary_csv")
 else: st.info("U指数画像・着順画像・払戻画像を読み込むか、表を貼り付けてください。")
-st.info("OCRは画像内の文字を誤認識することがあります。特にU指数・馬番・着順・払戻は必ず原画像と照合してください。読み取れない項目は手入力できます。バックテスト用データは既存の予想ロジック・学習DBとは分離しています。")
+st.info("OCRは画像内の文字を誤認識することがあります。特にU指数・馬番・着順・払戻は必ず原画像と照合してください。読み取れない項目は手入力できます。バックテスト用データは専用SQLiteに蓄積し、既存の予想ロジック・学習DBとは分離しています。CSVバックアップも定期的に保存してください。")
